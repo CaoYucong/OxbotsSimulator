@@ -50,7 +50,7 @@ Simulator/
 └── README.md
 ```
 
-All other files are irrelevant to the project and are from the software, I kept them just for development reference.
+All other files are irrelevant to the project and are demos from the software, I kept them just for development reference.
 
 ## 3. Running the Simulation
 
