@@ -42,6 +42,9 @@ Simulator/
 ├── protos/              # Custom arena and ball models
 │   ├── UnibotsArena.proto
 │   ├── UnibotsBalls.proto
+│   ├── UnibotsBallsRandom.proto
+│   └── generate_balls_proto.py 
+│       # Run this to regenerate UnibotsBallsRandom
 │
 ├── worlds/              # Simulation entry points
 │   ├── OxBots_Arena.wbt # Arena developing file, no use

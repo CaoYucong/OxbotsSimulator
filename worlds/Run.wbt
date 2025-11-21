@@ -4,6 +4,7 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
 EXTERNPROTO "../protos/UnibotsArena.proto"
 EXTERNPROTO "../protos/UnibotsBalls.proto"
+EXTERNPROTO "../protos/UnibotsBallsRandom.proto"
 
 WorldInfo {
 }
@@ -17,45 +18,5 @@ TexturedBackgroundLight {
 }
 UnibotsArena {
 }
-UnibotsBalls {
-  hidden translation_0 -0.375 -0.375 0.019996335236895566
-  hidden translation_1 -0.375 -0.125 0.019996335236895566
-  hidden translation_2 -0.375 0.125 0.019996335236895566
-  hidden translation_3 -0.375 0.375 0.019996335236895566
-  hidden translation_4 -0.125 -0.375 0.019996335236895566
-  hidden translation_5 -0.125 -0.125 0.019996335236895566
-  hidden translation_6 -0.125 0.125 0.019996335236895566
-  hidden translation_7 -0.125 0.375 0.019996335236895566
-  hidden translation_8 0.125 -0.375 0.019996335236895566
-  hidden translation_9 0.125 -0.125 0.019996335236895566
-  hidden translation_10 0.125 0.125 0.019996335236895566
-  hidden translation_11 0.125 0.375 0.019996335236895566
-  hidden translation_12 0.375 -0.375 0.019996335236895566
-  hidden translation_13 0.375 -0.125 0.019996335236895566
-  hidden translation_14 0.375 0.125 0.019996335236895566
-  hidden translation_15 0.375 0.375 0.019996335236895566
-  hidden translation_16 -0.7 -0.6 0.00994815661687241
-  hidden translation_17 -0.42 -0.6 0.00994815661687241
-  hidden translation_18 -0.14 -0.6 0.00994815661687241
-  hidden translation_19 0.14 -0.6 0.00994815661687241
-  hidden translation_20 0.42 -0.6 0.00994815661687241
-  hidden translation_21 0.7 -0.6 0.00994815661687241
-  hidden translation_22 -0.7 -0.2 0.00994815661687241
-  hidden translation_23 -0.42 -0.2 0.00994815661687241
-  hidden translation_24 -0.14 -0.2 0.00994815661687241
-  hidden translation_25 0.14 -0.2 0.00994815661687241
-  hidden translation_26 0.42 -0.2 0.00994815661687241
-  hidden translation_27 0.7 -0.2 0.00994815661687241
-  hidden translation_28 -0.7 0.2 0.00994815661687241
-  hidden translation_29 -0.42 0.2 0.00994815661687241
-  hidden translation_30 -0.14 0.2 0.00994815661687241
-  hidden translation_31 0.14 0.2 0.00994815661687241
-  hidden translation_32 0.42 0.2 0.00994815661687241
-  hidden translation_33 0.7 0.2 0.00994815661687241
-  hidden translation_34 -0.7 0.6 0.00994815661687241
-  hidden translation_35 -0.42 0.6 0.00994815661687241
-  hidden translation_36 -0.14 0.6 0.00994815661687241
-  hidden translation_37 0.14 0.6 0.00994815661687241
-  hidden translation_38 0.42 0.6 0.00994815661687241
-  hidden translation_39 0.7 0.6 0.00994815661687241
+UnibotsBallsRandom {
 }
