@@ -1,0 +1,25 @@
+#VRML_SIM R2025a utf8
+PROTO SteelBall [
+  field SFVec3f translation 0 0 0
+  field SFRotation rotation 0 1 0 0
+] {
+  Transform {
+    translation IS translation
+    rotation IS rotation
+    children [
+      Solid {
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor 0.15 0.5 0.15
+              roughness 0.15
+            }
+            geometry Sphere { radius 0.01 }
+          }
+        ]
+        boundingObject Sphere { radius 0.01 }
+        physics Physics { density 7800 }
+      }
+    ]
+  }
+}

@@ -1,59 +1,62 @@
 #VRML_SIM R2025a utf8
-PROTO UnibotsBalls [] {
-  Group{
-      children [
+EXTERNPROTO "PingBall.proto"
+EXTERNPROTO "SteelBall.proto"
 
-      # ---- 16 ping-pong balls (radius 0.02 m, white) ----
-      Solid { translation -0.375 -0.375 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping1" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation -0.375 -0.125 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping2" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation -0.375 0.125 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping3" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation -0.375 0.375 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping4" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
+PROTO UnibotsBalls [
+] {
+  Group {
+    children [
 
-      Solid { translation -0.125 -0.375 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping5" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation -0.125 -0.125 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping6" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation -0.125 0.125 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping7" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation -0.125 0.375 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping8" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
+      # ---- 16 Ping-pong balls (each freely movable / rotatable) ----
+      PingBall { translation -0.375 -0.375 0.15 }
+      PingBall { translation -0.375 -0.125 0.15 }
+      PingBall { translation -0.375  0.125 0.15 }
+      PingBall { translation -0.375  0.375 0.15 }
 
-      Solid { translation 0.125 -0.375 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping9" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation 0.125 -0.125 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping10" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation 0.125 0.125 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping11" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation 0.125 0.375 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping12" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
+      PingBall { translation -0.125 -0.375 0.15 }
+      PingBall { translation -0.125 -0.125 0.15 }
+      PingBall { translation -0.125  0.125 0.15 }
+      PingBall { translation -0.125  0.375 0.15 }
 
-      Solid { translation 0.375 -0.375 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping13" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation 0.375 -0.125 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping14" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation 0.375 0.125 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping15" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
-      Solid { translation 0.375 0.375 0.15 children [ Shape { appearance PBRAppearance { baseColor 1 0.953 0.008 metalness 0 roughness 1} geometry Sphere { radius 0.02 } } ] name "Ping16" boundingObject Sphere { radius 0.02 } physics Physics { density 50 } }
+      PingBall { translation 0.125 -0.375 0.15 }
+      PingBall { translation 0.125 -0.125 0.15 }
+      PingBall { translation 0.125  0.125 0.15 }
+      PingBall { translation 0.125  0.375 0.15 }
 
-      # ---- 24 steel balls (radius 0.01 m, metal grey) ----
-      # arranged in a 6x4 grid outside the ping-pong block
-      Solid { translation -0.70 -0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel1"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation -0.42 -0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel2"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation -0.14 -0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel3"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.14 -0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel4"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.42 -0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel5"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.70 -0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel6"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
+      PingBall { translation 0.375 -0.375 0.15 }
+      PingBall { translation 0.375 -0.125 0.15 }
+      PingBall { translation 0.375  0.125 0.15 }
+      PingBall { translation 0.375  0.375 0.15 }
 
-      Solid { translation -0.70 -0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel7"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation -0.42 -0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel8"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation -0.14 -0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel9"  boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.14 -0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel10" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.42 -0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel11" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.70 -0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel12" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
+      # ---- 24 steel balls ----
+      SteelBall { translation -0.70 -0.60 0.15 }
+      SteelBall { translation -0.42 -0.60 0.15 }
+      SteelBall { translation -0.14 -0.60 0.15 }
+      SteelBall { translation  0.14 -0.60 0.15 }
+      SteelBall { translation  0.42 -0.60 0.15 }
+      SteelBall { translation  0.70 -0.60 0.15 }
 
-      Solid { translation -0.70 0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel13" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation -0.42 0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel14" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation -0.14 0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel15" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.14 0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel16" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.42 0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel17" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.70 0.20 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel18" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
+      SteelBall { translation -0.70 -0.20 0.15 }
+      SteelBall { translation -0.42 -0.20 0.15 }
+      SteelBall { translation -0.14 -0.20 0.15 }
+      SteelBall { translation  0.14 -0.20 0.15 }
+      SteelBall { translation  0.42 -0.20 0.15 }
+      SteelBall { translation  0.70 -0.20 0.15 }
 
-      Solid { translation -0.70 0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel19" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation -0.42 0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel20" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation -0.14 0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel21" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.14 0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel22" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.42 0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel23" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
-      Solid { translation 0.70 0.60 0.15 children [ Shape { appearance PBRAppearance { baseColor 0.15 0.5 0.15 roughness 0.15 } geometry Sphere { radius 0.01 } } ] name "Steel24" boundingObject Sphere { radius 0.01 } physics Physics { density 7800 } }
+      SteelBall { translation -0.70 0.20 0.15 }
+      SteelBall { translation -0.42 0.20 0.15 }
+      SteelBall { translation -0.14 0.20 0.15 }
+      SteelBall { translation  0.14 0.20 0.15 }
+      SteelBall { translation  0.42 0.20 0.15 }
+      SteelBall { translation  0.70 0.20 0.15 }
 
-    ] # end children
-  } # end Group
+      SteelBall { translation -0.70 0.60 0.15 }
+      SteelBall { translation -0.42 0.60 0.15 }
+      SteelBall { translation -0.14 0.60 0.15 }
+      SteelBall { translation  0.14 0.60 0.15 }
+      SteelBall { translation  0.42 0.60 0.15 }
+      SteelBall { translation  0.70 0.60 0.15 }
+
+    ]
+  }
 }
