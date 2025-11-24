@@ -35,22 +35,38 @@ To avoid losing work:
 ## 2. **Repository Structure**
 
 ```
-Simulator/
+OxbotsSimulator
 │
-├── controllers/         # Not investigated yet
+├── controllers               # Not investigated yet
 │
-├── protos/              # Custom arena and ball models
-│   ├── UnibotsArena.proto
-│   ├── UnibotsBalls.proto
-│   ├── UnibotsBallsRandom.proto
-│   └── generate_balls_proto.py 
-│       # Run this to regenerate UnibotsBallsRandom
+├── protos                  
+│   ├── AprilTag.proto        # One Single Apriltag
+│   ├── AprilTagWall.proto    # Fit 24 Apriltags on the wall
+│   ├── Pingball.proto        # Ping-Pong Ball
+│   ├── SteelBall.proto       # Steel Ball
+│   ├── UnibotsArena.proto    # Base Arena
+│   ├── UnibotsBalls.proto    # 40 Balls
+│   └── UnibotsBallsRandom.proto # 40 Balls, randomly positioned, see \tools.
 │
-├── worlds/              # Simulation entry points
-│   ├── OxBots_Arena.wbt # Arena developing file, no use
-│   └── Run.wbt					 # Run this
+├── textures
+│   └── tag36h11              # AprilTag Family tag36h11, numbered 0-23
+│       ├── tag36h11-0.png
+│       ├── tag36h11-1.png
+│       ...
+│       ├── tag36h11-21.png
+│       ├── tag36h11-22.png
+│       └── tag36h11-23.png   # 24 AprilTags in total
+│ 
+├── tools
+│   └── generate_random_balls_proto.py  # Generate random ball confituration
+│                                       # with auto back-up previous ball confituration
+│ 
+├── worlds/                   # Simulation entry points
+│   ├── OxBots_Arena.wbt      # Arena developing file, no use
+│   └── Run.wbt					      # Run this
 │
-└── README.md
+├── README.md
+├── Rulebook Unibots 2026 V1.1 - 02 Oct 2025.pdf
 ```
 
 All other files are irrelevant to the project and are demos from the software, I kept them just for development reference.
