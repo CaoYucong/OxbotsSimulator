@@ -33,7 +33,7 @@ while wb_robot_step(TIME_STEP) ~= -1
     success = wb_camera_save_image(camera, '../../cache/camera/temp_img.png', 100);
 
     % Apriltag Recognition
-    recognise_temp_image('../../cache/camera/temp_img.png');
+    recognise_temp_image("../../cache/camera/temp_img.png");
 
     % delete('../../cache/camera/temp_img.png');
 end

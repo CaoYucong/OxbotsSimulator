@@ -1,4 +1,4 @@
-function output_path = recognise_temp_img(temp_img_path)
+function output_path = recognise_temp_image(temp_img_path)
 % recognise_temp_img  
 % Perform AprilTag detection on the input image, draw markers,
 % and save the processed image as temp_img_recognised.png in the same folder.
