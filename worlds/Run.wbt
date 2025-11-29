@@ -4,14 +4,14 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
 EXTERNPROTO "../protos/UnibotsArena.proto"
 EXTERNPROTO "../protos/AprilTagWall.proto"
-EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/gctronic/e-puck/protos/E-puck.proto"
+EXTERNPROTO "../protos/E-puck.proto"
 
 WorldInfo {
   basicTimeStep 4
 }
 Viewpoint {
-  orientation -0.25156483901171295 0.250938638704908 0.9347432435583254 1.6407262463443355
-  position 0.15679855983768737 -3.9006383784693788 2.2582435225474375
+  orientation -0.2248004881379305 0.22649490565764083 0.9477155682186953 1.6169841792171418
+  position 0.11704272843977309 -4.03138283324916 2.021600256343941
 }
 TexturedBackground {
 }
@@ -22,10 +22,16 @@ UnibotsArena {
 AprilTagWall {
 }
 E-puck {
-  hidden rotation_1 0 1 0 3.6975914409710358
-  hidden rotation_2 0 1 0 2.2188913759074667
-  rotation 0 0 1 1.5708
+  hidden translation_1 0 0.025999999999999985 0.02
+  hidden rotation_1 0 1 0 0
+  hidden translation_2 0 -0.025999999999999985 0.02
+  hidden rotation_2 0 1 0 0
+  translation 1.3942426248735082e-12 -1.1898966249143404e-15 -7.995249474453472e-06
+  rotation 1.47338e-09 -1.50352e-09 1 1.5708
   controller "epuck_camera_reader"
+  controllerArgs [
+    ""
+  ]
   camera_width 640
   camera_height 480
 }
