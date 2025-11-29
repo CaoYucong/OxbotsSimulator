@@ -1,5 +1,7 @@
 #VRML_SIM R2025a utf8
 
+EXTERNPROTO "../protos/AprilTag.proto"
+
 PROTO AprilTagWall [
 ] {
   Group {
