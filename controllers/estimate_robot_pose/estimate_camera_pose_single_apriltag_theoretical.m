@@ -1,5 +1,7 @@
 % ---------------- Main script (uses theoretical_intrinsics_webots.mat) ----------------
 temp_img_path = "../../cache/camera/temp_img.png";
+z_constrain = false;
+z0 = 0.1; % the constraint height you wanted
 
 % ---- Read the input image ----
 I = imread(temp_img_path);
@@ -99,11 +101,6 @@ for k = 1:N
     orientation = []; location = [];
 
     if isempty(orientation)
-        z0 = 0.1;
-        [R_wc, camPos_world, used, resnorm] = estimatePoseFixedZ(worldCorners, ptsUnd, intr, z0, initialGuess)
-    end
-
-    if isempty(orientation)
         try
             % estworldpose expects undistorted points and cameraIntrinsics (intr)
             [worldPose, inlierIdx, status] = estworldpose(ptsUnd, worldCorners, intr, ...
@@ -121,6 +118,27 @@ for k = 1:N
             end
         catch ME
             warning('estworldpose failed. Falling back to extrinsics for id=%d.', id);
+        end
+    end
+
+    % attempt estworldpose/existing methods to get initial guess (optional)
+    initialGuess = struct();
+    if exist('orientation','var') && exist('location','var') && ~isempty(orientation)
+        initialGuess.R_wc = orientation; % world->cam
+        initialGuess.camPos = location;  % cam position in world (1x3)
+    end
+    
+    if z_constrain == true
+        % now call constrained estimator with fixed z
+        try
+            [R_wc_opt, camPos_world_opt, usedTag, resnorm] = estimatePoseFixedZ(worldCorners, ptsUnd, intr, z0, initialGuess);
+            % convert to your script vars: orientation (world->cam), location (1x3), R_c2w etc.
+            orientation = R_wc_opt;               % world->cam
+            location = camPos_world_opt;          % camera position in world
+            usedMethod = usedTag;
+        catch ME
+            warning('estimatePoseFixedZ failed: %s. Falling back to previous methods.', ME.message);
+            % keep previous orientation/location if exist
         end
     end
     
@@ -169,8 +187,8 @@ for k = 1:N
     
     % reprojection check (project worldCorners -> image pixels) using intr/cameraParams as appropriate
     % proj = worldToImage(intr, orientation, cam_pos, worldCorners);
-    tform = rigidtform3d(R_c2w', -cam_pos);                                % cam_pos 为 1x3（相机在 world 的位置）
-    proj = world2img(worldCorners, tform, intr, 'ApplyDistortion', true);   % 返回 Mx2 像素点
+    tform = rigidtform3d(R_c2w, cam_pos);                           
+    proj = world2img_manual(worldCorners, tform, intr); 
     
     I = insertShape(I, "Circle", [corners_img, [5;5;5;5]], ShapeColor="red", Opacity=1);
     I = insertShape(I, "Circle", [proj, [6;6;6;6]], ShapeColor="green", Opacity=1);

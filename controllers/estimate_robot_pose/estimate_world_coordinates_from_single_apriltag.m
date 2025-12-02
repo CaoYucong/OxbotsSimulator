@@ -1,5 +1,25 @@
-% ---------------- Main script (uses theoretical_intrinsics_webots.mat) ----------------
-temp_img_path = "../../cache/camera/temp_img.png";
+function results = estimate_world_coordinates_from_single_apriltag(intrStruct, temp_img_path)
+% ESTIMATE_WORLD_COORDINATES_FROM_IMAGE
+%   results = estimate_world_coordinates_from_image(intrStruct, temp_img_path)
+%
+% Inputs:
+%   intrStruct    - camera intrinsics input. Supported forms:
+%                   * cameraIntrinsics object
+%                   * struct with fields 'FocalLength','PrincipalPoint','ImageSize'
+%                   * struct with field 'intr' that is cameraIntrinsics
+%   temp_img_path - (optional) path to input image. Default: '../../cache/camera/temp_img.png'
+%
+% Output:
+%   results       - struct array, same as your original script's results
+%
+% NOTE: other data (tagWorldMap) are loaded using the same helper logic as before.
+
+if nargin < 2 || isempty(temp_img_path)
+    temp_img_path = "../../cache/camera/temp_img.png";
+end
+
+% ---- create intr (cameraIntrinsics) and cameraParams (cameraParameters) from input ----
+[intr, cameraParams] = build_intrinsics_from_input(intrStruct);
 
 % ---- Read the input image ----
 I = imread(temp_img_path);
@@ -7,22 +27,30 @@ I = imread(temp_img_path);
 % ---- AprilTag detection ----
 tagFamily = "tag36h11";
 [ids, loc, detectedFamily] = readAprilTag(I, tagFamily);
+results = -1; % default empty output
+if isempty(ids)
+    warning('No AprilTags detected in %s', temp_img_path);
+    return;
+end
 if size(loc, 3) == 1
-    loc = reshape(loc, size(loc,1), size(loc,2), 1);
+    warning('Only 1 AprilTag detected in %s, skip', temp_img_path);
+    return;
 end
 
 % ---- Draw markers on detected tag corners ----
 for idx = 1:length(ids)
     disp("Detected Tag ID, Family: " + ids(idx) + ", " + detectedFamily(idx));
-    
     markerRadius = 2;
     numCorners = size(loc, 1);
     markerPosition = [loc(:, :, idx), repmat(markerRadius, numCorners, 1)];
-    
+    I = insertShape(I, "Circle", [loc(1, :, idx), 5], ShapeColor="red", Opacity=1);
 end
 
 % ---- Build output path: same folder, fixed filename ----
 [folder, ~, ~] = fileparts(temp_img_path);
+if isempty(folder)
+    folder = pwd;
+end
 output_path = fullfile(folder, "temp_img_recognised.png");
 
 % ---- Save the processed image ----
@@ -53,11 +81,8 @@ else
     error('loc must be 4x2xN or N x 8 or vector length 8N. Got size %s', mat2str(size(loc)));
 end
 
-% --- load theoretical intrinsics and simulated cameraParameters ---
-[intr, cameraParams] = load_theoretical_intrinsics();  % intr: cameraIntrinsics, cameraParams: cameraParameters (no distortion)
-
-% --- load tagWorldMap ---
-tagWorldMap = load_tagWorldMap();       % helper below
+% --- load tagWorldMap (unchanged behavior) ---
+tagWorldMap = load_tagWorldMap();
 
 % build id->worldCorners map
 mapById = containers.Map('KeyType','double','ValueType','any');
@@ -83,7 +108,7 @@ for k = 1:N
     end
     worldCorners = mapById(id); % 4x3, BL,BR,TR,TL
     
-    % undistort points (preferred) - use simulated cameraParams (no distortion)
+    % undistort points (preferred) - use constructed cameraParams
     try
         ptsUnd = undistortPoints(corners_img, cameraParams); % 4x2
     catch
@@ -91,22 +116,19 @@ for k = 1:N
     end
 
     % annotate world coords near detected corners (same as before)
-    % I = insertText(I, ptsUnd(:,:), "(" + worldCorners(:,1) + "," + worldCorners(:,2) + ...
-    %     "," + worldCorners(:,3) + ")", 'FontSize', 20, 'BoxColor', 'black', 'TextColor', 'white');
+    I = insertText(I, ptsUnd(:,:), "(" + worldCorners(:,1) + "," + worldCorners(:,2) + ...
+        "," + worldCorners(:,3) + ")", 'FontSize', 20, 'BoxColor', 'black', 'TextColor', 'white');
     
     % try estworldpose for single-tag case (preferred)
     usedMethod = '';
     orientation = []; location = [];
     if isempty(orientation)
         try
-            % estworldpose expects undistorted points and cameraIntrinsics (intr)
             [worldPose, inlierIdx, status] = estworldpose(ptsUnd, worldCorners, intr, ...
                 MaxReprojectionError=8, Confidence=95, MaxNumTrials=200);
             if status == 0
-                % worldPose.R is camera->world
                 R_c2w = worldPose.R;            % camera -> world
                 cam_pos = worldPose.Translation; % 1x3
-                % keep 'orientation' as world->cam for compatibility with rest of script
                 orientation = R_c2w';   % world -> cam
                 location = cam_pos;     % camera location in world coords
                 usedMethod = 'estworldpose';
@@ -122,7 +144,6 @@ for k = 1:N
     if isempty(orientation)
         if hasEstWorld
             try
-                % estimateWorldCameraPose accepts cameraParameters or cameraIntrinsics (we pass cameraParams)
                 [orientation, location, inlierIdx] = estimateWorldCameraPose(ptsUnd, worldCorners, cameraParams, ...
                     'MaxReprojectionError', 4, 'Confidence', 99);
                 usedMethod = 'estimateWorldCameraPose';
@@ -136,11 +157,7 @@ for k = 1:N
     if isempty(orientation)
         try
             [R_ex, t_ex] = extrinsics(ptsUnd, worldCorners, cameraParams);
-            % extrinsics returns R_ex (world->cam) and t_ex (1x3) such that:
-            % X_cam = R_ex * X_world' + t_ex'
             orientation = R_ex;
-            % derive camera location in world coords: solve for location where X_world = location gives X_cam=0:
-            % 0 = R_ex * location' + t_ex'  => location' = -R_ex' * t_ex'
             location = (-orientation' * t_ex')';
             usedMethod = 'extrinsics';
         catch ME
@@ -150,26 +167,19 @@ for k = 1:N
     end
     
     % Build T_world_from_cam
-    % orientation maps world->cam. Camera-to-world rotation = orientation'
     R_c2w = orientation';
-    % location is camera position in world coords (1x3)
     cam_pos = location(:)'; % ensure row
     T_world_from_cam = eye(4);
     T_world_from_cam(1:3,1:3) = R_c2w;
     T_world_from_cam(1:3,4) = cam_pos';
     
-    % For reprojection: need extrinsics R_ex/t_ex. Use intr for worldToImage
+    % For reprojection: compute t_ex = -R * C (R = world->cam)
     t_ex = (-(orientation * cam_pos'))'; % 1x3
     
-    % reprojection check (project worldCorners -> image pixels) using intr/cameraParams as appropriate
-    % proj = worldToImage(intr, orientation, cam_pos, worldCorners);
-    tform = rigidtform3d(R_c2w, );
-    proj = world2img(worldCorners, tform, intr);
+    % reprojection check (project worldCorners -> image pixels)
+    tform = rigidtform3d(R_c2w, cam_pos);
+    proj = world2img_manual(worldCorners, tform, intr); 
     
-    I = insertShape(I, "Circle", [corners_img, [5;5;5;5]], ShapeColor="red", Opacity=1);
-    I = insertShape(I, "Circle", [proj, [6;6;6;6]], ShapeColor="green", Opacity=1);
-    
-
     reprojErrs = sqrt(sum((proj - corners_img).^2, 2));
     meanReproj = mean(reprojErrs);
     
@@ -195,8 +205,8 @@ for k = 1:N
     results = [results; res]; %#ok<AGROW>
 end
 
-figure;
-imshow(I); hold off;
+% show image (annotated)
+figure; imshow(I); hold off;
 
 % print brief summary
 fprintf('Per-tag estimation done. %d results produced.\n', numel(results));
@@ -205,52 +215,49 @@ for i=1:numel(results)
         results(i).id, results(i).method, results(i).meanReproj, results(i).cam_position_world);
 end
 fprintf('Use showExtrinsics(results, cameraParams) to visualize.\n');
+
+% keep compatibility: return results and optionally display extrinsics
 showExtrinsics(results, cameraParams);
 
-%% ---------------- helper: load_theoretical_intrinsics ----------------
-function [intr, cameraParams] = load_theoretical_intrinsics()
-    % Try to load a cameraIntrinsics object from several candidate paths
-    candidates = { fullfile(pwd,'theoretical_intrinsics_webots.mat'), ...
-                   fullfile(pwd,'..','..','cache','camera','theoretical_intrinsics_webots.mat'), ...
-                   fullfile('..','cache','camera','theoretical_intrinsics_webots.mat'), ...
-                   fullfile(pwd,'intrinsics_webots.mat'), ...
-                   fullfile(pwd,'..','..','cache','camera','intrinsics_webots.mat') };
-    intr = [];
-    for i=1:numel(candidates)
-        f = candidates{i};
-        if exist(f,'file')
-            s = load(f);
-            fn = fieldnames(s);
-            % accept either variable named 'intr' or first variable that is cameraIntrinsics-like
-            if isfield(s,'intr')
-                intr = s.intr;
-            else
-                % try to find cameraIntrinsics in file
-                intr = s.(fn{1});
-            end
-            break;
-        end
-    end
-    if isempty(intr)
-        error('theoretical_intrinsics_webots.mat not found. Save a cameraIntrinsics variable named ''intr'' into one of the candidate paths.');
-    end
+end
 
-    % build a cameraParameters object with zero distortion for functions that expect cameraParameters
-    try
-        imageSize = intr.ImageSize;
-        fxfy = intr.FocalLength;
-        pp = intr.PrincipalPoint;
-        % cameraParameters requires IntrinsicMatrix (3x3) with MATLAB convention
-        camMat = intr.IntrinsicMatrix; % cameraIntrinsics stores IntrinsicMatrix property
-        % create cameraParameters with zero distortion
-        cameraParams = cameraParameters('IntrinsicMatrix', camMat, 'ImageSize', imageSize, ...
-            'RadialDistortion',[0 0], 'TangentialDistortion',[0 0]);
-    catch ME
-        error('Failed to construct cameraParameters from intr: %s', ME.message);
+%% ---------------- helper: build_intrinsics_from_input ----------------
+function [intr, cameraParams] = build_intrinsics_from_input(inObj)
+% Accept cameraIntrinsics, or struct with FocalLength/PrincipalPoint/ImageSize,
+% or struct with field intr (cameraIntrinsics)
+if isempty(inObj)
+    error('intrStruct is empty. Pass cameraIntrinsics or struct with FocalLength/PrincipalPoint/ImageSize.');
+end
+
+% if it's a cameraIntrinsics already
+if isa(inObj, 'cameraIntrinsics')
+    intr = inObj;
+else
+    % if provided as a struct with field 'intr'
+    if isstruct(inObj) && isfield(inObj, 'intr') && isa(inObj.intr, 'cameraIntrinsics')
+        intr = inObj.intr;
+    elseif isstruct(inObj) && all(isfield(inObj, {'FocalLength','PrincipalPoint','ImageSize'}))
+        fx = inObj.FocalLength(1); fy = inObj.FocalLength(2);
+        pp = inObj.PrincipalPoint;
+        imgSz = inObj.ImageSize;
+        intr = cameraIntrinsics([fx fy], pp, imgSz);
+    else
+        error('Unsupported intrStruct format. Provide cameraIntrinsics or struct with fields: FocalLength, PrincipalPoint, ImageSize.');
     end
 end
 
-%% ---------------- helper: load_tagWorldMap ----------------
+% construct cameraParameters for functions that need it (assume zero distortion unless provided)
+% if caller passed a cameraParameters inside struct as cameraParams, respect it
+if isstruct(inObj) && isfield(inObj,'cameraParams') && isa(inObj.cameraParams,'cameraParameters')
+    cameraParams = inObj.cameraParams;
+else
+    camMat = intr.IntrinsicMatrix;
+    imageSize = intr.ImageSize;
+    cameraParams = cameraParameters('IntrinsicMatrix', camMat, 'ImageSize', imageSize, 'RadialDistortion',[0 0], 'TangentialDistortion',[0 0]);
+end
+end
+
+%% ---------------- helper: load_tagWorldMap (unchanged) ----------------
 function tagWorldMap = load_tagWorldMap()
     candidates = { fullfile(pwd,'tagWorldMap.mat'), fullfile(pwd,'..','..','cache','camera','tagWorldMap.mat'), fullfile('..','cache','camera','tagWorldMap.mat') };
     for i=1:numel(candidates)
@@ -268,11 +275,17 @@ function tagWorldMap = load_tagWorldMap()
     error('tagWorldMap.mat not found. Generate it with the provided generator and place it in current folder or ../../cache/camera/ .');
 end
 
-%% ---------------- visualization: showExtrinsics ----------------
+%% ---------------- visualization: showExtrinsics (unchanged) ----------------
 function showExtrinsics(results, cameraParams)
     if nargin < 2
-        cameraParams = load_theoretical_intrinsics(); % returns [intr, cameraParams]; we only need cameraParams here
-        cameraParams = cameraParams{2};
+        candidates = { fullfile(pwd,'theoretical_intrinsics_webots.mat'), fullfile(pwd,'..','..','cache','camera','theoretical_intrinsics_webots.mat') };
+        if exist(candidates{1},'file')
+            s = load(candidates{1}); intr = s.intr;
+            camMat = intr.IntrinsicMatrix; imageSize = intr.ImageSize;
+            cameraParams = cameraParameters('IntrinsicMatrix', camMat, 'ImageSize', imageSize, 'RadialDistortion',[0 0], 'TangentialDistortion',[0 0]);
+        else
+            error('No cameraParams provided and theoretical_intrinsics_webots.mat not found.');
+        end
     end
     if isempty(results)
         error('results empty');
@@ -298,7 +311,7 @@ function showExtrinsics(results, cameraParams)
     title('Per-tag camera poses (world frame) - one pose per tag');
 end
 
-%% ---------------- draw frustum helper ----------------
+%% ---------------- draw frustum helper (unchanged) ----------------
 function drawCameraFrustum(T_world_from_cam, cameraParams, depth, axisScale)
     if nargin<3, depth = 0.5; end
     if nargin<4, axisScale = 0.1; end

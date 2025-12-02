@@ -42,7 +42,7 @@ while wb_robot_step(TIME_STEP) ~= -1
 
     % Current World Coordinates Estimation
     intrinsics = load("../../controllers/estimate_robot_pose/theoretical_intrinsics_webots.mat");
-    results = estimate_world_coordinates_from_image(intrinsics , "../../cache/camera/temp_img.png");
+    results = estimate_world_coordinates_from_single_apriltag(intrinsics , "../../cache/camera/temp_img.png");
 
     disp("Frame: " + loop_counter + " Detected and processed.\n");
     loop_counter = loop_counter + 1;
