@@ -2,13 +2,14 @@ function epuck_camera_reader
 TIME_STEP = 64;
 save_sample_images = false;
 sample_every_frame = 10;
-robot_auto_rotating = false;
+robot_auto_rotating = true;
 
 camera = wb_robot_get_device('camera');
 wb_camera_enable(camera, TIME_STEP);
 
 width  = wb_camera_get_width(camera);
 height = wb_camera_get_height(camera);
+intrinsics = load("../../controllers/estimate_robot_pose/theoretical_intrinsics_webots.mat");
 
 MAX_SPEED = 6.28;
 
@@ -20,12 +21,13 @@ if robot_auto_rotating == true
   wb_motor_set_position(right_motor, inf);
 
   % set up the motor speeds at 10% of the MAX_SPEED.
-  wb_motor_set_velocity(left_motor, 0.5 * MAX_SPEED);
-  wb_motor_set_velocity(right_motor, 0.4 * MAX_SPEED);
+  wb_motor_set_velocity(left_motor, 0.9 * MAX_SPEED);
+  wb_motor_set_velocity(right_motor, 0.6 * MAX_SPEED);
 end
 
 loop_counter = 0;
 image_file_num = 1;
+t_pose_average = -1;
 while wb_robot_step(TIME_STEP) ~= -1
     raw = wb_camera_get_image(camera);
 
@@ -40,11 +42,18 @@ while wb_robot_step(TIME_STEP) ~= -1
     % Apriltag Recognition for Debugging
     % recognise_image("../../cache/camera/temp_img.png");
 
+    t0 = tic;
     % Current World Coordinates Estimation
-    intrinsics = load("../../controllers/estimate_robot_pose/theoretical_intrinsics_webots.mat");
-    results = estimate_world_coordinates_from_single_apriltag(intrinsics , "../../cache/camera/temp_img.png");
+    results = estimate_world_coordinates_from_all_apriltag(intrinsics , "../../cache/camera/temp_img.png", false);
+    t_pose = toc(t0);
+    if t_pose_average == -1
+        t_pose_average = t_pose;
+    else
+        t_pose_average = (t_pose_average * loop_counter + t_pose) / (loop_counter + 1);
+    end
 
     disp("Frame: " + loop_counter + " Detected and processed.\n");
+    disp("Average Processing Time: " + t_pose_average + " seconds.\n");
     loop_counter = loop_counter + 1;
 end
 

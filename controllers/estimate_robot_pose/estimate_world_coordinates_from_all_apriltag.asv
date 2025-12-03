@@ -36,19 +36,16 @@ if debug == true
 end
     disp("Detected " + length(ids) + " tags.\n");
 
-    if isscalar(ids)
+    if length(ids) == 1
         ids(2) = ids(1);
-        loc(:,:,2) = loc(:,:,1);
+        loc(2) = 
     end
-
     
     % --- reshape/validate loc ---
     ids = double(ids(:));
     N = numel(ids);
     if N == 0
-        warning('ids empty, skipped');
-        results = 0;
-        return;
+        error('ids empty');
     end
     
     % normalize loc into 4x2xN
@@ -130,7 +127,7 @@ end
         if isempty(orientation)
             try
                 % estworldpose expects undistorted points and cameraIntrinsics (intr)
-                [worldPose, inlierIdx, status] = estworldpose(allImgPts, allWorldPts, intr, MaxNumTrials=100);
+                [worldPose, inlierIdx, status] = estworldpose(allImgPts, allWorldPts, intr);
                 if status == 0
                     % worldPose.R is camera->world
                     R_c2w = worldPose.R;            % camera -> world
@@ -240,7 +237,7 @@ end
 
     % print brief summary
     fprintf('All-tag estimation done. %d results produced.\n', numel(results));
-    fprintf(' id=all  method=%s  meanReproj=%.3f px  camPos=[%.2f %.2f %.2f]\n', ...
+    fprintf(' id=all  method=%s  meanReproj=%.3f px  camPos=[%.3f %.3f %.3f]\n', ...
          results.method, results.meanReproj, results.cam_position_world);
 
     if debug == true
