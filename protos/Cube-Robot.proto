@@ -1,0 +1,149 @@
+#VRML_SIM R2025a utf8
+
+PROTO Cube-Robot [
+  field SFVec3f    translation    -0.9 0 0.1
+  field SFRotation rotation       0 0 1 0
+]
+{
+  Robot {
+    translation IS translation
+    rotation    IS rotation
+    children [
+
+      # Top
+      Shape {
+        appearance Appearance {
+          texture ImageTexture { url "../textures/robot_texture/top.png" }
+        }
+        geometry IndexedFaceSet {
+          coord Coordinate {
+            point [
+              0.1, -0.1,  0.1,
+              0.1,  0.1,  0.1,
+             -0.1,  0.1,  0.1,
+             -0.1, -0.1,  0.1
+            ]
+          }
+          texCoord TextureCoordinate {
+            point [ 0 0, 1 0, 1 1, 0 1 ]
+          }
+          coordIndex [ 0, 1, 2, 3, -1 ]
+          texCoordIndex [ 0, 1, 2, 3, -1 ]
+        }
+      }
+
+      # Bottom
+      Shape {
+        appearance Appearance {
+          texture ImageTexture { url "../textures/robot_texture/bottom.png" }
+        }
+        geometry IndexedFaceSet {
+          coord Coordinate {
+            point [
+             -0.1, -0.1, -0.1,
+             -0.1,  0.1, -0.1,
+              0.1,  0.1, -0.1,
+              0.1, -0.1, -0.1
+            ]
+          }
+          texCoord TextureCoordinate {
+            point [ 0 0, 1 0, 1 1, 0 1 ]
+          }
+          coordIndex [ 0, 1, 2, 3, -1 ]
+          texCoordIndex [ 0, 1, 2, 3, -1 ]
+        }
+      }
+
+      # Back (left face in your original ordering)
+      Shape {
+        appearance Appearance {
+          texture ImageTexture { url "../textures/robot_texture/back.png" }
+        }
+        geometry IndexedFaceSet {
+          coord Coordinate {
+            point [
+             -0.1,  0.1, -0.1,
+             -0.1, -0.1, -0.1,
+             -0.1, -0.1,  0.1,
+             -0.1,  0.1,  0.1
+            ]
+          }
+          texCoord TextureCoordinate {
+            point [ 0 0, 1 0, 1 1, 0 1 ]
+          }
+          coordIndex [ 0, 1, 2, 3, -1 ]
+          texCoordIndex [ 0, 1, 2, 3, -1 ]
+        }
+      }
+
+      # Front
+      Shape {
+        appearance Appearance {
+          texture ImageTexture { url "../textures/robot_texture/front.png" }
+        }
+        geometry IndexedFaceSet {
+          coord Coordinate {
+            point [
+              0.1, -0.1, -0.1,
+              0.1,  0.1, -0.1,
+              0.1,  0.1,  0.1,
+              0.1, -0.1,  0.1
+            ]
+          }
+          texCoord TextureCoordinate {
+            point [ 0 0, 1 0, 1 1, 0 1 ]
+          }
+          coordIndex [ 0, 1, 2, 3, -1 ]
+          texCoordIndex [ 0, 1, 2, 3, -1 ]
+        }
+      }
+
+      # Left (top face in your original ordering)
+      Shape {
+        appearance Appearance {
+          texture ImageTexture { url "../textures/robot_texture/left.png" }
+        }
+        geometry IndexedFaceSet {
+          coord Coordinate {
+            point [
+              0.1,  0.1, -0.1,
+             -0.1,  0.1, -0.1,
+             -0.1,  0.1,  0.1,
+              0.1,  0.1,  0.1
+            ]
+          }
+          texCoord TextureCoordinate {
+            point [ 0 0, 1 0, 1 1, 0 1 ]
+          }
+          coordIndex [ 0, 1, 2, 3, -1 ]
+          texCoordIndex [ 0, 1, 2, 3, -1 ]
+        }
+      }
+
+      # Right
+      Shape {
+        appearance Appearance {
+          texture ImageTexture { url "../textures/robot_texture/right.png" }
+        }
+        geometry IndexedFaceSet {
+          coord Coordinate {
+            point [
+             -0.1, -0.1, -0.1,
+              0.1, -0.1, -0.1,
+              0.1, -0.1,  0.1,
+             -0.1, -0.1,  0.1
+            ]
+          }
+          texCoord TextureCoordinate {
+            point [ 0 0, 1 0, 1 1, 0 1 ]
+          }
+          coordIndex [ 0, 1, 2, 3, -1 ]
+          texCoordIndex [ 0, 1, 2, 3, -1 ]
+        }
+      }
+
+    ]
+    boundingObject Box { size 0.2 0.2 0.2 }
+    # physics Physics { density 1250 }
+  }
+}
