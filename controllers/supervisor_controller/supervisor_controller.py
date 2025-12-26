@@ -7,7 +7,7 @@ import random
 import sys
 
 # ==== Initialization ====
-DEFAULT_VELOCITY = 1 # m/s
+DEFAULT_VELOCITY = 0.3 # m/s
 DEFAULT_ANGULAR_VELOCITY = 3  # rad/s
 supervisor = Supervisor()
 TIME_STEP = int(supervisor.getBasicTimeStep())
@@ -373,36 +373,25 @@ South = -math.pi / 2
 West = math.pi
 
 waypoints = [
-    # (0.8, 0.8, North),
-    # (0.8, -0.8, West),
-    # (-0.8, -0.8, South),
-    # (-0.8, 0.8, West),
-    (0.0, 0.0, None),
-    (0.8, 0.8, None),
-    (0.8, -0.8, None),
-    (-0.8, -0.8, None),
-    (-0.8, 0.8, None),
-    (0.0, 0.0, None),
-    (0.8, 0.8, None),
-    (0.8, -0.8, None),
-    (-0.8, -0.8, None),
-    (-0.8, 0.8, None),
-    (0.0, 0.0, None),
-    (0.8, 0.8, None),
-    (0.8, -0.8, None),
-    (-0.8, -0.8, None),
-    (-0.8, 0.8, None),
-    (0.0, 0.0, None),
-    (0.8, 0.8, None),
-    (0.8, -0.8, None),
-    (-0.8, -0.8, None),
-    (-0.8, 0.8, None),
-    (0.0, 0.0, None),
-    (0.8, 0.8, None),
-    (0.8, -0.8, None),
-    (-0.8, -0.8, None),
-    (-0.8, 0.8, None),
-    (0.0, 0.0, None),
+  (-0.85, 0.85, None),
+  (0.85, 0.75, None),
+  (-0.85, 0.65, None),
+  (0.85, 0.55, None),
+  (-0.85, 0.45, None),
+  (0.85, 0.35, None),
+  (-0.85, 0.25, None),
+  (0.85, 0.15, None),
+  (-0.85, 0.05, None),
+  (0.85, -0.05, None),
+  (-0.85, -0.15, None),
+  (0.85, -0.25, None),
+  (-0.85, -0.35, None),
+  (0.85, -0.45, None),
+  (-0.85, -0.55, None),
+  (0.85, -0.65, None),
+  (-0.85, -0.75, None),
+  (0.85, -0.85, None),
+  (-0.70,0, East),
 ]
 
 motion = MotionController(trans, rot_field, dt)
