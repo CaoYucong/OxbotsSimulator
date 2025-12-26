@@ -1,27 +1,26 @@
 #VRML_SIM R2025a utf8
+
 PROTO SteelBall [
-  field SFVec3f translation 0 0 0
-  field SFRotation rotation 0 1 0 0
-  field SFString solidName ""    # unique name for inner Solid
-] {
-  Transform {
+  field SFVec3f    translation  0 0 0
+  field SFRotation rotation     0 1 0 0
+  field SFString   robotName    "robot"
+]
+{
+  Robot {
+    name IS robotName
     translation IS translation
-    rotation IS rotation
+    rotation    IS rotation
+    controller "<none>"
     children [
-      Solid {
-        name IS solidName
-        children [
-          Shape {
-            appearance PBRAppearance {
-              baseColor 0.15 0.5 0.15
-              roughness 0.15
-            }
-            geometry Sphere { radius 0.01 }
-          }
-        ]
-        boundingObject Sphere { radius 0.01 }
-        physics Physics { density 7800 }
+      Shape {
+        appearance PBRAppearance {
+          baseColor 0.15 0.5 0.15
+          roughness 0.15
+        }
+        geometry Sphere { radius 0.01 }
       }
     ]
+    boundingObject Sphere { radius 0.01 }
+    physics Physics { density 7800 }
   }
 }

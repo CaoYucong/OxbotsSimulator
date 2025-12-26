@@ -9,13 +9,24 @@ Solid {
   children [
     Shape {
       appearance Appearance {
-        material Material { diffuseColor 1 1 1 }
+        material Material {
+          diffuseColor 1 1 1
+        }
+        texture ImageTexture {
+          url [
+            "../textures/arena_texture/floor.png"
+          ]
+        }
       }
-      geometry Box { size 2 2 0.02 }
+      geometry Box {
+        size 2 2 0.02
+      }
     }
   ]
   name "Floor"
-  boundingObject Box { size 2 2 0.02 }
+  boundingObject Box {
+    size 2 2 0.02
+  }
 }
 
 # North wall

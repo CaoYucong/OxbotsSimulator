@@ -5,14 +5,15 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 EXTERNPROTO "../protos/UnibotsArena.proto"
 EXTERNPROTO "../protos/AprilTagWall.proto"
 EXTERNPROTO "../protos/Cube-Robot.proto"
+EXTERNPROTO "../protos/SteelBall.proto"
 
 WorldInfo {
   basicTimeStep 4
   FPS 30
 }
 Viewpoint {
-  orientation -0.09944721947636631 -0.057133180468411454 0.9934012533855507 4.178839463434889
-  position 1.290373254451277 2.377954275159138 0.7127446877328099
+  orientation -0.5773502691896258 0.5773502691896258 0.5773502691896258 2.0944
+  position 5.481964787549356e-06 5.481980289076538e-06 4.7365221039606
 }
 TexturedBackground {
 }
@@ -31,161 +32,161 @@ Robot {
 }
 DEF BALL_0 PingBall {
   translation -0.375 -0.375 0.15
-  solidName "BALL_0_solid"
+  robotName "PINGBALL_0"
 }
 DEF BALL_1 PingBall {
   translation -0.375 -0.125 0.15
-  solidName "BALL_1_solid"
+  robotName "PINGBALL_1"
 }
 DEF BALL_2 PingBall {
   translation -0.375 0.125 0.15
-  solidName "BALL_2_solid"
+  robotName "PINGBALL_2"
 }
 DEF BALL_3 PingBall {
   translation -0.375 0.375 0.15
-  solidName "BALL_3_solid"
+  robotName "PINGBALL_3"
 }
 DEF BALL_4 PingBall {
   translation -0.125 -0.375 0.15
-  solidName "BALL_4_solid"
+  robotName "PINGBALL_4"
 }
 DEF BALL_5 PingBall {
   translation -0.125 -0.125 0.15
-  solidName "BALL_5_solid"
+  robotName "PINGBALL_5"
 }
 DEF BALL_6 PingBall {
   translation -0.125 0.125 0.15
-  solidName "BALL_6_solid"
+  robotName "PINGBALL_6"
 }
 DEF BALL_7 PingBall {
   translation -0.125 0.375 0.15
-  solidName "BALL_7_solid"
+  robotName "PINGBALL_7"
 }
 DEF BALL_8 PingBall {
   translation 0.125 -0.375 0.15
-  solidName "BALL_8_solid"
+  robotName "PINGBALL_8"
 }
 DEF BALL_9 PingBall {
   translation 0.125 -0.125 0.15
-  solidName "BALL_9_solid"
+  robotName "PINGBALL_9"
 }
 DEF BALL_10 PingBall {
   translation 0.125 0.125 0.15
-  solidName "BALL_10_solid"
+  robotName "PINGBALL_10"
 }
 DEF BALL_11 PingBall {
   translation 0.125 0.375 0.15
-  solidName "BALL_11_solid"
+  robotName "PINGBALL_11"
 }
 DEF BALL_12 PingBall {
   translation 0.375 -0.375 0.15
-  solidName "BALL_12_solid"
+  robotName "PINGBALL_12"
 }
 DEF BALL_13 PingBall {
   translation 0.375 -0.125 0.15
-  solidName "BALL_13_solid"
+  robotName "PINGBALL_13"
 }
 DEF BALL_14 PingBall {
   translation 0.375 0.125 0.15
-  solidName "BALL_14_solid"
+  robotName "PINGBALL_14"
 }
 DEF BALL_15 PingBall {
   translation 0.375 0.375 0.15
-  solidName "BALL_15_solid"
+  robotName "PINGBALL_15"
 }
 DEF BALL_16 SteelBall {
   translation -0.7 -0.6 0.15
-  solidName "BALL_16_solid"
+  robotName "STEELBALL_16"
 }
 DEF BALL_17 SteelBall {
   translation -0.42 -0.6 0.15
-  solidName "BALL_17_solid"
+  robotName "STEELBALL_17"
 }
 DEF BALL_18 SteelBall {
   translation -0.14 -0.6 0.15
-  solidName "BALL_18_solid"
+  robotName "STEELBALL_18"
 }
 DEF BALL_19 SteelBall {
   translation 0.14 -0.6 0.15
-  solidName "BALL_19_solid"
+  robotName "STEELBALL_19"
 }
 DEF BALL_20 SteelBall {
   translation 0.42 -0.6 0.15
-  solidName "BALL_20_solid"
+  robotName "STEELBALL_20"
 }
 DEF BALL_21 SteelBall {
   translation 0.7 -0.6 0.15
-  solidName "BALL_21_solid"
+  robotName "STEELBALL_21"
 }
 DEF BALL_22 SteelBall {
   translation -0.7 -0.2 0.15
-  solidName "BALL_22_solid"
+  robotName "STEELBALL_22"
 }
 DEF BALL_23 SteelBall {
   translation -0.42 -0.2 0.15
-  solidName "BALL_23_solid"
+  robotName "STEELBALL_23"
 }
 DEF BALL_24 SteelBall {
   translation -0.14 -0.2 0.15
-  solidName "BALL_24_solid"
+  robotName "STEELBALL_24"
 }
 DEF BALL_25 SteelBall {
   translation 0.14 -0.2 0.15
-  solidName "BALL_25_solid"
+  robotName "STEELBALL_25"
 }
 DEF BALL_26 SteelBall {
   translation 0.42 -0.2 0.15
-  solidName "BALL_26_solid"
+  robotName "STEELBALL_26"
 }
 DEF BALL_27 SteelBall {
   translation 0.7 -0.2 0.15
-  solidName "BALL_27_solid"
+  robotName "STEELBALL_27"
 }
 DEF BALL_28 SteelBall {
   translation -0.7 0.2 0.15
-  solidName "BALL_28_solid"
+  robotName "STEELBALL_28"
 }
 DEF BALL_29 SteelBall {
   translation -0.42 0.2 0.15
-  solidName "BALL_29_solid"
+  robotName "STEELBALL_29"
 }
 DEF BALL_30 SteelBall {
   translation -0.14 0.2 0.15
-  solidName "BALL_30_solid"
+  robotName "STEELBALL_30"
 }
 DEF BALL_31 SteelBall {
   translation 0.14 0.2 0.15
-  solidName "BALL_31_solid"
+  robotName "STEELBALL_31"
 }
 DEF BALL_32 SteelBall {
   translation 0.42 0.2 0.15
-  solidName "BALL_32_solid"
+  robotName "STEELBALL_32"
 }
 DEF BALL_33 SteelBall {
   translation 0.7 0.2 0.15
-  solidName "BALL_33_solid"
+  robotName "STEELBALL_33"
 }
 DEF BALL_34 SteelBall {
   translation -0.7 0.6 0.15
-  solidName "BALL_34_solid"
+  robotName "STEELBALL_34"
 }
 DEF BALL_35 SteelBall {
   translation -0.42 0.6 0.15
-  solidName "BALL_35_solid"
+  robotName "STEELBALL_35"
 }
 DEF BALL_36 SteelBall {
   translation -0.14 0.6 0.15
-  solidName "BALL_36_solid"
+  robotName "STEELBALL_36"
 }
 DEF BALL_37 SteelBall {
   translation 0.14 0.6 0.15
-  solidName "BALL_37_solid"
+  robotName "STEELBALL_37"
 }
 DEF BALL_38 SteelBall {
   translation 0.42 0.6 0.15
-  solidName "BALL_38_solid"
+  robotName "STEELBALL_38"
 }
 DEF BALL_39 SteelBall {
   translation 0.7 0.6 0.15
-  solidName "BALL_39_solid"
+  robotName "STEELBALL_39"
 }

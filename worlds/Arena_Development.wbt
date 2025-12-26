@@ -8,8 +8,8 @@ WorldInfo {
   basicTimeStep 8
 }
 Viewpoint {
-  orientation -0.2491773769210782 0.2516836525025189 0.9351823212046526 1.627782645773701
-  position -0.034403019083058074 -3.0881033710244914 1.7454788238793122
+  orientation -0.27813397355947367 0.2953453724267305 0.9140090829626005 1.600674312770402
+  position -0.17802106595984973 -2.967799633610116 1.9524210474917598
 }
 TexturedBackground {
 }
@@ -22,6 +22,11 @@ Solid {
       appearance Appearance {
         material Material {
           diffuseColor 1 1 1
+        }
+        texture ImageTexture {
+          url [
+            "../textures/arena_texture/floor.png"
+          ]
         }
       }
       geometry Box {
@@ -429,8 +434,6 @@ Solid {
     size 0.2 0.76 0.02
   }
 }
-
-# North Wall Apriltag
 AprilTag {
   textureFile [
     "../textures/tag36h11/tag36h11-0.png"
@@ -467,8 +470,6 @@ AprilTag {
   ]
   translation 0.85 1 0.075
 }
-
-# East Wall Apriltag
 AprilTag {
   textureFile [
     "../textures/tag36h11/tag36h11-6.png"
@@ -511,8 +512,6 @@ AprilTag {
   translation 1 -0.85 0.075
   rotation 0 0 1 1.5708
 }
-
-# South Wall Apriltag
 AprilTag {
   textureFile [
     "../textures/tag36h11/tag36h11-12.png"
@@ -549,8 +548,6 @@ AprilTag {
   ]
   translation 0.85 -1 0.075
 }
-
-# West Wall Apriltag
 AprilTag {
   textureFile [
     "../textures/tag36h11/tag36h11-18.png"
