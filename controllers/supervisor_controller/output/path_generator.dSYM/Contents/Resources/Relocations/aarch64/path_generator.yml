@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     '/Users/caoyucong/Desktop/Unibots/OxbotsSimulator/controllers/supervisor_controller/output/path_generator'
+relocations:     []
+...
