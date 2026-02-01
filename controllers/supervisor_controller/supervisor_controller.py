@@ -21,23 +21,27 @@ PING_STORED = 0
 STEEL_HIT = 0
 PING_HIT = 0
 
-# Ensure the world contains DEF MY_ROBOT
-robot = supervisor.getFromDef("MY_ROBOT")
-if robot is None:
-    print("ERROR: DEF MY_ROBOT not found in world.")
+# Get robot references
+MAIN_ROBOT_NAME = "MY_ROBOT"
+OBSTACLE_ROBOT_NAME = "OBSTACLE_ROBOT"
+
+main_robot = supervisor.getFromDef(MAIN_ROBOT_NAME)
+if main_robot is None:
+    print(f"ERROR: DEF {MAIN_ROBOT_NAME} not found in world.")
     sys.exit(1)
 
-trans = robot.getField("translation")
-rot_field = robot.getField("rotation")
+obstacle_robot = supervisor.getFromDef(OBSTACLE_ROBOT_NAME)
+# obstacle_robot is optional, will be None if not found
 
 # ==== Utility functions ====
 def _normalize_angle(a):
     """Normalize angle to [-pi, pi]"""
     return (a + math.pi) % (2 * math.pi) - math.pi
 
-# ==== Non-blocking MotionController (replacement for blocking move_to) ====
+# ==== Non-blocking MotionController ====
 class MotionController:
-    def __init__(self, trans_field, rot_field, dt):
+    """Controls robot motion with support for waypoint cycling"""
+    def __init__(self, trans_field, rot_field, dt, cycle_mode=False):
         self.trans = trans_field
         self.rot = rot_field
         self.dt = dt
@@ -52,6 +56,11 @@ class MotionController:
         self.direction = np.array([0.0, 0.0, 0.0])
         self.total_dist = 0.0
         self.traveled = 0.0
+        
+        # Cycle mode: automatically move to next waypoint in a list
+        self.cycle_mode = cycle_mode
+        self.waypoint_list = []
+        self.current_waypoint_index = 0
 
     def start(self, x, y, velocity=None, angle=None):
         """Start a motion task (non-blocking)"""
@@ -113,11 +122,66 @@ class MotionController:
             self.rot.setSFRotation([0, 0, 1, _normalize_angle(cur + sign * step_ang)])
             return False
 
+    def _complete_waypoint(self):
+        """Handle waypoint completion with cycle mode support"""
+        self.active = False
+        self.phase = None
+        if self.cycle_mode:
+            self.start_next_waypoint()
+
+    def cancel(self):
+        self.active = False
+        self.phase = None
+
+    def load_waypoint_list(self, waypoint_list):
+        """Load a list of waypoints for cycle mode"""
+        self.waypoint_list = waypoint_list
+        self.current_waypoint_index = 0
+        if self.waypoint_list:
+            self.start_next_waypoint()
+
+    def start_next_waypoint(self):
+        """Move to the next waypoint in the list (cycles if at end)"""
+        if not self.waypoint_list:
+            self.active = False
+            return
+        
+        wp = self.waypoint_list[self.current_waypoint_index]
+        x, y = wp[0], wp[1]
+        angle = wp[2] if len(wp) > 2 else None
+        
+        self.start(x, y, velocity=None, angle=angle)
+        self.current_waypoint_index = (self.current_waypoint_index + 1) % len(self.waypoint_list)
+
+    def update(self):
+        """Called each frame to advance motion; returns True if the task is completed or idle"""
+        if not self.active:
+            return True
+
+        cur_pos = np.array(self.trans.getSFVec3f(), dtype=float)
+        step_dist = self.velocity * self.dt
+
+        # helper: single-step rotate towards target_ang
+        def step_rotate_towards(target_ang):
+            cur = _normalize_angle(self.rot.getSFRotation()[3])
+            rem = _normalize_angle(target_ang - cur)
+            if abs(rem) <= 1e-3:
+                self.rot.setSFRotation([0, 0, 1, target_ang])
+                return True
+            max_step = self.angular_speed * self.dt
+            step_ang = max_step if abs(rem) > max_step else abs(rem)
+            sign = 1.0 if rem > 0 else -1.0
+            self.rot.setSFRotation([0, 0, 1, _normalize_angle(cur + sign * step_ang)])
+            return False
+
         if self.phase == 'rotate_only':
             done = step_rotate_towards(self.target_angle)
             if done:
                 self.active = False
                 self.phase = None
+                # In cycle mode, start next waypoint after reaching this one
+                if self.cycle_mode:
+                    self.start_next_waypoint()
                 return True
             return False
 
@@ -130,6 +194,9 @@ class MotionController:
                 self.trans.setSFVec3f(self.target_pos.tolist())
                 self.active = False
                 self.phase = None
+                # In cycle mode, start next waypoint after reaching this one
+                if self.cycle_mode:
+                    self.start_next_waypoint()
                 return True
             new_pos = cur_pos + self.direction * step_dist
             self.trans.setSFVec3f(new_pos.tolist())
@@ -142,6 +209,9 @@ class MotionController:
                 self.rot.setSFRotation([0, 0, 1, self.target_angle])
                 self.active = False
                 self.phase = None
+                # In cycle mode, start next waypoint after reaching this one
+                if self.cycle_mode:
+                    self.start_next_waypoint()
                 return True
             # Position update
             new_pos = cur_pos + self.direction * step_dist
@@ -154,10 +224,6 @@ class MotionController:
             return False
 
         return True
-
-    def cancel(self):
-        self.active = False
-        self.phase = None
 
 # ==== Randomize balls (start) ====
 BALL_PREFIX = "BALL_"
@@ -263,7 +329,6 @@ def randomize_balls(seed=None, ensure_no_overlap=True):
 # ==== Simplified absorption monitoring (per-frame simple box check) ====
 ABSORB_BOX_HALF_X = 0.12   # robot-local x half-width
 ABSORB_BOX_HALF_Y = 0.05   # robot-local y half-width
-ABSORB_DISTANCE = 0  # robot-local absorption distance threshold
 ABSORB_LOCATION = (-1.1, 0.0, 0.4)
 
 # Only record whether absorbed to avoid duplicate absorption
@@ -288,6 +353,12 @@ def monitor_simple_step(ball_prefix="BALL_", ball_count=40, half_x=ABSORB_BOX_HA
     Type detection: make a single attempt to read the proto/name (getProtoName),
     if the proto name contains "steel" it is considered 'steel', otherwise 'ping' by default.
     """
+    _monitor_absorption_for_robot(main_robot, ball_prefix, ball_count, half_x, half_y, absorb_location)
+
+def _monitor_absorption_for_robot(robot, ball_prefix="BALL_", ball_count=40, half_x=ABSORB_BOX_HALF_X, half_y=ABSORB_BOX_HALF_Y, absorb_location=ABSORB_LOCATION):
+    """
+    Generic absorption check for any robot.
+    """
     global PING_STORED, STEEL_STORED
     # Read robot current position (world coordinates)
     robot_pos = np.array(robot.getField("translation").getSFVec3f(), dtype=float)
@@ -295,8 +366,6 @@ def monitor_simple_step(ball_prefix="BALL_", ball_count=40, half_x=ABSORB_BOX_HA
     # Use the original rotation handling (assumes rotation around z axis based on angle)
     robor_rot = np.array(robot.getField("rotation").getSFRotation())
     rangle = float(robor_rot[3])
-
-    min_distance = 2
 
     for i in range(ball_count):
         name = f"{ball_prefix}{i}"
@@ -317,8 +386,6 @@ def monitor_simple_step(ball_prefix="BALL_", ball_count=40, half_x=ABSORB_BOX_HA
         # Read position
         pos = node.getField("translation").getSFVec3f()
         bx, by = float(pos[0]), float(pos[1])
-        temp_distance = math.sqrt((bx - rx)**2 + (by - ry)**2)
-        min_distance = min(min_distance, temp_distance)
 
         # World -> robot coordinate transform (2D, assuming rotation around z axis)
         x_rel = bx - rx
@@ -357,11 +424,7 @@ def monitor_simple_step(ball_prefix="BALL_", ball_count=40, half_x=ABSORB_BOX_HA
                 pass
             ball_simple_state[name]["absorbed"] = True
             SCORE = PING_HIT * 4 + STEEL_HIT * 2 + STEEL_STORED * 1
-            # print(f"[monitor_simple] absorbed {name} type={ball_type} at x={x_ball_robot:.3f}, y={y_ball_robot:.3f}, distance={temp_distance:.3f} -> moved to {absorb_location}")
             print(f"Score: {SCORE} | Ping Hit: {PING_HIT} | Steel Hit: {STEEL_HIT} | Steel Stored: {STEEL_STORED} | Ping Stored: {PING_STORED}")
-
-
-    # print(f"[monitor_simple] min_distance to balls: {min_distance:.3f}")
 
 import random, math, numpy as np
 
@@ -384,6 +447,7 @@ WAYPOINT_STATUS_FILE = os.path.join(os.path.dirname(__file__), "waypoint_status.
 BALL_POS_FILE = os.path.join(os.path.dirname(__file__), "ball_position.txt")
 CURRENT_POSITION_FILE = os.path.join(os.path.dirname(__file__), "current_position.txt")
 TIME_FILE = os.path.join(os.path.dirname(__file__), "time.txt")
+OBSTACLE_PLAN_FILE = os.path.join(os.path.dirname(__file__), "obstacle_plan.txt")
 
 def _load_dynamic_waypoint(path):
     """Load a single waypoint from dynamic_waypoints.txt (read-only).
@@ -442,12 +506,52 @@ def _append_to_history(path, waypoint, status, timestamp=None):
     with open(path, 'a') as f:
         f.write(record)
 
+def _load_waypoint_list_from_file(path):
+    """Load multiple waypoints from a file (for obstacle robot cycling).
+    Returns a list of (x, y, angle) tuples, or empty list if file doesn't exist.
+    """
+    namespace = {"North": North, "East": East, "South": South, "West": West, "None": None}
+    waypoints = []
+    try:
+        with open(path, 'r') as f:
+            for raw in f:
+                line = raw.split('#', 1)[0].strip()
+                if not line:
+                    continue
+                if line.endswith(','):
+                    line = line[:-1].strip()
+                try:
+                    wp = eval(line, {"__builtins__": None}, namespace)
+                except Exception:
+                    nums = re.findall(r'[-+]?[0-9]*\.?[0-9]+', line)
+                    if len(nums) >= 2:
+                        x = float(nums[0]); y = float(nums[1])
+                        ang = float(nums[2]) if len(nums) >= 3 else None
+                        wp = (x, y, ang)
+                    else:
+                        continue
+                
+                if isinstance(wp, tuple) and len(wp) >= 2:
+                    if len(wp) == 2:
+                        wp = (float(wp[0]), float(wp[1]), None)
+                    else:
+                        ang = wp[2]
+                        ang = float(ang) if ang is not None else None
+                        wp = (float(wp[0]), float(wp[1]), ang)
+                    waypoints.append(wp)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[load_waypoint_list] Error loading {path}: {e}")
+    
+    return waypoints
+
 def _append_history_header(path):
     """Append a new session header to waypoints_history.txt with current timestamp.
     Called once at program startup.
     """
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    header = f"\n# Waypoint History - Started at {timestamp}\n"
+    header = f"\n# Waypoint History - Started at {timestamp} - Random Seed {RANDOM_SEED}\n"
     with open(path, 'a') as f:
         f.write(header)
 
@@ -479,7 +583,7 @@ def _write_ball_positions(path):
                 except Exception:
                     continue
                 # Skip balls with x < -1.0
-                if x < -1.0:
+                if x < -1.0 or x > 1.0 or y < -1.0 or y > 1.0:
                     continue
                 # Determine type: map 'steel' -> 'metal', else 'ping'
                 typ = 'ping'
@@ -501,10 +605,10 @@ def _write_ball_positions(path):
 
 
 def _write_current_position(path):
-    """Write robot's current position (x, y) to file — overwrite atomically."""
+    """Write main robot's current position (x, y) to file — overwrite atomically."""
     try:
         tmp = path + '.tmp'
-        pos = robot.getField("translation").getSFVec3f()
+        pos = main_robot.getField("translation").getSFVec3f()
         x, y = float(pos[0]), float(pos[1])
         with open(tmp, 'w') as f:
             f.write(f"({x:.6f}, {y:.6f})\n")
@@ -531,12 +635,31 @@ def _write_webots_time(path):
         except Exception:
             pass
 
-motion = MotionController(trans, rot_field, dt)
+# ==== Initialize robots ====
+# Main robot: single waypoint navigation from dynamic_waypoints.txt
+main_trans = main_robot.getField("translation")
+main_rot = main_robot.getField("rotation")
+main_motion = MotionController(main_trans, main_rot, dt, cycle_mode=False)
+
+# Obstacle robot: cycle through waypoints from obstacle_plan.txt (optional)
+obstacle_motion = None
+if obstacle_robot is not None:
+    obs_trans = obstacle_robot.getField("translation")
+    obs_rot = obstacle_robot.getField("rotation")
+    obstacle_motion = MotionController(obs_trans, obs_rot, dt, cycle_mode=True)
+    # Load obstacle waypoints
+    obstacle_waypoints = _load_waypoint_list_from_file(OBSTACLE_PLAN_FILE)
+    if obstacle_waypoints:
+        obstacle_motion.load_waypoint_list(obstacle_waypoints)
+        print(f"Loaded {len(obstacle_waypoints)} waypoints for obstacle robot from {OBSTACLE_PLAN_FILE}")
+    else:
+        print(f"WARNING: No waypoints loaded for obstacle robot from {OBSTACLE_PLAN_FILE}")
+        obstacle_motion = None
 
 # Initialize waypoints history with new session header
 _append_history_header(WAYPOINTS_HISTORY_FILE)
 
-# Load initial dynamic waypoint
+# Load initial dynamic waypoint for main robot
 current_waypoint = _load_dynamic_waypoint(DYNAMIC_WAYPOINTS_FILE)
 last_dynamic_waypoint = current_waypoint
 last_waypoint_mtime = None
@@ -547,7 +670,7 @@ except Exception:
 
 if current_waypoint is not None:
     x, y, ang = current_waypoint
-    motion.start(x, y, velocity=None, angle=ang)
+    main_motion.start(x, y, velocity=None, angle=ang)
 
 # Cruise script execution parameters
 CRUISE_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "waypoints_cruise.py")
@@ -556,6 +679,7 @@ frame_counter = 0
 
 # Non-blocking main loop
 while supervisor.step(TIME_STEP) != -1:
+    # ==== Update main robot (single waypoint navigation) ====
     # Check if dynamic_waypoints.txt has changed
     try:
         mtime = os.path.getmtime(DYNAMIC_WAYPOINTS_FILE)
@@ -571,14 +695,18 @@ while supervisor.step(TIME_STEP) != -1:
             current_waypoint = new_waypoint
             last_dynamic_waypoint = new_waypoint
             x, y, ang = current_waypoint
-            motion.start(x, y, velocity=None, angle=ang)
+            main_motion.start(x, y, velocity=None, angle=ang)
         last_waypoint_mtime = mtime
     
-    # 1) Advance motion (non-blocking)
-    motion.update()
+    # 1) Advance main robot motion (non-blocking)
+    main_motion.update()
+    
+    # 1.2) Advance obstacle robot motion (if exists)
+    if obstacle_motion is not None:
+        obstacle_motion.update()
     
     # 1.5) Update real-time status file
-    _update_status_file(WAYPOINT_STATUS_FILE, motion.active, current_waypoint is not None)
+    _update_status_file(WAYPOINT_STATUS_FILE, main_motion.active, current_waypoint is not None)
     
     # 1.6) Execute cruise script at intervals
     frame_counter += 1
@@ -588,8 +716,12 @@ while supervisor.step(TIME_STEP) != -1:
         except Exception as e:
             print(f"[Cruise] Error running waypoints_cruise.py: {e}")
 
-    # 2) Call simplified absorption check each frame
+    # 2) Call absorption check for main robot
     monitor_simple_step(ball_prefix=BALL_PREFIX, ball_count=BALL_COUNT, half_x=ABSORB_BOX_HALF_X, half_y=ABSORB_BOX_HALF_Y, absorb_location=ABSORB_LOCATION)
+
+    # 2.1) Call absorption check for obstacle robot (if exists)
+    if obstacle_robot is not None:
+        _monitor_absorption_for_robot(obstacle_robot, ball_prefix=BALL_PREFIX, ball_count=BALL_COUNT, half_x=ABSORB_BOX_HALF_X, half_y=ABSORB_BOX_HALF_Y, absorb_location=(1.1, 0.0, 0.4))
 
     # 2.5) Write per-frame ball positions to file
     _write_ball_positions(BALL_POS_FILE)
@@ -600,8 +732,8 @@ while supervisor.step(TIME_STEP) != -1:
     # 2.7) Write Webots simulator time to file
     _write_webots_time(TIME_FILE)
 
-    # 3) If motion completed, record as 'reached' and wait for next dynamic waypoint
-    if not motion.active and current_waypoint is not None:
+    # 3) If main robot motion completed, record as 'reached' and wait for next dynamic waypoint
+    if not main_motion.active and current_waypoint is not None:
         _append_to_history(WAYPOINTS_HISTORY_FILE, current_waypoint, "reached")
         current_waypoint = None
 

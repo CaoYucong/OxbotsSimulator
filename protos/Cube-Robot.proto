@@ -3,6 +3,12 @@
 PROTO Cube-Robot [
   field SFVec3f    translation    -0.9 0 0.1
   field SFRotation rotation       0 0 1 0
+  field MFString   topTextureUrl     "../textures/robot_texture/top.png"
+  field MFString   bottomTextureUrl  "../textures/robot_texture/bottom.png"
+  field MFString   backTextureUrl    "../textures/robot_texture/back.png"
+  field MFString   frontTextureUrl   "../textures/robot_texture/front.png"
+  field MFString   leftTextureUrl    "../textures/robot_texture/left.png"
+  field MFString   rightTextureUrl   "../textures/robot_texture/right.png"
 ]
 {
   Robot {
@@ -13,7 +19,7 @@ PROTO Cube-Robot [
       # Top
       Shape {
         appearance Appearance {
-          texture ImageTexture { url "../textures/robot_texture/top.png" }
+          texture ImageTexture { url IS topTextureUrl }
         }
         geometry IndexedFaceSet {
           coord Coordinate {
@@ -35,7 +41,7 @@ PROTO Cube-Robot [
       # Bottom
       Shape {
         appearance Appearance {
-          texture ImageTexture { url "../textures/robot_texture/bottom.png" }
+          texture ImageTexture { url IS bottomTextureUrl }
         }
         geometry IndexedFaceSet {
           coord Coordinate {
@@ -57,7 +63,7 @@ PROTO Cube-Robot [
       # Back (left face in your original ordering)
       Shape {
         appearance Appearance {
-          texture ImageTexture { url "../textures/robot_texture/back.png" }
+          texture ImageTexture { url IS backTextureUrl }
         }
         geometry IndexedFaceSet {
           coord Coordinate {
@@ -79,7 +85,7 @@ PROTO Cube-Robot [
       # Front
       Shape {
         appearance Appearance {
-          texture ImageTexture { url "../textures/robot_texture/front.png" }
+          texture ImageTexture { url IS frontTextureUrl }
         }
         geometry IndexedFaceSet {
           coord Coordinate {
@@ -101,7 +107,7 @@ PROTO Cube-Robot [
       # Left (top face in your original ordering)
       Shape {
         appearance Appearance {
-          texture ImageTexture { url "../textures/robot_texture/left.png" }
+          texture ImageTexture { url IS leftTextureUrl }
         }
         geometry IndexedFaceSet {
           coord Coordinate {
@@ -123,7 +129,7 @@ PROTO Cube-Robot [
       # Right
       Shape {
         appearance Appearance {
-          texture ImageTexture { url "../textures/robot_texture/right.png" }
+          texture ImageTexture { url IS rightTextureUrl }
         }
         geometry IndexedFaceSet {
           coord Coordinate {
