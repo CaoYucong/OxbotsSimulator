@@ -1,0 +1,110 @@
+File Structure - Unibots Web Visualization System
+
+NEW FILES CREATED (10 files):
+
+=== CORE PROGRAM FILES (3) ===
+1. web_server.py                  Flask backend server (4.4K)
+2. templates/visualization.html   Frontend webpage (15K)
+3. launch_with_visualization.py   Python startup script (4.1K)
+
+=== STARTUP SCRIPTS (2) ===
+1. launch_with_visualization.py   One-click startup (Python)
+2. start_visualization.sh         One-click startup (Shell)
+
+=== TEST TOOLS (1) ===
+1. test_visualization.py          Data reading test (1.5K)
+
+=== DOCUMENTATION (5) ===
+1. README_VISUALIZATION.md        Summary (recommended first) (7.7K)
+2. QUICK_START.md                 Quick start guide (6.3K)
+3. INSTALLATION_SUMMARY.md        Installation summary (6.4K)
+4. VISUALIZATION_README.md        Technical details (3.7K)
+5. DEPLOYMENT_GUIDE.md            Deployment guide (8.5K)
+
+=====================================================
+
+COMPLETE DIRECTORY STRUCTURE:
+
+controllers/supervisor_controller/
+|
++-- web_server.py                 Flask web server
++-- launch_with_visualization.py  Python startup script
++-- start_visualization.sh        Shell startup script
++-- test_visualization.py         Test script
+|
++-- templates/
+    +-- visualization.html        Web frontend
+|
++-- README_VISUALIZATION.md       Documentation
++-- QUICK_START.md               Documentation
++-- INSTALLATION_SUMMARY.md      Documentation
++-- VISUALIZATION_README.md      Documentation
++-- DEPLOYMENT_GUIDE.md          Documentation
++-- _FILE_STRUCTURE.txt          This file
+|
++-- supervisor_controller.py      Original simulator controller
++-- waypoints_cruise.py          Original file
++-- waypoints.txt                Original file
+|
++-- ball_position.txt            Generated at runtime
++-- current_position.txt         Generated at runtime
++-- time.txt                     Generated at runtime
++-- waypoint_status.txt          Generated at runtime
+|
++-- ... (other original files)
+
+=====================================================
+
+QUICK START:
+
+1. Install dependencies:
+   pip install flask numpy
+
+2. Start web server:
+   python3 launch_with_visualization.py
+
+3. Open browser:
+   http://localhost:5000
+
+4. Start Webots simulator
+   The webpage will automatically update with live data!
+
+=====================================================
+
+RECOMMENDED READING ORDER:
+
+1. README_VISUALIZATION.md     - Overview and features
+2. QUICK_START.md              - Quick start guide
+3. DEPLOYMENT_GUIDE.md         - Detailed deployment
+4. VISUALIZATION_README.md     - Technical details
+
+=====================================================
+
+KEY FEATURES:
+
+✓ Real-time visualization (updated every 500ms)
+✓ Arena top-down view (Canvas drawing)
+✓ Live statistics and scoring
+✓ Robot position tracking
+✓ Ball position tracking
+✓ One-click startup scripts
+✓ REST API interface
+✓ Beautiful responsive design
+
+=====================================================
+
+DATA FILES:
+
+ball_position.txt       - Ball positions and types
+current_position.txt    - Main robot position
+time.txt               - Simulation time
+waypoint_status.txt    - Robot status
+
+=====================================================
+
+ALL FILES READY TO USE!
+
+Start immediately with:
+  python3 launch_with_visualization.py
+
+Then visit: http://localhost:5000

@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unibots 实时可视化</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .right-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        @media (max-width: 1200px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+            .right-column {
+                flex-direction: column;
+            }
+        }
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            padding: 25px;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 48px rgba(0,0,0,0.15);
+        }
+        
+        .card h2 {
+            margin-bottom: 20px;
+            color: #667eea;
+            font-size: 1.5em;
+        }
+        
+        .canvas-container {
+            position: relative;
+            background: #f8f9fa;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 1;
+            max-width: 100%;
+        }
+        
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+        
+        .stat-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 2.2em;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .info-item {
+            background: #f0f4ff;
+            padding: 15px;
+            border-left: 4px solid #667eea;
+            border-radius: 4px;
+        }
+        
+        .info-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+        
+        .info-value {
+            font-size: 1.3em;
+            color: #667eea;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .legend {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid #ddd;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.active {
+            background-color: #4CAF50;
+        }
+        
+        .status-indicator.idle {
+            background-color: #FFC107;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .refresh-info {
+            text-align: center;
+            margin-top: 20px;
+            padding: 10px;
+            background: #f0f4ff;
+            border-radius: 8px;
+            color: #667eea;
+            font-size: 0.9em;
+        }
+        
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #c62828;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Unibots 模拟器实时可视化</h1>
+            <p>实时监测机器人和球的位置</p>
+        </div>
+        
+        <div class="main-grid">
+            <!-- 竞技场可视化 -->
+            <div class="card">
+                <h2>📍 竞技场俯视图</h2>
+                <div class="canvas-container">
+                    <canvas id="arenaCanvas" width="600" height="600"></canvas>
+                </div>
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #667eea;"></div>
+                        <span>主机器人</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #FF6B6B;"></div>
+                        <span>Ping 球</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #FFD93D;"></div>
+                        <span>金属球</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #999;"></div>
+                        <span>障碍物</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 右边列：详细信息和实时统计 -->
+            <div class="right-column">
+                <!-- 详细信息 -->
+                <div class="card">
+                    <h2>ℹ️ 详细信息</h2>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">主机器人位置 (X, Y)</div>
+                            <div class="info-value" id="robot-pos">(--, --)</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">机器人状态</div>
+                            <div class="info-value">
+                                <span class="status-indicator idle" id="status-light"></span>
+                                <span id="robot-status">待命</span>
+                            </div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">竞技场内的球</div>
+                            <div class="info-value" id="ball-count">0</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Ping 球数量</div>
+                            <div class="info-value" id="ping-count">0</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">金属球数量</div>
+                            <div class="info-value" id="metal-count">0</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">数据更新频率</div>
+                            <div class="info-value">500ms</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 实时统计 -->
+                <div class="card">
+                    <h2>📊 实时统计</h2>
+                    <div class="stats-grid">
+                        <div class="stat-box">
+                            <div class="stat-label">总分数</div>
+                            <div class="stat-value" id="score">0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Ping 收集</div>
+                            <div class="stat-value" id="ping-stored">0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">金属收集</div>
+                            <div class="stat-value" id="steel-stored">0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">模拟时间 (s)</div>
+                            <div class="stat-value" id="sim-time">0.0</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="refresh-info">
+            ✅ 实时数据更新中... (每 500ms 刷新一次) | 最后更新: <span id="last-update">--:--:--</span>
+        </div>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('arenaCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // 获取设备像素比
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = 600 * dpr;
+        canvas.height = 600 * dpr;
+        ctx.scale(dpr, dpr);
+        
+        const CANVAS_WIDTH = 600;
+        const CANVAS_HEIGHT = 600;
+        
+        let arenaData = {
+            x_min: -0.86,
+            x_max: 0.86,
+            y_min: -0.86,
+            y_max: 0.86
+        };
+        
+        // 世界坐标转画布坐标
+        function worldToCanvas(x, y) {
+            const cx = ((x - arenaData.x_min) / (arenaData.x_max - arenaData.x_min)) * CANVAS_WIDTH;
+            const cy = ((arenaData.y_max - y) / (arenaData.y_max - arenaData.y_min)) * CANVAS_HEIGHT;
+            return { cx, cy };
+        }
+        
+        // 绘制竞技场
+        function drawArena() {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            
+            // 网格
+            ctx.strokeStyle = '#f0f0f0';
+            ctx.lineWidth = 0.5;
+            for (let i = 0; i <= 10; i++) {
+                const x = (i / 10) * CANVAS_WIDTH;
+                const y = (i / 10) * CANVAS_HEIGHT;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, CANVAS_HEIGHT);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(CANVAS_WIDTH, y);
+                ctx.stroke();
+            }
+        }
+        
+        // 绘制球
+        function drawBalls(balls) {
+            balls.forEach(ball => {
+                const { cx, cy } = worldToCanvas(ball.x, ball.y);
+                const radius = 5;
+                
+                ctx.fillStyle = ball.type === 'metal' ? '#FFD93D' : '#FF6B6B';
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+                ctx.fill();
+                
+                ctx.strokeStyle = '#333';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            });
+        }
+        
+        // 绘制机器人
+        function drawRobot(robot) {
+            const { cx, cy } = worldToCanvas(robot.x, robot.y);
+            const robotSize = 12;
+            
+            // 机器人主体
+            ctx.fillStyle = '#667eea';
+            ctx.beginPath();
+            ctx.arc(cx, cy, robotSize, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // 描边
+            ctx.strokeStyle = '#4c51bf';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // 方向指示
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(cx + 8, cy, 3, 0, 2 * Math.PI);
+            ctx.fill();
+        }
+        
+        // 更新数据
+        async function updateData() {
+            try {
+                const response = await fetch('/api/data');
+                const data = await response.json();
+                
+                if (data.balls === undefined) {
+                    console.error('Invalid data format');
+                    return;
+                }
+                
+                // 绘制竞技场
+                drawArena();
+                
+                // 绘制球
+                drawBalls(data.balls);
+                
+                // 绘制机器人
+                drawRobot(data.robot);
+                
+                // 更新统计信息
+                document.getElementById('score').textContent = data.scores.score || 0;
+                document.getElementById('ping-stored').textContent = data.scores.ping_stored || 0;
+                document.getElementById('steel-stored').textContent = data.scores.steel_stored || 0;
+                document.getElementById('sim-time').textContent = data.time.toFixed(2);
+                
+                // 更新机器人位置
+                document.getElementById('robot-pos').textContent = 
+                    `(${data.robot.x.toFixed(3)}, ${data.robot.y.toFixed(3)})`;
+                
+                // 更新状态
+                const isActive = data.status === 'going';
+                document.getElementById('robot-status').textContent = isActive ? '运动中' : '待命';
+                document.getElementById('status-light').className = 
+                    `status-indicator ${isActive ? 'active' : 'idle'}`;
+                
+                // 更新球计数
+                const ballCount = data.balls.length;
+                const pingCount = data.balls.filter(b => b.type === 'ping').length;
+                const metalCount = data.balls.filter(b => b.type === 'metal').length;
+                
+                document.getElementById('ball-count').textContent = ballCount;
+                document.getElementById('ping-count').textContent = pingCount;
+                document.getElementById('metal-count').textContent = metalCount;
+                
+                // 更新最后更新时间
+                const now = new Date();
+                document.getElementById('last-update').textContent = 
+                    `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+                
+            } catch (error) {
+                console.error('Error fetching data:', error);
+            }
+        }
+        
+        // 初始化
+        updateData();
+        
+        // 每 500ms 更新一次
+        setInterval(updateData, 500);
+    </script>
+</body>
+</html>
