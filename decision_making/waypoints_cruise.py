@@ -22,6 +22,8 @@ import os
 import random
 import time
 import sys
+import math
+import re
 from typing import Optional
 
 
@@ -34,11 +36,13 @@ OBSTACLE_ROBOT_FILE = os.path.join(BASE_DIR, "obstacle_robot.txt")
 TIME_FILE = os.path.join(BASE_DIR, "time.txt")
 SPEED_FILE = os.path.join(BASE_DIR, "speed.txt")
 VISIBLE_BALLS_FILE = os.path.join(BASE_DIR, "visible_balls.txt")
+PLANNED_WAYPOINTS_FILE = os.path.join(BASE_DIR, "planned_waypoints.txt")
+PLANNED_INDEX_FILE = os.path.join(BASE_DIR, "planned_waypoints_index.txt")
 
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
 # or `MODE` environment variable is provided. Example: 'random', 'nearest', 'improved_nearest' or 'developing'.
-DEFAULT_MODE = 'improved_nearest'
+DEFAULT_MODE = 'planned'
 
 # generation bounds (match supervisor playground bounds)
 X_MIN, X_MAX = -0.86, 0.86
@@ -157,6 +161,56 @@ def _read_time_seconds(path: str) -> Optional[float]:
             return float(raw)
     except Exception:
         return None
+
+
+def _read_planned_waypoints(path: str):
+    """Return list of (x, y, angle_or_none) from planned_waypoints.txt."""
+    namespace = {"North": math.pi / 2, "East": 0.0, "South": -math.pi / 2, "West": math.pi, "None": None}
+    out = []
+    try:
+        with open(path, "r") as f:
+            for raw in f:
+                line = raw.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                if line.endswith(","):
+                    line = line[:-1].strip()
+                try:
+                    wp = eval(line, {"__builtins__": None}, namespace)
+                except Exception:
+                    nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
+                    if len(nums) >= 2:
+                        x = float(nums[0])
+                        y = float(nums[1])
+                        ang = float(nums[2]) if len(nums) >= 3 else None
+                        wp = (x, y, ang)
+                    else:
+                        continue
+                if isinstance(wp, tuple) and len(wp) >= 2:
+                    if len(wp) == 2:
+                        out.append((float(wp[0]), float(wp[1]), None))
+                    else:
+                        ang = wp[2]
+                        ang = float(ang) if ang is not None else None
+                        out.append((float(wp[0]), float(wp[1]), ang))
+    except Exception:
+        return []
+    return out
+
+
+def _read_planned_index(path: str) -> Optional[int]:
+    try:
+        with open(path, "r") as f:
+            raw = f.read().strip()
+            if not raw:
+                return None
+            return int(raw)
+    except Exception:
+        return None
+
+
+def _write_planned_index(path: str, index: int) -> bool:
+    return _atomic_write(path, f"{int(index)}\n")
     
 
 def goto(x: float, y: float, orientation=None) -> bool:
@@ -170,16 +224,71 @@ def goto(x: float, y: float, orientation=None) -> bool:
     Returns:
         True on success, False on failure
     """
+
     if orientation is None:
         coord_line = f"({x:.6f}, {y:.6f}, None)\n"
-        if abs(x) > 0.85 or abs(y) > 0.85:
-            print(f"[waypoints_cruise] debug: waypoint ({x:.3f}, {y:.3f}) triggered close to boundary warning", file=sys.stderr)
-            
     else:
         orientation_rad = orientation * 3.141592653589793 / 180.0  # Convert degrees to radians
         coord_line = f"({x:.6f}, {y:.6f}, {orientation_rad:.6f})\n"
+
+    cur = _read_current_position(CURRENT_POSITION_FILE)
+    if cur is not None:
+        cur_x, cur_y, cur_bearing = cur
+        critical_alpha = None
+        if abs(cur_x) > 0.85 or abs(cur_y) > 0.85:
+            if cur_x < -0.86:
+                critical_alpha = 45.0 - math.degrees(math.acos((cur_x + 1.0) / (0.1 * math.sqrt(2.0))))
+            if cur_x > 0.86:
+                critical_alpha = 45.0 - math.degrees(math.acos((-cur_x + 1.0) / (0.1 * math.sqrt(2.0))))
+            if cur_y < -0.86:
+                critical_alpha = 45.0 - math.degrees(math.acos((cur_y + 1.0) / (0.1 * math.sqrt(2.0))))
+            if cur_y > 0.86:
+                critical_alpha = 45.0 - math.degrees(math.acos((-cur_y + 1.0) / (0.1 * math.sqrt(2.0))))
+
+        if critical_alpha is not None and cur_bearing is not None:
+            alpha = 0.8 * critical_alpha
+            cur_deg = cur_bearing % 360.0
+
+            def _in_interval(value, start, end):
+                if start <= end:
+                    return start <= value <= end
+                return value >= start or value <= end
+
+            centers = [0.0, 90.0, 180.0, 270.0]
+            in_allowed = False
+            boundaries = []
+            for center in centers:
+                start = (center - alpha) % 360.0
+                end = (center + alpha) % 360.0
+                boundaries.append(start)
+                boundaries.append(end)
+                if _in_interval(cur_deg, start, end):
+                    in_allowed = True
+            if not in_allowed:
+                best_boundary = None
+                best_dist = None
+                for boundary in boundaries:
+                    diff = abs(cur_deg - boundary) % 360.0
+                    dist = min(diff, 360.0 - diff)
+                    if best_dist is None or dist < best_dist:
+                        best_dist = dist
+                        best_boundary = boundary
+                if best_boundary is not None:
+                    orientation_rad = math.radians(best_boundary)
+                    coord_line = f"({x:.6f}, {y:.6f}, {orientation_rad:.6f})\n"
     
     return _atomic_write(DYNAMIC_WAYPOINTS_FILE, coord_line)
+
+
+def stop() -> bool:
+    """Stop by setting dynamic waypoint to current robot position."""
+    cur = _read_current_position(CURRENT_POSITION_FILE)
+    if cur is None:
+        return False
+    x, y, bearing = cur
+    if bearing is None:
+        return goto(x, y)
+    return goto(x, y, bearing)
 
 
 def set_velocity(velocity: float) -> bool:
@@ -265,6 +374,7 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
         return 0
     bx = _read_visible_ball_positions(visible_balls_file)
     if not bx:
+        stop()
         return 0
 
     cx, cy, _ = cur
@@ -286,6 +396,37 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
 
     ok = goto(best[0], best[1])
     return 0 if ok else 1
+
+
+def mode_planned(status_file: str = WAYPOINT_STATUS_FILE,
+                 planned_file: str = PLANNED_WAYPOINTS_FILE,
+                 index_file: str = PLANNED_INDEX_FILE) -> int:
+    """Planned mode: cycle through planned_waypoints.txt in order."""
+    waypoints = _read_planned_waypoints(planned_file)
+    if not waypoints:
+        return 0
+
+    status = _read_status(status_file)
+    index = _read_planned_index(index_file)
+    index_missing = index is None
+    if index is None:
+        index = 0
+
+    if index >= len(waypoints):
+        index = 0
+
+    if index_missing or status == "reached":
+        if not index_missing:
+            index = (index + 1) % len(waypoints)
+        _write_planned_index(index_file, index)
+
+        x, y, ang = waypoints[index]
+        if ang is None:
+            goto(x, y)
+        else:
+            goto(x, y, ang)
+
+    return 0
 
 
 def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
@@ -313,23 +454,39 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
     cur_pos = _read_current_position(CURRENT_POSITION_FILE)
     if cur_pos:
         x, y, bearing = cur_pos
-        print(f"当前位置: x={x:.3f}, y={y:.3f}, bearing={bearing}°")
+        # print(f"当前位置: x={x:.3f}, y={y:.3f}, bearing={bearing}°")
+
+    cur_x = cur_pos[0] if cur_pos else None
+    cur_y = cur_pos[1] if cur_pos else None
+    if cur_x < -0.86:
+        critical_alpha = 45.0 - math.degrees(math.acos((cur_x + 1.0) / (0.1 * math.sqrt(2.0))))
+        # print(f"allowed alpha: {critical_alpha:.2f} degrees")
+    if cur_x > 0.86:
+        critical_alpha = 45.0 - math.degrees(math.acos((-cur_x + 1.0) / (0.1 * math.sqrt(2.0))))
+        # print(f"allowed alpha: {critical_alpha:.2f} degrees")
+    if cur_y < -0.86:
+        critical_alpha = 45.0 - math.degrees(math.acos((cur_y + 1.0) / (0.1 * math.sqrt(2.0))))
+        # print(f"allowed alpha: {critical_alpha:.2f} degrees")
+    if cur_y > 0.86:
+        critical_alpha = 45.0 - math.degrees(math.acos((-cur_y + 1.0) / (0.1 * math.sqrt(2.0))))
+        # print(f"allowed alpha: {critical_alpha:.2f} degrees")
+    alpha = 0.8 * critical_alpha
     
     # 2. 获取所有小球的位置和类型（返回 [(x, y, type), ...] 列表）
     #    type 是 'PING' 或 'METAL'
     balls = _read_ball_positions(BALL_POS_FILE)
-    for ball_x, ball_y, ball_type in balls:
-        print(f"小球: x={ball_x:.3f}, y={ball_y:.3f}, 类型={ball_type}")
+    # for ball_x, ball_y, ball_type in balls:
+    #     print(f"小球: x={ball_x:.3f}, y={ball_y:.3f}, 类型={ball_type}")
     
     # 3. 获取所有障碍机器人的位置（返回 [(x, y), ...] 列表）
     obstacles = _read_obstacle_positions(OBSTACLE_ROBOT_FILE)
-    for obs_x, obs_y in obstacles:
-        print(f"障碍机器人: x={obs_x:.3f}, y={obs_y:.3f}")
+    # for obs_x, obs_y in obstacles:
+    #     print(f"障碍机器人: x={obs_x:.3f}, y={obs_y:.3f}")
 
     # 4. 获取当前仿真时间（秒）
     sim_time = _read_time_seconds(TIME_FILE)
-    if sim_time is not None:
-        print(f"当前仿真时间: {sim_time:.3f} s")
+    # if sim_time is not None:
+    #     print(f"当前仿真时间: {sim_time:.3f} s")
     
     # 5. 使用 goto() 函数设置目标点
     #    goto(x, y) - 只设置位置
@@ -361,6 +518,7 @@ _MODE_HANDLERS = {
     "random": mode_random,
     "nearest": mode_nearest,
     "improved_nearest": mode_improved_nearest,
+    "planned": mode_planned,
     "developing": mode_developing,
 }
 

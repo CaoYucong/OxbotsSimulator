@@ -712,6 +712,8 @@ def _write_visible_balls(path, viewfield_deg=120.0, visible_range_m=0.8):
                     bx, by = float(bpos[0]), float(bpos[1])
                 except Exception:
                     continue
+                if bx < -1.0 or bx > 1.0 or by < -1.0 or by > 1.0:
+                    continue
 
                 x_rel = bx - rx
                 y_rel = by - ry
@@ -729,7 +731,7 @@ def _write_visible_balls(path, viewfield_deg=120.0, visible_range_m=0.8):
                 try:
                     name_field = node.getField("robotName").getSFString()
                     if name_field is not None and "steel" in name_field.lower():
-                        typ = "STEEL"
+                        typ = "METAL"
                 except Exception:
                     pass
 
