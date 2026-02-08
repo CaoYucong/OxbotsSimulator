@@ -63,6 +63,10 @@ class MotionController:
         self.direction = np.array([0.0, 0.0, 0.0])
         self.total_dist = 0.0
         self.traveled = 0.0
+        self.total_time = 0.0
+        self.elapsed = 0.0
+        self.move_speed = 0.0
+        self.angle_delta = 0.0
         
         # Cycle mode: automatically move to next waypoint in a list
         self.cycle_mode = cycle_mode
@@ -85,6 +89,11 @@ class MotionController:
         self.velocity = DEFAULT_VELOCITY if velocity is None else velocity
         self.total_dist = dist
         self.traveled = 0.0
+        self.total_time = 0.0
+        self.elapsed = 0.0
+        self.move_speed = self.velocity
+        self.angle_delta = 0.0
+        self.angular_speed = DEFAULT_ANGULAR_VELOCITY
         self.direction = (delta / dist) if dist > 1e-9 else np.array([0.0, 0.0, 0.0])
 
         if dist <= 1e-6:
@@ -105,6 +114,11 @@ class MotionController:
         else:
             # Move and interpolate rotation to the target angle simultaneously
             self.phase = 'move_and_rotate'
+            self.angle_delta = _normalize_angle(self.target_angle - self.start_angle)
+            time_linear = (self.total_dist / self.velocity) if self.velocity > 1e-9 else 0.0
+            time_angular = (abs(self.angle_delta) / self.angular_speed) if self.angular_speed > 1e-9 else 0.0
+            self.total_time = max(time_linear, time_angular, 1e-6)
+            self.move_speed = self.total_dist / self.total_time
 
         self.active = True
 
@@ -213,7 +227,15 @@ class MotionController:
 
         if self.phase == 'move_and_rotate':
             remaining = np.linalg.norm(self.target_pos - cur_pos)
-            if remaining <= step_dist:
+            current_angle = _normalize_angle(self.rot.getSFRotation()[3])
+            remaining_angle = abs(_normalize_angle(self.target_angle - current_angle))
+            time_linear = (remaining / self.velocity) if self.velocity > 1e-9 else 0.0
+            time_angular = (remaining_angle / self.angular_speed) if self.angular_speed > 1e-9 else 0.0
+            self.total_time = max(time_linear, time_angular, 1e-6)
+            self.move_speed = remaining / self.total_time if self.total_time > 1e-9 else 0.0
+            step_dist = self.move_speed * self.dt
+            step_rotate_towards(self.target_angle)
+            if self.total_time <= self.dt or remaining <= step_dist:
                 self.trans.setSFVec3f(self.target_pos.tolist())
                 self.rot.setSFRotation([0, 0, 1, self.target_angle])
                 self.active = False
@@ -225,11 +247,6 @@ class MotionController:
             # Position update
             new_pos = cur_pos + self.direction * step_dist
             self.trans.setSFVec3f(new_pos.tolist())
-            # Angle interpolated based on travelled/total_dist
-            self.traveled += step_dist
-            progress = min(self.traveled / (self.total_dist + 1e-9), 1.0)
-            current_angle = _normalize_angle(self.start_angle + _normalize_angle(self.target_angle - self.start_angle) * progress)
-            self.rot.setSFRotation([0,0,1,current_angle])
             return False
 
         return True
@@ -444,7 +461,7 @@ monitor_simple_init(ball_prefix=BALL_PREFIX, ball_count=BALL_COUNT)
 # waypoints are loaded from the external file controllers/supervisor_controller/dynamic_waypoints.txt
 import os, re, time
 
-# waypoint orientation aliases (will be used when parsing the file)
+# waypoint orientation aliases (radians)
 North = math.pi / 2
 East = 0.0
 South = -math.pi / 2
@@ -476,7 +493,7 @@ def _load_dynamic_waypoint(path):
     """Load a single waypoint from dynamic_waypoints.txt (read-only).
     Returns a single (x, y, orientation) tuple or None if file is empty/invalid.
     """
-    namespace = {"North": North, "East": East, "South": South, "West": West, "None": None}
+    namespace = {"North": 90.0, "East": 0.0, "South": -90.0, "West": 180.0, "None": None}
     try:
         with open(path, 'r') as f:
             for raw in f:
@@ -507,7 +524,7 @@ def _load_dynamic_waypoint(path):
                         if ang is None:
                             ang = None
                         else:
-                            ang = float(ang)
+                            ang = math.radians(float(ang))
                         wp = (float(wp[0]), float(wp[1]), ang)
                     return wp
     except Exception:
@@ -690,7 +707,7 @@ def _read_speed_mps(path, default_value):
     except Exception:
         return default_value
 
-def _write_visible_balls(path, viewfield_deg=120.0, visible_range_m=0.8):
+def _write_visible_balls(path, viewfield_deg=90.0, visible_range_m=0.8):
     """Write visible balls within viewfield and range to file — overwrite atomically."""
     try:
         tmp = path + '.tmp'
@@ -806,7 +823,7 @@ while supervisor.step(TIME_STEP) != -1:
             if last_dynamic_waypoint is not None and current_waypoint is not None:
                 _append_to_history(WAYPOINTS_HISTORY_FILE, last_dynamic_waypoint, "cut")
             current_waypoint = new_waypoint
-            last_dynamic_waypoint = new_waypoint
+            last_dynamic_waypoint = new_waypoint    
             x, y, ang = current_waypoint
             main_motion.start(x, y, velocity=None, angle=ang)
         last_waypoint_mtime = mtime

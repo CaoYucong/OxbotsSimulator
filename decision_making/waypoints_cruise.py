@@ -38,11 +38,12 @@ SPEED_FILE = os.path.join(BASE_DIR, "speed.txt")
 VISIBLE_BALLS_FILE = os.path.join(BASE_DIR, "visible_balls.txt")
 PLANNED_WAYPOINTS_FILE = os.path.join(BASE_DIR, "planned_waypoints.txt")
 PLANNED_INDEX_FILE = os.path.join(BASE_DIR, "planned_waypoints_index.txt")
+TEMP_STATE_FILE = os.path.join(BASE_DIR, "waypoints_temp_state.txt")
 
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
-# or `MODE` environment variable is provided. Example: 'random', 'nearest', 'improved_nearest' or 'developing'.
-DEFAULT_MODE = 'nearest'
+# or `MODE` environment variable is provided. Example: 'random', 'nearest', 'improved_nearest', 'planned' or 'developing'.
+DEFAULT_MODE = 'improved_nearest'
 
 # generation bounds (match supervisor playground bounds)
 X_MIN, X_MAX = -0.86, 0.86
@@ -163,6 +164,23 @@ def _read_time_seconds(path: str) -> Optional[float]:
         return None
 
 
+def _read_state_pair(path: str) -> Optional[tuple[float, float]]:
+    try:
+        with open(path, "r") as f:
+            raw = f.read().strip()
+            if not raw:
+                return None
+            line = raw
+            if line.startswith("(") and line.endswith(")"):
+                line = line[1:-1]
+            nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
+            if len(nums) < 2:
+                return None
+            return (float(nums[0]), float(nums[1]))
+    except Exception:
+        return None
+
+
 def _read_planned_waypoints(path: str):
     """Return list of (x, y, angle_or_none) from planned_waypoints.txt."""
     namespace = {"North": math.pi / 2, "East": 0.0, "South": -math.pi / 2, "West": math.pi, "None": None}
@@ -225,57 +243,32 @@ def goto(x: float, y: float, orientation=None) -> bool:
         True on success, False on failure
     """
 
+    x = max(-0.9, min(0.9, x))
+    y = max(-0.9, min(0.9, y))
+
     if orientation is None:
         coord_line = f"({x:.6f}, {y:.6f}, None)\n"
     else:
-        orientation_rad = orientation * 3.141592653589793 / 180.0  # Convert degrees to radians
-        coord_line = f"({x:.6f}, {y:.6f}, {orientation_rad:.6f})\n"
+        coord_line = f"({x:.6f}, {y:.6f}, {orientation:.6f})\n"
 
-    # cur = _read_current_position(CURRENT_POSITION_FILE)
-    # if cur is not None:
-    #     cur_x, cur_y, cur_bearing = cur
-    #     critical_alpha = None
-    #     if abs(cur_x) > 0.85 or abs(cur_y) > 0.85:
-    #         if cur_x < -0.86:
-    #             critical_alpha = 45.0 - math.degrees(math.acos((cur_x + 1.0) / (0.1 * math.sqrt(2.0))))
-    #         if cur_x > 0.86:
-    #             critical_alpha = 45.0 - math.degrees(math.acos((-cur_x + 1.0) / (0.1 * math.sqrt(2.0))))
-    #         if cur_y < -0.86:
-    #             critical_alpha = 45.0 - math.degrees(math.acos((cur_y + 1.0) / (0.1 * math.sqrt(2.0))))
-    #         if cur_y > 0.86:
-    #             critical_alpha = 45.0 - math.degrees(math.acos((-cur_y + 1.0) / (0.1 * math.sqrt(2.0))))
+    critical_alpha = None
+    if abs(x) > 0.86 or abs(y) > 0.86:
+        if x < -0.86:
+            critical_alpha = 45.0 - math.degrees(math.acos((x + 1.0) / (0.1 * math.sqrt(2.0))))
+            coord_line = f"({x:.6f}, {y:.6f}, 180)\n"
+        if x > 0.86:
+            critical_alpha = 45.0 - math.degrees(math.acos((-x + 1.0) / (0.1 * math.sqrt(2.0))))
+            coord_line = f"({x:.6f}, {y:.6f}, 0)\n"
+        if y < -0.86:
+            critical_alpha = 45.0 - math.degrees(math.acos((y + 1.0) / (0.1 * math.sqrt(2.0))))
+            coord_line = f"({x:.6f}, {y:.6f}, -90)\n"
+        if y > 0.86:
+            critical_alpha = 45.0 - math.degrees(math.acos((-y + 1.0) / (0.1 * math.sqrt(2.0))))
+            coord_line = f"({x:.6f}, {y:.6f}, 90)\n"
+        # print(f"[waypoints_cruise] critical alpha: {critical_alpha:.2f} degrees", file=sys.stderr)
 
-    #     if critical_alpha is not None and cur_bearing is not None:
-    #         alpha = 0.8 * critical_alpha
-    #         cur_deg = cur_bearing % 360.0
-
-    #         def _in_interval(value, start, end):
-    #             if start <= end:
-    #                 return start <= value <= end
-    #             return value >= start or value <= end
-
-    #         centers = [0.0, 90.0, 180.0, 270.0]
-    #         in_allowed = False
-    #         boundaries = []
-    #         for center in centers:
-    #             start = (center - alpha) % 360.0
-    #             end = (center + alpha) % 360.0
-    #             boundaries.append(start)
-    #             boundaries.append(end)
-    #             if _in_interval(cur_deg, start, end):
-    #                 in_allowed = True
-    #         if not in_allowed:
-    #             best_boundary = None
-    #             best_dist = None
-    #             for boundary in boundaries:
-    #                 diff = abs(cur_deg - boundary) % 360.0
-    #                 dist = min(diff, 360.0 - diff)
-    #                 if best_dist is None or dist < best_dist:
-    #                     best_dist = dist
-    #                     best_boundary = boundary
-    #             if best_boundary is not None:
-    #                 orientation_rad = math.radians(best_boundary)
-    #                 coord_line = f"({x:.6f}, {y:.6f}, {orientation_rad:.6f})\n"
+    if critical_alpha is not None:
+        pass
     
     return _atomic_write(DYNAMIC_WAYPOINTS_FILE, coord_line)
 
@@ -356,15 +349,60 @@ def mode_nearest(status_file: str = WAYPOINT_STATUS_FILE,
     if best is None:
         return 0
 
-    ok = goto(best[0], best[1])
+    target_x, target_y = best
+    heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
+    ok = goto(target_x, target_y, heading_deg)
     return 0 if ok else 1
 
+SEARCHING_SEQUENCE = [
+    (0, 0, 0),
+    (0, 0, 90),
+    (0, 0, 180),
+    (0, 0, -90),
+    (0.5, 0.5, 0),
+    (0.5, 0.5, 90),
+    (0.5, 0.5, 180),
+    (0.5, 0.5, -90),
+    (-0.5, 0.5, 0),
+    (-0.5, 0.5, 90),
+    (-0.5, 0.5, 180),
+    (-0.5, 0.5, -90),
+    (-0.5, -0.5, 0),
+    (-0.5, -0.5, 90),
+    (-0.5, -0.5, 180),
+    (-0.5, -0.5, -90),
+    (0.5, -0.5, 0),
+    (0.5, -0.5, 90),
+    (0.5, -0.5, 180),
+    (0.5, -0.5, -90),
+    (0, 0.5, 0),
+    (0, 0.5, 90),
+    (0, 0.5, 180),
+    (0, 0.5, -90),
+    (0.5, 0, 0),
+    (0.5, 0, 90),
+    (0.5, 0, 180),
+    (0.5, 0, -90),
+    (0, -0.5, 0),
+    (0, -0.5, 90),
+    (0, -0.5, 180),
+    (0, -0.5, -90),
+    (-0.5, 0, 0),
+    (-0.5, 0, 90),
+    (-0.5, 0, 180),
+    (-0.5, 0, -90),
+]
 
 def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
                           waypoint_file: str = DYNAMIC_WAYPOINTS_FILE,
                           visible_balls_file: str = VISIBLE_BALLS_FILE,
                           current_file: str = CURRENT_POSITION_FILE) -> int:
     """Improved nearest mode: choose nearest ball from visible_balls.txt only."""
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is not None and sim_time > 170.0:
+        goto(-0.9, 0.0, 180.0)
+        return 0
+
     status = _read_status(status_file)
     # if status != "reached":
     #     return 0
@@ -373,11 +411,38 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
     if cur is None:
         return 0
     bx = _read_visible_ball_positions(visible_balls_file)
+    cx, cy, bearing = cur
     if not bx:
-        stop()
-        return 0
-
-    cx, cy, _ = cur
+        if status != "reached":
+            return 0
+        state = _read_state_pair(TEMP_STATE_FILE)
+        if state is None:
+            state = (0.0, 0.0)
+        miss_time = int(state[0])
+        search_record = int(state[1])
+        print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
+        if miss_time == 0.0:
+          if abs(cx) > 0.86 or abs(cy) > 0.86:
+              cx = max(-0.86, min(0.86, cx))
+              cy = max(-0.86, min(0.86, cy))
+              goto(cx, cy, bearing)
+          else:
+              heading = None if bearing is None else bearing + 179.0
+              goto(cx, cy, heading)
+          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+        if miss_time == 1.0:
+          heading = None if bearing is None else bearing + 179.0
+          goto(cx, cy, heading)
+          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+        if miss_time >= 2.0:
+            index = search_record % len(SEARCHING_SEQUENCE)
+            goto(SEARCHING_SEQUENCE[index][0], SEARCHING_SEQUENCE[index][1], SEARCHING_SEQUENCE[index][2])
+            _atomic_write(TEMP_STATE_FILE, f"({miss_time}, {(search_record+1)%len(SEARCHING_SEQUENCE)})\n")
+    else:
+        state = _read_state_pair(TEMP_STATE_FILE)
+        search_record = int(state[1])
+        _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
     best = None
     best_d2 = None
     for (x, y, typ) in bx:
@@ -394,7 +459,9 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
     if best is None:
         return 0
 
-    ok = goto(best[0], best[1])
+    target_x, target_y = best
+    heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
+    ok = goto(target_x, target_y, heading_deg)
     return 0 if ok else 1
 
 
@@ -455,22 +522,6 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
     if cur_pos:
         x, y, bearing = cur_pos
         # print(f"当前位置: x={x:.3f}, y={y:.3f}, bearing={bearing}°")
-
-    cur_x = cur_pos[0] if cur_pos else None
-    cur_y = cur_pos[1] if cur_pos else None
-    if cur_x < -0.86:
-        critical_alpha = 45.0 - math.degrees(math.acos((cur_x + 1.0) / (0.1 * math.sqrt(2.0))))
-        # print(f"allowed alpha: {critical_alpha:.2f} degrees")
-    if cur_x > 0.86:
-        critical_alpha = 45.0 - math.degrees(math.acos((-cur_x + 1.0) / (0.1 * math.sqrt(2.0))))
-        # print(f"allowed alpha: {critical_alpha:.2f} degrees")
-    if cur_y < -0.86:
-        critical_alpha = 45.0 - math.degrees(math.acos((cur_y + 1.0) / (0.1 * math.sqrt(2.0))))
-        # print(f"allowed alpha: {critical_alpha:.2f} degrees")
-    if cur_y > 0.86:
-        critical_alpha = 45.0 - math.degrees(math.acos((-cur_y + 1.0) / (0.1 * math.sqrt(2.0))))
-        # print(f"allowed alpha: {critical_alpha:.2f} degrees")
-    alpha = 0.8 * critical_alpha
     
     # 2. 获取所有小球的位置和类型（返回 [(x, y, type), ...] 列表）
     #    type 是 'PING' 或 'METAL'
