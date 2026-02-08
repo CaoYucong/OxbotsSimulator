@@ -505,15 +505,18 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
         goto(-0.9, 0.0, 180.0)
         return 0
 
+    cur = _read_current_position(current_file)
     radar_hits = radar_sensor()
     if radar_hits:
-        print(f"[waypoints_cruise] obstacle detected by radar: {radar_hits}", file=sys.stderr)
+        # print(f"[waypoints_cruise] obstacle detected by radar: {radar_hits}", file=sys.stderr)
+        if any(dist < 0.1 for _, dist in radar_hits) and abs(cur[0]) < 0.7 and abs(cur[1]) < 0.7:
+            stop()
+            return 0
 
     status = _read_status(status_file)
     # if status != "reached":
     #     return 0
 
-    cur = _read_current_position(current_file)
     if cur is None:
         return 0
     bx = _read_visible_ball_positions(visible_balls_file)
