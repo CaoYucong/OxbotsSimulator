@@ -204,11 +204,16 @@ def radar_sensor(max_range: float = 0.8, corridor: float = 0.2) -> list[tuple[st
     hits = {}
 
     obstacle_half = 0.1
+    robot_half = 0.1
     corners_local = [
         (obstacle_half, obstacle_half),
         (obstacle_half, -obstacle_half),
         (-obstacle_half, obstacle_half),
         (-obstacle_half, -obstacle_half),
+        (-obstacle_half, 0),
+        (obstacle_half, 0),
+        (0, -obstacle_half),
+        (0, obstacle_half),
     ]
 
     for ox, oy, obearing in obstacles:
@@ -227,16 +232,16 @@ def radar_sensor(max_range: float = 0.8, corridor: float = 0.2) -> list[tuple[st
             y_robot = -dx * math.sin(theta) + dy * math.cos(theta)
 
             if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
-                dist = x_robot
+                dist = x_robot - robot_half
                 direction = "front"
             elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
-                dist = -x_robot
+                dist = -x_robot - robot_half
                 direction = "rear"
             elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
-                dist = y_robot
+                dist = y_robot - robot_half
                 direction = "left"
             elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
-                dist = -y_robot
+                dist = -y_robot - robot_half
                 direction = "right"
             else:
                 continue
@@ -255,16 +260,16 @@ def radar_sensor(max_range: float = 0.8, corridor: float = 0.2) -> list[tuple[st
         y_robot = -dx * math.sin(theta) + dy * math.cos(theta)
 
         if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
-            dist = x_robot
+            dist = x_robot - robot_half
             direction = "front"
         elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
-            dist = -x_robot
+            dist = -x_robot - robot_half
             direction = "rear"
         elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
-            dist = y_robot
+            dist = y_robot - robot_half
             direction = "left"
         elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
-            dist = -y_robot
+            dist = -y_robot - robot_half
             direction = "right"
         else:
             continue
