@@ -6,6 +6,7 @@ EXTERNPROTO "../protos/UnibotsArena.proto"
 EXTERNPROTO "../protos/AprilTagWall.proto"
 EXTERNPROTO "../protos/Cube-Robot.proto"
 EXTERNPROTO "../protos/SteelBall.proto"
+EXTERNPROTO "../protos/Pingball.proto"
 
 WorldInfo {
   basicTimeStep 4
@@ -13,7 +14,7 @@ WorldInfo {
 }
 Viewpoint {
   orientation -0.5773502691896258 0.5773502691896258 0.5773502691896258 2.0944
-  position -6.621780069999355e-17 -1.2256841199811396e-15 6.6545311835408105
+  position -0.029009868874883604 -0.012413164707737567 3.9294342356703496
 }
 TexturedBackground {
 }
@@ -32,247 +33,208 @@ Robot {
   supervisor TRUE
 }
 DEF BALL_0 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.7027071778893023 -0.12950020610531 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_0"
 }
 DEF BALL_1 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.5879678813988308 -0.05159602438806843 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_1"
 }
 DEF BALL_2 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation -0.6034377434769406 0.3574262836581156 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_2"
 }
 DEF BALL_3 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.3796153294386039 0.4895235725149255 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_3"
 }
 DEF BALL_4 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation -0.493628177770065 -0.6902089006639065 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_4"
 }
 DEF BALL_5 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.5646072494340807 -0.09683106066446134 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_5"
 }
 DEF BALL_6 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.18765219657554144 0.2712579896936437 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_6"
 }
 DEF BALL_7 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.4504783939272071 0.6184435722799816 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_7"
 }
 DEF BALL_8 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.5063212073267068 0.443822311473446 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_8"
 }
 DEF BALL_9 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.23633361801697272 0.33383457655503823 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_9"
 }
 DEF BALL_10 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.6696091931549849 -0.8096214873239589 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_10"
 }
 DEF BALL_11 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.05788265162589379 0.8027848055736361 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_11"
 }
 DEF BALL_12 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.03879516446557585 -0.8094409078121552 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_12"
 }
 DEF BALL_13 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.7388683449393031 -0.5969967275199436 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_13"
 }
 DEF BALL_14 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.06828601678933077 -0.23900958111400128 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_14"
 }
 DEF BALL_15 PingBall {
-  hidden linearVelocity_0 0 0 2.3246113490410555e-16
   translation 0.4562129036748831 -0.5101760550352061 0.019999671263744724
   rotation 0 0 1 0
   robotName "PINGBALL_15"
 }
 DEF BALL_16 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.34018668235852756 -0.19612752600301053 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_16"
 }
 DEF BALL_17 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.7196596433819106 0.0348374420632771 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_17"
 }
 DEF BALL_18 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.3407553050847554 -0.028686787944005143 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_18"
 }
 DEF BALL_19 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.7537252736268832 0.4769535216349673 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_19"
 }
 DEF BALL_20 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.6112829895078433 -0.14404565547830628 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_20"
 }
 DEF BALL_21 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.2625497066373924 -0.500685468085329 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_21"
 }
 DEF BALL_22 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.1029144376563812 -0.6198882558432226 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_22"
 }
 DEF BALL_23 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.6414605015588121 0.2893392969683434 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_23"
 }
 DEF BALL_24 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.2386765001508243 -0.5475124768940212 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_24"
 }
 DEF BALL_25 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.8464702871052002 0.18920285897915734 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_25"
 }
 DEF BALL_26 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.10577505122410802 -0.697821174089529 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_26"
 }
 DEF BALL_27 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.42787382059534196 -0.8468633991386852 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_27"
 }
 DEF BALL_28 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.5129054349586856 0.1739120693867996 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_28"
 }
 DEF BALL_29 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.42291058235404133 -0.7288065625045057 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_29"
 }
 DEF BALL_30 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.7275921009338996 0.2652680332214957 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_30"
 }
 DEF BALL_31 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.19070777765272828 -0.06472450909318872 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_31"
 }
 DEF BALL_32 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.10687265366254961 0.6710705600443797 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_32"
 }
 DEF BALL_33 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.2579192753339762 0.2565336564241322 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_33"
 }
 DEF BALL_34 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.6442844578739949 -0.5379609168478411 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_34"
 }
 DEF BALL_35 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.2676717322642457 0.7629469527987219 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_35"
 }
 DEF BALL_36 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.024512849029770467 0.4447971526922908 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_36"
 }
 DEF BALL_37 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation -0.15707949014245515 -0.685934910407858 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_37"
 }
 DEF BALL_38 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.3387299619683636 -0.06562797952312072 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_38"
 }
 DEF BALL_39 SteelBall {
-  hidden linearVelocity_0 0 0 1.4978014175041906e-16
   translation 0.005967055505258445 -0.39375539059207554 0.0099935896430222
   rotation 0 0 1 0
   robotName "STEELBALL_39"
 }
 DEF OBSTACLE_ROBOT_1 Cube-Robot {
-  translation 0 0 0.1
+  translation 0.9 0 0.1
+  rotation 0 0 1 3.14159
   topTextureUrl [
     "../textures/robot_texture/warning_sign.jpeg"
   ]
@@ -293,7 +255,8 @@ DEF OBSTACLE_ROBOT_1 Cube-Robot {
   ]
 }
 DEF OBSTACLE_ROBOT_2 Cube-Robot {
-  translation 0 0 0.1
+  translation 0 0.9 0.1
+  rotation 0 0 1 -1.5707953071795862
   topTextureUrl [
     "../textures/robot_texture/warning_sign.jpeg"
   ]
@@ -314,7 +277,8 @@ DEF OBSTACLE_ROBOT_2 Cube-Robot {
   ]
 }
 DEF OBSTACLE_ROBOT_3 Cube-Robot {
-  translation 0 0 0.1
+  translation 0 -0.9 0.1
+  rotation 0 0 1 1.5708
   topTextureUrl [
     "../textures/robot_texture/warning_sign.jpeg"
   ]

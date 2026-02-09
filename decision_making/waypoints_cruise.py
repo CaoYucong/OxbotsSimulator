@@ -36,9 +36,13 @@ OBSTACLE_ROBOT_FILE = os.path.join(BASE_DIR, "obstacle_robot.txt")
 TIME_FILE = os.path.join(BASE_DIR, "time.txt")
 SPEED_FILE = os.path.join(BASE_DIR, "speed.txt")
 VISIBLE_BALLS_FILE = os.path.join(BASE_DIR, "visible_balls.txt")
-PLANNED_WAYPOINTS_FILE = os.path.join(BASE_DIR, "planned_waypoints.txt")
-PLANNED_INDEX_FILE = os.path.join(BASE_DIR, "planned_waypoints_index.txt")
-TEMP_STATE_FILE = os.path.join(BASE_DIR, "waypoints_temp_state.txt")
+PLANNED_WAYPOINTS_FILE = os.path.join(os.path.dirname(__file__), "planned_waypoints.txt")
+PLANNED_INDEX_FILE = os.path.join(os.path.dirname(__file__), "planned_waypoints_index.txt")
+TEMP_STATE_FILE = os.path.join(os.path.dirname(__file__), "search_state.txt")
+WAYPOINTS_STACK_FILE = os.path.join(os.path.dirname(__file__), "waypoints_stack.txt")
+RADAR_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "radar_memory.txt")
+COLLISION_STATUS_FILE = os.path.join(os.path.dirname(__file__), "collision_avoiding_status.txt")
+DYNAMIC_WAYPOINTS_TYPE_FILE = os.path.join(os.path.dirname(__file__), "dynamic_waypoints_type.txt")
 
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
@@ -49,8 +53,8 @@ DEFAULT_MODE = 'improved_nearest'
 X_MIN, X_MAX = -0.86, 0.86
 Y_MIN, Y_MAX = -0.86, 0.86
 RADAR_MAX_RANGE = 0.8
-RADAR_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "radar_memory.txt")
-COLLISION_STATUS_FILE = os.path.join(os.path.dirname(__file__), "collision_avoiding_status.txt")
+MAX_SPEED = 0.7
+NORMAL_SPEED = 0.3
 
 
 def _read_status(path: str) -> Optional[str]:
@@ -69,8 +73,25 @@ def _atomic_write(path: str, content: str) -> bool:
         os.replace(tmp, path)
         return True
     except Exception as e:
-        print(f"[waypoints_cruise] write failed: {e}", file=sys.stderr)
+        # print(f"[waypoints_cruise] write failed: {e}", file=sys.stderr)
         return False
+
+
+def _stack_current_waypoint(stack_file: str = WAYPOINTS_STACK_FILE,
+                            current_file: str = DYNAMIC_WAYPOINTS_FILE) -> None:
+    """Overwrite stack file with current dynamic waypoint content, if present."""
+    if _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE) != "task":
+        return
+    try:
+        with open(current_file, "r") as f:
+            current = f.read().strip()
+    except Exception:
+        return
+
+    if not current:
+        return
+
+    _atomic_write(stack_file, current + "\n")
 
 
 def _write_collision_status(active: bool) -> None:
@@ -178,7 +199,7 @@ def _read_state_pair(path: str) -> Optional[tuple[float, float]]:
         with open(path, "r") as f:
             raw = f.read().strip()
             if not raw:
-                return None
+                raise FileNotFoundError
             line = raw
             if line.startswith("(") and line.endswith(")"):
                 line = line[1:-1]
@@ -186,6 +207,32 @@ def _read_state_pair(path: str) -> Optional[tuple[float, float]]:
             if len(nums) < 2:
                 return None
             return (float(nums[0]), float(nums[1]))
+    except FileNotFoundError:
+        _atomic_write(path, "(0, 0)\n")
+        return (0.0, 0.0)
+    except Exception:
+        return None
+
+
+def _read_stack_waypoint(path: str) -> Optional[tuple[float, float, Optional[float]]]:
+    """Return (x, y, orientation_or_none) from waypoints_stack.txt, or None."""
+    try:
+        with open(path, "r") as f:
+            raw = f.read().strip()
+            if not raw:
+                return None
+            line = raw
+            if line.startswith("(") and line.endswith(")"):
+                line = line[1:-1]
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                return None
+            x = float(parts[0])
+            y = float(parts[1])
+            orientation = None
+            if len(parts) >= 3 and parts[2] and parts[2].lower() != "none":
+                orientation = float(parts[2])
+            return (x, y, orientation)
     except Exception:
         return None
 
@@ -219,9 +266,17 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
         (-obstacle_half, obstacle_half),
         (-obstacle_half, -obstacle_half),
         (-obstacle_half, 0),
+        (-obstacle_half, 0.5*obstacle_half),
+        (-obstacle_half, -0.5*obstacle_half),
         (obstacle_half, 0),
+        (obstacle_half, 0.5*obstacle_half),
+        (obstacle_half, -0.5*obstacle_half),
         (0, -obstacle_half),
+        (0.5*obstacle_half, -obstacle_half),
+        (-0.5*obstacle_half, -obstacle_half),
         (0, obstacle_half),
+        (0.5*obstacle_half, obstacle_half),
+        (-0.5*obstacle_half, obstacle_half),
     ]
 
     for ox, oy, obearing in obstacles:
@@ -259,8 +314,14 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
                 if prev is None or dist < prev:
                     hits[direction] = dist
 
-    # Add virtual points at (x, 1), (x, -1), (1, y), (-1, y)
-    virtual_points = [(cx, 1.0), (cx, -1.0), (1.0, cy), (-1.0, cy)]
+    # Add virtual points along boundaries using evenly spaced samples.
+    edge_samples = [i * 0.05 for i in range(-20, 21)]
+    virtual_points = (
+        [(x, 1.0) for x in edge_samples]
+        + [(x, -1.0) for x in edge_samples]
+        + [(1.0, y) for y in edge_samples]
+        + [(-1.0, y) for y in edge_samples]
+    )
     for vx, vy in virtual_points:
         dx = vx - cx
         dy = vy - cy
@@ -299,19 +360,39 @@ def collision_avoiding_v1(current_file: str = CURRENT_POSITION_FILE) -> bool:
     if not radar_hits:
         return False
     if any(dist < 0.1 for _, dist in radar_hits) and abs(cur[0]) < 0.7 and abs(cur[1]) < 0.7:
-        return stop()
+        return stop("collision")
     return False
 
 def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
     cur = _read_current_position(current_file)
     if cur is None:
         _write_collision_status(False)
+        set_velocity(NORMAL_SPEED)
         return False
     cx, cy, bearing = cur
+
+    collision_status = _read_status(COLLISION_STATUS_FILE)
+    if collision_status == "activated":
+        waypoint_status = _read_status(WAYPOINT_STATUS_FILE)
+        if waypoint_status == "going":
+            return True
+        if waypoint_status == "reached":
+            _write_collision_status(False)
+            set_velocity(NORMAL_SPEED)
+            stack_wp = _read_stack_waypoint(WAYPOINTS_STACK_FILE)
+            if stack_wp is not None:
+                x, y, orientation = stack_wp
+                if orientation is None:
+                    goto(x, y)
+                else:
+                    goto(x, y, orientation)
+                _atomic_write(WAYPOINTS_STACK_FILE, "")
+                return True
     radar_hits = radar_sensor()
     sim_time = _read_time_seconds(TIME_FILE)
     if sim_time is None:
         _write_collision_status(False)
+        set_velocity(NORMAL_SPEED)
         return False
 
     values = {"front": 0.0, "right": 0.0, "left": 0.0, "rear": 0.0}
@@ -343,7 +424,7 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
     history_lines.append(record)
     _atomic_write(RADAR_HISTORY_FILE, "\n".join(history_lines) + "\n")
 
-    if any(dist < 0.05 for _, dist in radar_hits) and bearing is not None and abs(cx) < 0.7 and abs(cy) < 0.7:
+    if any(dist < 0.05 for _, dist in radar_hits) and bearing is not None and abs(cx) < 0.8 and abs(cy) < 0.7:
         weights = [
             max(0.0, values["front"]),
             max(0.0, values["right"]),
@@ -364,6 +445,7 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
         total_w = sum(weights)
         if total_w <= 0.0:
             _write_collision_status(False)
+            set_velocity(NORMAL_SPEED)
             return False
 
         world_normals = []
@@ -377,8 +459,8 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
         best_vec = None
         best_mag = None
         for i, j in pair_indices:
-            vx = weights[i] * world_normals[i][0] + weights[j] * world_normals[j][0]
-            vy = weights[i] * world_normals[i][1] + weights[j] * world_normals[j][1]
+            vx = (RADAR_MAX_RANGE - weights[i]) * world_normals[i][0] + (RADAR_MAX_RANGE - weights[j]) * world_normals[j][0]
+            vy = (RADAR_MAX_RANGE - weights[i]) * world_normals[i][1] + (RADAR_MAX_RANGE - weights[j]) * world_normals[j][1]
             mag = math.hypot(vx, vy)
             if best_mag is None or mag > best_mag:
                 best_mag = mag
@@ -386,17 +468,20 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
 
         if best_vec is None or best_mag is None or best_mag <= 1e-6:
             _write_collision_status(False)
+            set_velocity(NORMAL_SPEED)
             return False
 
         # Invert direction after selecting the strongest pairwise vector.
-        best_vec = (-best_vec[0], -best_vec[1])
+        best_vec = (best_vec[0], best_vec[1])
 
         step = 0.15
         dx_world = step * (best_vec[0] / best_mag)
         dy_world = step * (best_vec[1] / best_mag)
+        set_velocity(MAX_SPEED)
         _write_collision_status(True)
-        print(f"[waypoints_cruise] collision avoiding activated, radar values: {weights}, move vector: ({dx_world:.3f}, {dy_world:.3f})", file=sys.stderr)
-        return goto(cx + dx_world, cy + dy_world, bearing)
+        _stack_current_waypoint()
+        # print(f"[waypoints_cruise] collision avoiding activated, radar values: {weights}, move vector: ({dx_world:.3f}, {dy_world:.3f})", file=sys.stderr)
+        return goto(cx + dx_world, cy + dy_world, bearing, waypoint_type="collision")
 
 def _read_planned_waypoints(path: str):
     """Return list of (x, y, angle_or_none) from planned_waypoints.txt."""
@@ -449,17 +534,21 @@ def _write_planned_index(path: str, index: int) -> bool:
     
 
 
-def goto(x: float, y: float, orientation=None) -> bool:
+def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> bool:
     """Set the dynamic waypoint to the specified coordinates.
     
     Args:
         x: X coordinate
         y: Y coordinate
         orientation: Optional orientation angle in degrees (default None)
+        waypoint_type: "task" or "collision" (default "task")
     
     Returns:
         True on success, False on failure
     """
+
+    type_value = (waypoint_type or "task").strip()
+    _atomic_write(DYNAMIC_WAYPOINTS_TYPE_FILE, f"{type_value}\n")
 
     x = max(-0.9, min(0.9, x))
     y = max(-0.9, min(0.9, y))
@@ -491,15 +580,15 @@ def goto(x: float, y: float, orientation=None) -> bool:
     return _atomic_write(DYNAMIC_WAYPOINTS_FILE, coord_line)
 
 
-def stop() -> bool:
+def stop(waypoint_type: str = "task") -> bool:
     """Stop by setting dynamic waypoint to current robot position."""
     cur = _read_current_position(CURRENT_POSITION_FILE)
     if cur is None:
         return False
     x, y, bearing = cur
     if bearing is None:
-        return goto(x, y)
-    return goto(x, y, bearing)
+        return goto(x, y, waypoint_type=waypoint_type)
+    return goto(x, y, bearing, waypoint_type=waypoint_type)
 
 
 def set_velocity(velocity: float) -> bool:
@@ -617,24 +706,15 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
                           current_file: str = CURRENT_POSITION_FILE) -> int:
     """Improved nearest mode: choose nearest ball from visible_balls.txt only."""
 
-    
+    # if collision_avoiding_v2(current_file):
+    #     return 0
 
     sim_time = _read_time_seconds(TIME_FILE)
     if sim_time is not None and sim_time > 170.0:
         goto(-0.9, 0.0, 180.0)
         return 0
 
-    collision_status = _read_status(COLLISION_STATUS_FILE)
-    if collision_status == "activated":
-        waypoint_status = _read_status(status_file)
-        if waypoint_status == "going":
-            return 0
-        if waypoint_status == "reached":
-            _write_collision_status(False)
-
     cur = _read_current_position(current_file)
-    if collision_avoiding_v2(current_file):
-        return 0
 
     status = _read_status(status_file)
     # if status != "reached":
@@ -654,9 +734,9 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
         search_record = int(state[1])
         # print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
         if miss_time == 0.0:
-          if abs(cx) > 0.86 or abs(cy) > 0.86:
-              cx = max(-0.86, min(0.86, cx))
-              cy = max(-0.86, min(0.86, cy))
+          if abs(cx) > 0.85 or abs(cy) > 0.85:
+              cx = max(-0.85, min(0.85, cx))
+              cy = max(-0.85, min(0.85, cy))
               goto(cx, cy, bearing)
           else:
               heading = None if bearing is None else bearing + 179.0
@@ -673,7 +753,8 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
             _atomic_write(TEMP_STATE_FILE, f"({miss_time}, {(search_record+1)%len(SEARCHING_SEQUENCE)})\n")
     else:
         state = _read_state_pair(TEMP_STATE_FILE)
-        search_record = int(state[1])
+        if state is not None:
+          search_record = int(state[1])
         _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
     best = None
     best_d2 = None

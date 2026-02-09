@@ -8,9 +8,10 @@ import sys
 import subprocess
 
 # ==== Initialization ====
-RANDOM_SEED = 1235
+RANDOM_SEED = 1236
 DEFAULT_VELOCITY = 0.3 # m/s
-DEFAULT_ANGULAR_VELOCITY = 3  # rad/s
+DEFAULT_ANGULAR_VELOCITY_MAIN = 1  # rad/s
+DEFAULT_ANGULAR_VELOCITY_OBSTACLE = 1  # rad/s
 supervisor = Supervisor()
 TIME_STEP = int(supervisor.getBasicTimeStep())
 dt = TIME_STEP / 1000.0  # seconds
@@ -24,7 +25,7 @@ PING_HIT = 0
 # Get robot references
 MAIN_ROBOT_NAME = "MY_ROBOT"
 OBSTACLE_ROBOT_NAMES = ["OBSTACLE_ROBOT_1", "OBSTACLE_ROBOT_2", "OBSTACLE_ROBOT_3"]
-OBSTACLE_START_INDICES = [0, 2, 4]  # Starting waypoint indices for each obstacle robot
+OBSTACLE_START_INDICES = [1, 50, 99]  # Starting waypoint indices for each obstacle robot
 
 main_robot = supervisor.getFromDef(MAIN_ROBOT_NAME)
 if main_robot is None:
@@ -59,7 +60,7 @@ class MotionController:
         self.start_angle = 0.0
         self.target_angle = None
         self.velocity = 0.3
-        self.angular_speed = DEFAULT_ANGULAR_VELOCITY  # rad/s (default 90 deg/s)
+        self.angular_speed = DEFAULT_ANGULAR_VELOCITY_OBSTACLE if cycle_mode else DEFAULT_ANGULAR_VELOCITY_MAIN
         self.direction = np.array([0.0, 0.0, 0.0])
         self.total_dist = 0.0
         self.traveled = 0.0
@@ -93,7 +94,7 @@ class MotionController:
         self.elapsed = 0.0
         self.move_speed = self.velocity
         self.angle_delta = 0.0
-        self.angular_speed = DEFAULT_ANGULAR_VELOCITY
+        self.angular_speed = DEFAULT_ANGULAR_VELOCITY_OBSTACLE if self.cycle_mode else DEFAULT_ANGULAR_VELOCITY_MAIN
         self.direction = (delta / dist) if dist > 1e-9 else np.array([0.0, 0.0, 0.0])
 
         if dist <= 1e-6:
@@ -107,10 +108,19 @@ class MotionController:
                 return
 
         if self.target_angle is None:
-            # Rotate in place to face the target, then move in a straight line (do not change orientation)
             target_yaw = math.atan2((y - cur_pos[1]), (x - cur_pos[0]))
             self.target_angle = _normalize_angle(target_yaw)
-            self.phase = 'rotate_then_move'
+            if self.cycle_mode:
+                # Obstacle robots: move while rotating at constant angular speed.
+                self.phase = 'move_and_rotate'
+                self.angle_delta = _normalize_angle(self.target_angle - self.start_angle)
+                time_linear = (self.total_dist / self.velocity) if self.velocity > 1e-9 else 0.0
+                time_angular = (abs(self.angle_delta) / self.angular_speed) if self.angular_speed > 1e-9 else 0.0
+                self.total_time = max(time_linear, time_angular, 1e-6)
+                self.move_speed = self.total_dist / self.total_time if self.total_time > 1e-9 else 0.0
+            else:
+                # Main robot: rotate in place to face the target, then move in a straight line.
+                self.phase = 'rotate_then_move'
         else:
             # Move and interpolate rotation to the target angle simultaneously
             self.phase = 'move_and_rotate'
@@ -280,6 +290,11 @@ def randomize_balls(seed=None, ensure_no_overlap=True):
     margin = ROBOT_HALF_SIZE + CLEARANCE + BALL_RADIUS
     robot_rect = (ROBOT_X - margin, ROBOT_X + margin, ROBOT_Y - margin, ROBOT_Y + margin)
     avoid_zones.append(robot_rect)
+
+    square_half = 0.15
+    square_centers = [(-0.9, 0.0), (0.9, 0.0), (0.0, 0.9), (0.0, -0.9)]
+    for cx, cy in square_centers:
+        avoid_zones.append((cx - square_half, cx + square_half, cy - square_half, cy + square_half))
 
     placed_positions = []
 
