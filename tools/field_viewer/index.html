@@ -12,7 +12,7 @@
         --accent: #e4572e;
         --accent-2: #1d7d7a;
         --muted: #7a7a7a;
-        --visible: #ffd166;
+        --visible: #00DF6C;
         --steel: #6c757d;
         --ping: #3d5a80;
       }
@@ -130,8 +130,12 @@
         robotFront: "#1d7d7a",
         ping: "#3d5a80",
         steel: "#6c757d",
-        visible: "#ffd166",
-        obstacle: "#212529"
+        visible: "#00DF6C",
+        obstacle: "#212529",
+        dynamic: "#e4572e",
+        stack: "#1d7d7a",
+        waypointLine: "rgba(0, 0, 0, 0.35)",
+        waypointMuted: "#7a7a7a"
       };
 
       function worldToCanvas(x, y) {
@@ -168,13 +172,18 @@
         ctx.restore();
       }
 
-      function drawObstacle(x, y) {
+      function drawObstacle(x, y, bearingDeg) {
         const [px, py] = worldToCanvas(x, y);
-        const size = canvas.width * 0.08;
+        const size = canvas.width * 0.1; // 0.2m in a 2m field
+        const half = size / 2;
+        const angle = (bearingDeg || 0) * Math.PI / 180.0;
+
         ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(-angle);
         ctx.fillStyle = COLORS.obstacle;
         ctx.globalAlpha = 0.85;
-        ctx.fillRect(px - size / 2, py - size / 2, size, size);
+        ctx.fillRect(-half, -half, size, size);
         ctx.restore();
       }
 
@@ -195,6 +204,47 @@
         ctx.restore();
       }
 
+      function drawLine(x1, y1, x2, y2, color, width) {
+        const [p1x, p1y] = worldToCanvas(x1, y1);
+        const [p2x, p2y] = worldToCanvas(x2, y2);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(p1x, p1y);
+        ctx.lineTo(p2x, p2y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawTriangle(x, y, color) {
+        const [px, py] = worldToCanvas(x, y);
+        const size = canvas.width * 0.018;
+        const half = size / 2;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(px, py - half);
+        ctx.lineTo(px + half, py + half);
+        ctx.lineTo(px - half, py + half);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawDashedCircle(x, y, color) {
+        const [px, py] = worldToCanvas(x, y);
+        const r = canvas.width * 0.015;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       async function fetchJson(url) {
         try {
           const res = await fetch(url, { cache: "no-store" });
@@ -210,17 +260,20 @@
       }
 
       async function tick() {
-        const [current, balls, visible, obstacles] = await Promise.all([
+        const [current, balls, visible, obstacles, waypoints] = await Promise.all([
           fetchJson("/data/current"),
           fetchJson("/data/balls"),
           fetchJson("/data/visible"),
-          fetchJson("/data/obstacles")
+          fetchJson("/data/obstacles"),
+          fetchJson("/data/waypoints")
         ]);
 
         const robot = current && current.current ? current.current : null;
         const ballList = balls && balls.balls ? balls.balls : [];
         const visibleList = visible && visible.visible ? visible.visible : [];
         const obstacleList = obstacles && obstacles.obstacles ? obstacles.obstacles : [];
+        const dynamic = waypoints && waypoints.dynamic ? waypoints.dynamic : null;
+        const stack = waypoints && waypoints.stack ? waypoints.stack : null;
 
         drawField();
 
@@ -231,7 +284,23 @@
         }
 
         for (const o of obstacleList) {
-          drawObstacle(o.x, o.y);
+          drawObstacle(o.x, o.y, o.bearing);
+        }
+
+        if (dynamic) {
+          if (robot) {
+            drawLine(robot.x, robot.y, dynamic.x, dynamic.y, COLORS.waypointLine, 2);
+          }
+          if (stack) {
+            drawDashedCircle(dynamic.x, dynamic.y, COLORS.waypointMuted);
+          } else {
+            drawTriangle(dynamic.x, dynamic.y, COLORS.dynamic);
+          }
+
+          if (stack) {
+            drawLine(dynamic.x, dynamic.y, stack.x, stack.y, COLORS.waypointLine, 2);
+            drawTriangle(stack.x, stack.y, COLORS.stack);
+          }
         }
 
         if (robot) {

@@ -3,6 +3,7 @@
 from controller import Supervisor
 import math
 import numpy as np
+import os
 import random
 import sys
 import subprocess
@@ -40,6 +41,28 @@ for name in OBSTACLE_ROBOT_NAMES:
         obstacle_robots.append(robot)
     else:
         print(f"Warning: DEF {name} not found in world.")
+
+# ==== Field viewer (init) ====
+FIELD_VIEWER_PORT = 5001
+FIELD_VIEWER_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "tools", "field_viewer", "server.py")
+)
+
+def _start_field_viewer():
+    try:
+        env = os.environ.copy()
+        env.setdefault("PORT", str(FIELD_VIEWER_PORT))
+        subprocess.Popen(
+            [sys.executable, FIELD_VIEWER_PATH],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"可视化已启动 / Field viewer running: http://localhost:{env['PORT']}")
+    except Exception as e:
+        print(f"可视化启动失败 / Failed to start field viewer: {e}")
+
+_start_field_viewer()
 
 # ==== Utility functions ====
 def _normalize_angle(a):
@@ -731,7 +754,7 @@ def _read_speed_mps(path, default_value):
     except Exception:
         return default_value
 
-def _write_visible_balls(path, viewfield_deg=90.0, visible_range_m=0.8):
+def _write_visible_balls(path, viewfield_deg=60.0, visible_range_m=0.8):
     """Write visible balls within viewfield and range to file — overwrite atomically."""
     try:
         tmp = path + '.tmp'
@@ -741,6 +764,53 @@ def _write_visible_balls(path, viewfield_deg=90.0, visible_range_m=0.8):
         rangle = float(rot[3])
         half_fov = math.radians(viewfield_deg) / 2.0
         range_sq = visible_range_m * visible_range_m
+
+        def _segment_intersects_aabb(p0, p1, half):
+            """2D segment vs axis-aligned square centered at origin."""
+            x0, y0 = p0
+            x1, y1 = p1
+            dx = x1 - x0
+            dy = y1 - y0
+            t0, t1 = 0.0, 1.0
+            for p, q in ((-dx, x0 + half), (dx, half - x0), (-dy, y0 + half), (dy, half - y0)):
+                if abs(p) < 1e-12:
+                    if q < 0:
+                        return False
+                else:
+                    t = q / p
+                    if p < 0:
+                        if t > t1:
+                            return False
+                        if t > t0:
+                            t0 = t
+                    else:
+                        if t < t0:
+                            return False
+                        if t < t1:
+                            t1 = t
+            return True
+
+        def _is_occluded_by_obstacles(ball_x, ball_y):
+            # Check line-of-sight segment from robot to ball against each obstacle square.
+            for robot in obstacle_robots:
+                opos = robot.getField("translation").getSFVec3f()
+                ox, oy = float(opos[0]), float(opos[1])
+                orot = robot.getField("rotation").getSFRotation()
+                oangle = float(orot[3])
+
+                # Transform segment endpoints into obstacle-local frame.
+                def to_local(px, py):
+                    dx = px - ox
+                    dy = py - oy
+                    lx = dx * math.cos(-oangle) - dy * math.sin(-oangle)
+                    ly = dx * math.sin(-oangle) + dy * math.cos(-oangle)
+                    return lx, ly
+
+                p0 = to_local(rx, ry)
+                p1 = to_local(ball_x, ball_y)
+                if _segment_intersects_aabb(p0, p1, 0.1):
+                    return True
+            return False
 
         with open(tmp, 'w') as f:
             for i in range(BALL_COUNT):
@@ -766,6 +836,9 @@ def _write_visible_balls(path, viewfield_deg=90.0, visible_range_m=0.8):
 
                 angle = math.atan2(y_robot, x_robot)
                 if abs(angle) > half_fov:
+                    continue
+
+                if _is_occluded_by_obstacles(bx, by):
                     continue
 
                 typ = "PING"

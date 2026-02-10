@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
@@ -18,6 +19,10 @@ CURRENT_FILE = os.path.join(DATA_DIR, "current_position.txt")
 BALLS_FILE = os.path.join(DATA_DIR, "ball_position.txt")
 VISIBLE_FILE = os.path.join(DATA_DIR, "visible_balls.txt")
 OBSTACLES_FILE = os.path.join(DATA_DIR, "obstacle_robot.txt")
+DYNAMIC_FILE = os.path.join(DATA_DIR, "dynamic_waypoints.txt")
+STACK_FILE = os.path.abspath(
+    os.path.join(ROOT_DIR, "..", "..", "decision_making", "waypoints_stack.txt")
+)
 
 
 def _read_lines(path: str) -> list[str]:
@@ -34,12 +39,35 @@ def _parse_tuple(line: str) -> list[str]:
     return [p.strip() for p in line.split(",")]
 
 
-def _parse_xy(line: str):
+def _parse_xy_bearing(line: str):
     parts = _parse_tuple(line)
     if len(parts) < 2:
         return None
     try:
-        return float(parts[0]), float(parts[1])
+        x = float(parts[0])
+        y = float(parts[1])
+    except Exception:
+        return None
+    bearing = None
+    if len(parts) >= 3:
+        try:
+            bearing = float(parts[2])
+        except Exception:
+            bearing = None
+    return x, y, bearing
+
+
+def _extract_xy_from_line(line: str):
+    line = line.split("#", 1)[0].strip()
+    if not line:
+        return None
+    if line.endswith(","):
+        line = line[:-1].strip()
+    nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
+    if len(nums) < 2:
+        return None
+    try:
+        return float(nums[0]), float(nums[1])
     except Exception:
         return None
 
@@ -96,12 +124,33 @@ def _get_balls(path: str):
 def _get_obstacles():
     out = []
     for line in _read_lines(OBSTACLES_FILE):
-        item = _parse_xy(line)
+        item = _parse_xy_bearing(line)
+        if item is None:
+            continue
+        x, y, bearing = item
+        out.append({"x": x, "y": y, "bearing": bearing})
+    return out
+
+
+def _get_dynamic_waypoint():
+    for line in _read_lines(DYNAMIC_FILE):
+        item = _extract_xy_from_line(line)
         if item is None:
             continue
         x, y = item
-        out.append({"x": x, "y": y})
-    return out
+        return {"x": x, "y": y}
+    return None
+
+
+def _get_stack_waypoint():
+    lines = _read_lines(STACK_FILE)
+    for line in reversed(lines):
+        item = _extract_xy_from_line(line)
+        if item is None:
+            continue
+        x, y = item
+        return {"x": x, "y": y}
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -145,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/data/obstacles":
             self._send_json({"obstacles": _get_obstacles()})
             return
+        if path == "/data/waypoints":
+            self._send_json({"dynamic": _get_dynamic_waypoint(), "stack": _get_stack_waypoint()})
+            return
 
         self._send_text("not found", 404, "text/plain")
 
@@ -153,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(os.environ.get("PORT", "5000"))
+    port = int(os.environ.get("PORT", "5001"))
     HTTPServer.allow_reuse_address = True
     try:
         server = HTTPServer(("0.0.0.0", port), Handler)
