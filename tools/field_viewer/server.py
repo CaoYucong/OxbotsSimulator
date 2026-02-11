@@ -20,14 +20,15 @@ BALLS_FILE = os.path.join(DATA_DIR, "ball_position.txt")
 VISIBLE_FILE = os.path.join(DATA_DIR, "visible_balls.txt")
 OBSTACLES_FILE = os.path.join(DATA_DIR, "obstacle_robot.txt")
 DYNAMIC_FILE = os.path.join(DATA_DIR, "dynamic_waypoints.txt")
+
 STACK_FILE = os.path.abspath(
-    os.path.join(ROOT_DIR, "..", "..", "decision_making", "waypoints_stack.txt")
+    os.path.join(ROOT_DIR, "..", "..", "decision_making", "real_time_data", "waypoints_stack.txt")
 )
 ROBOT_AROUND_FILE = os.path.abspath(
-    os.path.join(ROOT_DIR, "..", "..", "decision_making", "robot_around.txt")
+    os.path.join(ROOT_DIR, "..", "..", "decision_making", "real_time_data", "robot_around.txt")
 )
 RADAR_HISTORY_FILE = os.path.abspath(
-    os.path.join(ROOT_DIR, "..", "..", "decision_making", "radar_memory.txt")
+    os.path.join(ROOT_DIR, "..", "..", "decision_making", "real_time_data", "radar_memory.txt")
 )
 
 

@@ -36,15 +36,17 @@ OBSTACLE_ROBOT_FILE = os.path.join(BASE_DIR, "obstacle_robot.txt")
 TIME_FILE = os.path.join(BASE_DIR, "time.txt")
 SPEED_FILE = os.path.join(BASE_DIR, "speed.txt")
 VISIBLE_BALLS_FILE = os.path.join(BASE_DIR, "visible_balls.txt")
+
 PLANNED_WAYPOINTS_FILE = os.path.join(os.path.dirname(__file__), "planned_waypoints.txt")
-PLANNED_INDEX_FILE = os.path.join(os.path.dirname(__file__), "planned_waypoints_index.txt")
-TEMP_STATE_FILE = os.path.join(os.path.dirname(__file__), "search_state.txt")
-WAYPOINTS_STACK_FILE = os.path.join(os.path.dirname(__file__), "waypoints_stack.txt")
-RADAR_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "radar_memory.txt")
-COLLISION_STATUS_FILE = os.path.join(os.path.dirname(__file__), "collision_avoiding_status.txt")
-DYNAMIC_WAYPOINTS_TYPE_FILE = os.path.join(os.path.dirname(__file__), "dynamic_waypoints_type.txt")
-ROBOT_AROUND_FILE = os.path.join(os.path.dirname(__file__), "robot_around.txt")
-LAST_BEST_VECTOR_FILE = os.path.join(os.path.dirname(__file__), "last_best_vector.txt")
+
+PLANNED_INDEX_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "planned_waypoints_index.txt")
+TEMP_STATE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "search_state.txt")
+WAYPOINTS_STACK_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "waypoints_stack.txt")
+RADAR_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "radar_memory.txt")
+COLLISION_STATUS_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "collision_avoiding_status.txt")
+DYNAMIC_WAYPOINTS_TYPE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "dynamic_waypoints_type.txt")
+ROBOT_AROUND_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "robot_around.txt")
+LAST_BEST_VECTOR_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "last_best_vector.txt")
 
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
@@ -55,7 +57,7 @@ DEFAULT_MODE = 'improved_nearest'
 X_MIN, X_MAX = -0.86, 0.86
 Y_MIN, Y_MAX = -0.86, 0.86
 RADAR_MAX_RANGE = 0.8
-MAX_SPEED = 0.7
+MAX_SPEED = 0.5
 NORMAL_SPEED = 0.3
 
 
@@ -856,7 +858,9 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
 
     return False
 
-def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE) -> bool:
+def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
+                          smart_factor: float = 4.0) -> bool:
+
     trigger_distance = 0.05
     cur = _read_current_position(current_file)
     if cur is None:
@@ -1028,13 +1032,12 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE) -> bool:
             # First time avoiding: only consider destination alignment to encourage moving towards the goal.
             if last_best_vec is None:
                 if destination_vector is not None:
-                    score += (vec[0] * destination_vector[0] + vec[1] * destination_vector[1]) * 6
+                    score += (vec[0] * destination_vector[0] + vec[1] * destination_vector[1]) * smart_factor
             #  Not the first time: consider last best direction to encourage stability, and also consider destination alignment but with lower weight to avoid oscillation.
             if last_best_vec is not None:
-                score += (vec[0] * last_best_vec[0] + vec[1] * last_best_vec[1]) * 6
+                score += (vec[0] * last_best_vec[0] + vec[1] * last_best_vec[1]) * smart_factor
                 if destination_vector is not None:
-                    score += (vec[0] * destination_vector[0] + vec[1] * destination_vector[1]) * 6
-
+                    score += (vec[0] * destination_vector[0] + vec[1] * destination_vector[1]) * smart_factor
             if best_score is None or score > best_score:
                 best_score = score
                 best_vec = vec
@@ -1237,6 +1240,15 @@ def mode_nearest(status_file: str = WAYPOINT_STATUS_FILE,
                  balls_file: str = BALL_POS_FILE,
                  current_file: str = CURRENT_POSITION_FILE) -> int:
     """Nearest mode: if status == 'reached', pick nearest ball to robot and write it as waypoint."""
+
+    if collision_avoiding_v3(current_file):
+        return 0
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is not None and sim_time > 170.0:
+        goto(-0.9, 0.0, 180.0)
+        return 0
+
     status = _read_status(status_file)
     # if status != "reached":
     #     return 0
@@ -1314,7 +1326,7 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
                           current_file: str = CURRENT_POSITION_FILE) -> int:
     """Improved nearest mode: choose nearest ball from visible_balls.txt only."""
 
-    if collision_avoiding_v3(current_file):
+    if collision_avoiding_v3(current_file, smart_factor=3.0):
         return 0
 
     sim_time = _read_time_seconds(TIME_FILE)
@@ -1388,8 +1400,20 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
 
 def mode_planned(status_file: str = WAYPOINT_STATUS_FILE,
                  planned_file: str = PLANNED_WAYPOINTS_FILE,
-                 index_file: str = PLANNED_INDEX_FILE) -> int:
+                 index_file: str = PLANNED_INDEX_FILE,
+                 current_file: str = CURRENT_POSITION_FILE) -> int:
     """Planned mode: cycle through planned_waypoints.txt in order."""
+
+    if collision_avoiding_v3(current_file, smart_factor=1.0):
+        return 0
+    
+    set_velocity(0.7)
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is not None and sim_time > 170.0:
+        goto(-0.9, 0.0, 180.0)
+        return 0
+    
     waypoints = _read_planned_waypoints(planned_file)
     if not waypoints:
         return 0

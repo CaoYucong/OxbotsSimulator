@@ -13,7 +13,7 @@
         --accent-2: #1d7d7a;
         --muted: #7a7a7a;
         --visible: #00DF6C;
-        --steel: #6c757d;
+        --metal: #6c757d;
         --ping: #3d5a80;
       }
       * {
@@ -169,10 +169,10 @@
         <div class="stat" id="visibleStat">Visible: --</div>
         <div class="stat" id="obsStat">Obstacles: --</div>
         <div class="legend">
-          <div><span class="chip" style="background: var(--accent)"></span> Robot</div>
-          <div><span class="chip" style="background: var(--accent-2)"></span> Robot Front</div>
+          <div><span class="chip" style="background: var(--accent)"></span> Robot Front</div>
+          <div><span class="chip" style="background: var(--accent-2)"></span> Robot Rear</div>
           <div><span class="chip" style="background: var(--ping)"></span> Ping</div>
-          <div><span class="chip" style="background: var(--steel)"></span> Steel</div>
+          <div><span class="chip" style="background: var(--metal)"></span> Steel</div>
           <div><span class="chip" style="background: var(--visible)"></span> Visible Highlight</div>
         </div>
         <div class="note">Range: x,y in [-1, 1] meters</div>
@@ -212,7 +212,7 @@
         robot: "#e4572e",
         robotFront: "#1d7d7a",
         ping: "#3d5a80",
-        steel: "#6c757d",
+        metal: "#6c757d",
         visible: "#00DF6C",
         obstacle: "#212529",
         dynamic: "#e4572e",
@@ -287,7 +287,7 @@
         ctx.save();
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
-        ctx.fillStyle = typ === "STEEL" ? COLORS.steel : COLORS.ping;
+        ctx.fillStyle = typ === "METAL" ? COLORS.metal : COLORS.ping;
         ctx.fill();
 
         if (highlight) {
@@ -356,6 +356,14 @@
         }
         if (maxAbs <= 0.000001) maxAbs = 1.0;
         const scale = (size * 0.4) / maxAbs;
+
+        aroundCtx.save();
+        aroundCtx.strokeStyle = "#e4572e";
+        aroundCtx.lineWidth = 2;
+        aroundCtx.beginPath();
+        aroundCtx.arc(cx, cy, 0.05 * scale, 0, Math.PI * 2);
+        aroundCtx.stroke();
+        aroundCtx.restore();
 
         aroundCtx.save();
         aroundCtx.fillStyle = COLORS.aroundCenter;

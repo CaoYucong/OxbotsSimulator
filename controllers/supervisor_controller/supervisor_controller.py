@@ -513,6 +513,7 @@ South = -math.pi / 2
 West = math.pi
 
 REAL_TIME_DATA_DIR = os.path.join(os.path.dirname(__file__), "real_time_data")
+DECISION_REAL_TIME_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "decision_making", "real_time_data")
 DYNAMIC_WAYPOINTS_FILE = os.path.join(REAL_TIME_DATA_DIR, "dynamic_waypoints.txt")
 WAYPOINTS_HISTORY_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoints_history.txt")
 WAYPOINT_STATUS_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoint_status.txt")
@@ -524,6 +525,23 @@ OBSTACLE_PLAN_FILE = os.path.join(REAL_TIME_DATA_DIR, "obstacle_plan.txt")
 SPEED_FILE = os.path.join(REAL_TIME_DATA_DIR, "speed.txt")
 VISIBLE_BALLS_FILE = os.path.join(REAL_TIME_DATA_DIR, "visible_balls.txt")
 
+# Clear contents of all .txt files in decision_making/real_time_data at startup
+try:
+    for name in os.listdir(DECISION_REAL_TIME_DIR):
+        if not name.endswith(".txt"):
+            continue
+        path = os.path.join(DECISION_REAL_TIME_DIR, name)
+        if os.path.isfile(path):
+            with open(path, "w") as f:
+                f.write("")
+except FileNotFoundError:
+    pass
+except Exception as e:
+    try:
+        print(f"[startup] failed to clear decision_making/real_time_data txt contents: {e}")
+    except Exception:
+        pass
+
 # Clear dynamic waypoints at startup before any other processing
 try:
     with open(DYNAMIC_WAYPOINTS_FILE, "w") as f:
@@ -531,6 +549,16 @@ try:
 except Exception as e:
     try:
         print(f"[startup] failed to clear dynamic_waypoints.txt: {e}")
+    except Exception:
+        pass
+
+# Initialize speed.txt with DEFAULT_VELOCITY at startup
+try:
+    with open(SPEED_FILE, "w") as f:
+        f.write(f"{DEFAULT_VELOCITY}\n")
+except Exception as e:
+    try:
+        print(f"[startup] failed to set speed.txt: {e}")
     except Exception:
         pass
 
