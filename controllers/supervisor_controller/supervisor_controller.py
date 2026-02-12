@@ -7,6 +7,7 @@ import os
 import random
 import sys
 import subprocess
+import signal
 
 # ==== Initialization ====
 RANDOM_SEED = 1236
@@ -50,6 +51,16 @@ FIELD_VIEWER_PATH = os.path.abspath(
 
 def _start_field_viewer():
     try:
+        try:
+            out = subprocess.check_output(["lsof", "-ti", f":{FIELD_VIEWER_PORT}"], text=True)
+            pids = [int(pid) for pid in out.split() if pid.strip()]
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         env = os.environ.copy()
         env.setdefault("PORT", str(FIELD_VIEWER_PORT))
         subprocess.Popen(

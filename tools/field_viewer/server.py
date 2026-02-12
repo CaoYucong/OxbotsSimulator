@@ -10,9 +10,26 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.abspath(
-    os.path.join(ROOT_DIR, "..", "..", "controllers", "supervisor_controller", "real_time_data")
-)
+PROJECT_ROOT = os.path.abspath(os.path.join(ROOT_DIR, "..", ".."))
+WHO_IS_DEV_FILE = os.path.join(PROJECT_ROOT, "who_is_developing.txt")
+
+def _resolve_decision_making_dir() -> str:
+    """Select decision_making folder based on who_is_developing.txt (cyc/wly)."""
+    default_dir = os.path.join(PROJECT_ROOT, "decision_making")
+    try:
+        with open(WHO_IS_DEV_FILE, "r") as f:
+            dev = f.read().strip().lower()
+        if dev == "cyc":
+            return os.path.join(PROJECT_ROOT, "decision_making_cyc")
+        if dev == "wly":
+            return os.path.join(PROJECT_ROOT, "decision_making_wly")
+    except Exception:
+        pass
+    return default_dir
+
+DECISION_MAKING_DIR = _resolve_decision_making_dir()
+
+DATA_DIR = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data")
 
 INDEX_FILE = os.path.join(ROOT_DIR, "index.html")
 CURRENT_FILE = os.path.join(DATA_DIR, "current_position.txt")
@@ -21,15 +38,9 @@ VISIBLE_FILE = os.path.join(DATA_DIR, "visible_balls.txt")
 OBSTACLES_FILE = os.path.join(DATA_DIR, "obstacle_robot.txt")
 DYNAMIC_FILE = os.path.join(DATA_DIR, "dynamic_waypoints.txt")
 
-STACK_FILE = os.path.abspath(
-    os.path.join(ROOT_DIR, "..", "..", "decision_making", "real_time_data", "waypoints_stack.txt")
-)
-ROBOT_AROUND_FILE = os.path.abspath(
-    os.path.join(ROOT_DIR, "..", "..", "decision_making", "real_time_data", "robot_around.txt")
-)
-RADAR_HISTORY_FILE = os.path.abspath(
-    os.path.join(ROOT_DIR, "..", "..", "decision_making", "real_time_data", "radar_memory.txt")
-)
+STACK_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "waypoints_stack.txt")
+ROBOT_AROUND_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "robot_around.txt")
+RADAR_HISTORY_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "radar_memory.txt")
 
 
 def _read_lines(path: str) -> list[str]:

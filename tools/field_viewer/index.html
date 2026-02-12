@@ -220,7 +220,7 @@
         waypointLine: "rgba(0, 0, 0, 0.35)",
         waypointMuted: "#7a7a7a",
         aroundBox: "rgba(31, 31, 31, 0.5)",
-        aroundVector: "#1d7d7a",
+        aroundVector: "#c7c7c7",
         aroundCenter: "#1f1f1f",
         radarFront: "#e4572e",
         radarRight: "#3d5a80",
@@ -358,14 +358,6 @@
         const scale = (size * 0.4) / maxAbs;
 
         aroundCtx.save();
-        aroundCtx.strokeStyle = "#e4572e";
-        aroundCtx.lineWidth = 2;
-        aroundCtx.beginPath();
-        aroundCtx.arc(cx, cy, 0.05 * scale, 0, Math.PI * 2);
-        aroundCtx.stroke();
-        aroundCtx.restore();
-
-        aroundCtx.save();
         aroundCtx.fillStyle = COLORS.aroundCenter;
         aroundCtx.beginPath();
         aroundCtx.arc(cx, cy, 3, 0, Math.PI * 2);
@@ -387,7 +379,7 @@
         }
 
         if (polyPoints.length > 1) {
-          aroundCtx.strokeStyle = "#e4572e";
+          aroundCtx.strokeStyle = "#35c759";
           aroundCtx.lineWidth = 2;
           aroundCtx.beginPath();
           aroundCtx.moveTo(polyPoints[0][0], polyPoints[0][1]);
@@ -397,6 +389,14 @@
           aroundCtx.lineTo(polyPoints[0][0], polyPoints[0][1]);
           aroundCtx.stroke();
         }
+
+        aroundCtx.save();
+        aroundCtx.strokeStyle = "#e4572e";
+        aroundCtx.lineWidth = 2;
+        aroundCtx.beginPath();
+        aroundCtx.arc(cx, cy, 0.05 * scale, 0, Math.PI * 2);
+        aroundCtx.stroke();
+        aroundCtx.restore();
         aroundCtx.restore();
       }
 
