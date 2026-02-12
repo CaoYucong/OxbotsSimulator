@@ -25,6 +25,7 @@ import sys
 import math
 import re
 from typing import Optional
+import math
 
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "controllers", "supervisor_controller", "real_time_data"))
@@ -50,8 +51,8 @@ LAST_BEST_VECTOR_FILE = os.path.join(os.path.dirname(__file__), "real_time_data"
 
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
-# or `MODE` environment variable is provided. Example: 'random', 'nearest', 'improved_nearest', 'planned' or 'developing'.
-DEFAULT_MODE = 'improved_nearest'
+# or `MODE` environment variable is provided. Example: 'random', 'nearest' or 'developing'.
+DEFAULT_MODE = 'developing'
 
 # generation bounds (match supervisor playground bounds)
 X_MIN, X_MAX = -0.86, 0.86
@@ -1444,6 +1445,7 @@ def mode_planned(status_file: str = WAYPOINT_STATUS_FILE,
 def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
                     waypoint_file: str = DYNAMIC_WAYPOINTS_FILE,
                     current_file: str = CURRENT_POSITION_FILE) -> int:
+    
     """Developing mode: for testing and development purposes.
     
     This function is for developers to test new features. Available utility functions are documented below.
@@ -1505,9 +1507,222 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
     
     # ==================== Add Your Logic Here ====================
     
-    # TODO: Add your development code
-    
+    # TODO: 添加你的开发代码
+    """
+    Corner-entry + quadrant sweep:
+    - Ensures the robot first travels to the quadrant corner entry,
+      then begins the zig-zag grid sweep.
+    - Uses an 'entry_done' file per quadrant to remember progress.
+    """
+    import os, math, sys
+
+    # gating: only run when previous waypoint has been reached
+    status = _read_status(status_file)
+    print(f"[mode_developing:corner-entry-sweep] status='{status}'")
+    if status != "reached":
+        print("[mode_developing] waiting for status == 'reached'")
+        return 0
+
+    # Arena & robot geometry (2m x 2m, centered at 0,0)
+    ARENA_SIZE = 2.0
+    HALF = ARENA_SIZE / 2.0
+    ARENA_X_MIN, ARENA_X_MAX = -HALF, HALF
+    ARENA_Y_MIN, ARENA_Y_MAX = -HALF, HALF
+
+    ROBOT_SIZE = 0.20
+    ROBOT_RADIUS = ROBOT_SIZE / 2.0
+    SAFETY_MARGIN = 0.05
+
+    # quadrant selection
+    try:
+        q = int(os.environ.get("ROBOT_QUADRANT", "1"))
+    except Exception:
+        q = 1
+    if q not in (1, 2, 3, 4):
+        q = 1
+    print(f"[mode_developing] robot quadrant = {q}")
+
+    # Grid density for sweep
+    GRID_NX = 4
+    GRID_NY = 4
+
+    # compute raw quadrant bounds
+    x_mid = (ARENA_X_MIN + ARENA_X_MAX) / 2.0
+    y_mid = (ARENA_Y_MIN + ARENA_Y_MAX) / 2.0
+
+    if q == 1:   # top-right
+        raw_x0, raw_x1 = x_mid, ARENA_X_MAX
+        raw_y0, raw_y1 = y_mid, ARENA_Y_MAX
+    elif q == 2: # top-left
+        raw_x0, raw_x1 = ARENA_X_MIN, x_mid
+        raw_y0, raw_y1 = y_mid, ARENA_Y_MAX
+    elif q == 3: # bottom-left
+        raw_x0, raw_x1 = ARENA_X_MIN, x_mid
+        raw_y0, raw_y1 = ARENA_Y_MIN, y_mid
+    else:        # q == 4 bottom-right
+        raw_x0, raw_x1 = x_mid, ARENA_X_MAX
+        raw_y0, raw_y1 = ARENA_Y_MIN, y_mid
+
+    # margins so waypoints avoid walls
+    margin_x = ROBOT_RADIUS + SAFETY_MARGIN
+    margin_y = ROBOT_RADIUS + SAFETY_MARGIN
+    x0 = raw_x0 + (margin_x if raw_x0 < raw_x1 else -margin_x)
+    x1 = raw_x1 - (margin_x if raw_x1 > raw_x0 else -margin_x)
+    y0 = raw_y0 + (margin_y if raw_y0 < raw_y1 else -margin_y)
+    y1 = raw_y1 - (margin_y if raw_y1 > raw_y0 else -margin_y)
+
+    # fallback if margins invert bounds
+    if x0 > x1:
+        xm = (raw_x0 + raw_x1) / 2.0
+        x0 = x1 = xm
+    if y0 > y1:
+        ym = (raw_y0 + raw_y1) / 2.0
+        y0 = y1 = ym
+
+    # choose corner entry (corner of the margin-adjusted quadrant)
+    if q == 1:   # top-right
+        entry_x, entry_y = x1, y1
+    elif q == 2: # top-left
+        entry_x, entry_y = x0, y1
+    elif q == 3: # bottom-left
+        entry_x, entry_y = x0, y0
+    else:        # q == 4 bottom-right
+        entry_x, entry_y = x1, y0
+
+    # compute orientation: point from entry into the quadrant center (so robot faces inward)
+    center_x = (x0 + x1) / 2.0
+    center_y = (y0 + y1) / 2.0
+    vec_x = center_x - entry_x
+    vec_y = center_y - entry_y
+    entry_orientation_deg = math.degrees(math.atan2(vec_y, vec_x))  # degrees, may be used by goto()
+
+    # build zig-zag grid inside quadrant
+    grid = []
+    for iy in range(GRID_NY):
+        row = []
+        for ix in range(GRID_NX):
+            fx = ix / (GRID_NX - 1) if GRID_NX > 1 else 0.5
+            fy = iy / (GRID_NY - 1) if GRID_NY > 1 else 0.5
+            gx = x0 + fx * (x1 - x0)
+            gy = y0 + fy * (y1 - y0)
+            row.append((gx, gy))
+        if iy % 2 == 1:
+            row.reverse()
+        grid.extend(row)
+
+    if not grid:
+        print("[mode_developing] ERROR: empty grid", file=sys.stderr)
+        return 1
+
+    # progress + entry flag files per quadrant
+    progress_file = os.path.join(BASE_DIR, f"sweep_index_q{q}.txt")
+    entry_flag_file = os.path.join(BASE_DIR, f"entry_done_q{q}.txt")
+
+    def _read_index(path: str) -> int:
+        try:
+            with open(path, "r") as f:
+                return int(f.read().strip())
+        except Exception:
+            return 0
+
+    def _write_index(path: str, idx: int) -> bool:
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(str(idx))
+            os.replace(tmp, path)
+            return True
+        except Exception as e:
+            print(f"[mode_developing] failed to write index: {e}", file=sys.stderr)
+            return False
+
+    def _read_flag(path: str) -> bool:
+        try:
+            with open(path, "r") as f:
+                return f.read().strip() == "1"
+        except Exception:
+            return False
+
+    def _write_flag(path: str, val: bool) -> bool:
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write("1\n" if val else "0\n")
+            os.replace(tmp, path)
+            return True
+        except Exception as e:
+            print(f"[mode_developing] failed to write flag: {e}", file=sys.stderr)
+            return False
+
+    entry_done = _read_flag(entry_flag_file)
+
+    # read current robot position
+    cur = _read_current_position(current_file)
+    if cur is None:
+        # unknown position: request robot to go to entry corner (with orientation) and wait
+        print("[mode_developing] current position unknown -> issuing entry waypoint")
+        ok = goto(entry_x, entry_y, entry_orientation_deg)
+        if not ok:
+            print("[mode_developing] failed to write entry waypoint", file=sys.stderr)
+            return 1
+        return 0
+
+    cx, cy, _ = cur
+    print(f"[mode_developing] current pos: ({cx:.3f}, {cy:.3f}), entry_done={entry_done}")
+
+    # helper: inside quadrant box
+    def _inside(px, py, a_x0, a_x1, a_y0, a_y1, eps=1e-6):
+        xa0 = min(a_x0, a_x1) - eps
+        xa1 = max(a_x0, a_x1) + eps
+        ya0 = min(a_y0, a_y1) - eps
+        ya1 = max(a_y0, a_y1) + eps
+        return (px >= xa0) and (px <= xa1) and (py >= ya0) and (py <= ya1)
+
+    # distance to entry
+    def _dist(a_x, a_y, b_x, b_y):
+        dx = a_x - b_x; dy = a_y - b_y
+        return math.hypot(dx, dy)
+
+    # tolerance to consider the robot "at" the entry corner (meters)
+    ENTRY_TOLERANCE = max(0.12, ROBOT_RADIUS + 0.02)  # ~12 cm or robot radius + small slack
+
+    # If entry not yet done:
+    if not entry_done:
+        # If robot is already inside quadrant and close to entry, mark entry done and proceed to sweep
+        if _inside(cx, cy, x0, x1, y0, y1) and _dist(cx, cy, entry_x, entry_y) <= ENTRY_TOLERANCE:
+            print("[mode_developing] robot already at/near entry -> marking entry_done and proceeding to sweep")
+            _write_flag(entry_flag_file, True)
+            entry_done = True
+        else:
+            # Robot not at entry: issue entry waypoint (corner) with orientation pointing into quadrant
+            print(f"[mode_developing] issuing entry waypoint at corner ({entry_x:.3f}, {entry_y:.3f}) orient {entry_orientation_deg:.1f}°")
+            ok = goto(entry_x, entry_y, entry_orientation_deg)
+            if not ok:
+                print("[mode_developing] failed to write entry waypoint", file=sys.stderr)
+                return 1
+            # do not set entry flag yet; wait until robot actually reaches the entry (status->reached)
+            return 0
+
+    # At this point entry_done == True -> perform sweep
+    idx = _read_index(progress_file)
+    idx = idx % len(grid)
+    target_x, target_y = grid[idx]
+    print(f"[mode_developing] issuing sweep waypoint #{idx} -> ({target_x:.3f}, {target_y:.3f})")
+    ok = goto(target_x, target_y)
+    if not ok:
+        print("[mode_developing] failed to write dynamic waypoint", file=sys.stderr)
+        return 1
+
+    # advance index for next time
+    next_idx = (idx + 1) % len(grid)
+    if not _write_index(progress_file, next_idx):
+        print("[mode_developing] WARNING: could not persist sweep index", file=sys.stderr)
+
     return 0
+
+
+
+
 
 
 # Mode dispatch table: add new handlers here

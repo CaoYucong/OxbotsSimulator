@@ -251,7 +251,7 @@ DEF OBSTACLE_ROBOT_1 Cube-Robot {
     "../textures/robot_texture/warning_sign.jpeg"
   ]
   rightTextureUrl [
-    "../textures/robot_texture/warning_sign.jpegs"
+    "../textures/robot_texture/warning_sign.jpeg"
   ]
 }
 DEF OBSTACLE_ROBOT_2 Cube-Robot {
@@ -273,7 +273,7 @@ DEF OBSTACLE_ROBOT_2 Cube-Robot {
     "../textures/robot_texture/warning_sign.jpeg"
   ]
   rightTextureUrl [
-    "../textures/robot_texture/warning_sign.jpegs"
+    "../textures/robot_texture/warning_sign.jpeg"
   ]
 }
 DEF OBSTACLE_ROBOT_3 Cube-Robot {
@@ -295,6 +295,6 @@ DEF OBSTACLE_ROBOT_3 Cube-Robot {
     "../textures/robot_texture/warning_sign.jpeg"
   ]
   rightTextureUrl [
-    "../textures/robot_texture/warning_sign.jpegs"
+    "../textures/robot_texture/warning_sign.jpeg"
   ]
 }
