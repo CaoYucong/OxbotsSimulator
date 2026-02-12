@@ -513,7 +513,25 @@ South = -math.pi / 2
 West = math.pi
 
 REAL_TIME_DATA_DIR = os.path.join(os.path.dirname(__file__), "real_time_data")
-DECISION_REAL_TIME_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "decision_making", "real_time_data")
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+WHO_IS_DEV_FILE = os.path.join(PROJECT_ROOT, "who_is_developing.txt")
+
+def _resolve_decision_making_dir():
+    """Select decision_making folder based on who_is_developing.txt (cyc/wly)."""
+    default_dir = os.path.join(PROJECT_ROOT, "decision_making")
+    try:
+        with open(WHO_IS_DEV_FILE, "r") as f:
+            dev = f.read().strip().lower()
+        if dev == "cyc":
+            return os.path.join(PROJECT_ROOT, "decision_making_cyc")
+        if dev == "wly":
+            return os.path.join(PROJECT_ROOT, "decision_making_wly")
+    except Exception:
+        pass
+    return default_dir
+
+DECISION_MAKING_DIR = _resolve_decision_making_dir()
+DECISION_REAL_TIME_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data")
 DYNAMIC_WAYPOINTS_FILE = os.path.join(REAL_TIME_DATA_DIR, "dynamic_waypoints.txt")
 WAYPOINTS_HISTORY_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoints_history.txt")
 WAYPOINT_STATUS_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoint_status.txt")
@@ -928,7 +946,7 @@ if current_waypoint is not None:
     main_motion.start(x, y, velocity=None, angle=ang)
 
 # Cruise script execution parameters
-CRUISE_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "decision_making", "waypoints_cruise.py")
+CRUISE_SCRIPT_PATH = os.path.join(DECISION_MAKING_DIR, "waypoints_cruise.py")
 CRUISE_INTERVAL_FRAMES = 15  # Execute cruise script every N frames
 frame_counter = 0
 
