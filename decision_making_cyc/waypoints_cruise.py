@@ -47,6 +47,11 @@ COLLISION_STATUS_FILE = os.path.join(os.path.dirname(__file__), "real_time_data"
 DYNAMIC_WAYPOINTS_TYPE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "dynamic_waypoints_type.txt")
 ROBOT_AROUND_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "robot_around.txt")
 LAST_BEST_VECTOR_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "last_best_vector.txt")
+SEEN_TILE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "see_tile.txt")
+TILE_SEEN_TIME_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "tile_seen_time.txt")
+BALL_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "ball_tile_memory.txt")
+LAST_SECOND_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "last_second.txt")
+BALL_LIST_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "ball_memory.txt")
 
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
@@ -137,6 +142,36 @@ def _read_ball_positions(path: str):
     except Exception:
         pass
     return out
+
+
+def _read_ball_memory_points(path: str) -> list[tuple[float, float]]:
+    """Read remembered ball points from ball_memory.txt."""
+    out = []
+    try:
+        with open(path, "r") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                if line.startswith("(") and line.endswith(")"):
+                    line = line[1:-1]
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    x = float(parts[0])
+                    y = float(parts[1])
+                    out.append((x, y))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return out
+
+
+def _write_ball_memory_points(path: str, points: list[tuple[float, float]]) -> bool:
+    content = "\n".join(f"({x:.6f}, {y:.6f})" for x, y in points) + ("\n" if points else "")
+    return _atomic_write(path, content)
 
 
 def _read_visible_ball_positions(path: str):
@@ -339,6 +374,8 @@ def in_view(point,
     dy = py - cy
     dist = math.hypot(dx, dy)
     if dist > Range:
+        return False
+    if dist < 0.15:
         return False
 
     # FOV check around current bearing.
@@ -953,25 +990,6 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
     else:
         coord_line = f"({x:.6f}, {y:.6f}, {orientation:.6f})\n"
 
-    # critical_alpha = None
-    # if abs(x) > 0.86 or abs(y) > 0.86:
-    #     if x < -0.86:
-    #         critical_alpha = 45.0 - math.degrees(math.acos((x + 1.0) / (0.1 * math.sqrt(2.0))))
-    #         coord_line = f"({x:.6f}, {y:.6f}, 180)\n"
-    #     if x > 0.86:
-    #         critical_alpha = 45.0 - math.degrees(math.acos((-x + 1.0) / (0.1 * math.sqrt(2.0))))
-    #         coord_line = f"({x:.6f}, {y:.6f}, 0)\n"
-    #     if y < -0.86:
-    #         critical_alpha = 45.0 - math.degrees(math.acos((y + 1.0) / (0.1 * math.sqrt(2.0))))
-    #         coord_line = f"({x:.6f}, {y:.6f}, -90)\n"
-    #     if y > 0.86:
-    #         critical_alpha = 45.0 - math.degrees(math.acos((-y + 1.0) / (0.1 * math.sqrt(2.0))))
-    #         coord_line = f"({x:.6f}, {y:.6f}, 90)\n"
-    #     # print(f"[waypoints_cruise] critical alpha: {critical_alpha:.2f} degrees", file=sys.stderr)
-
-    # if critical_alpha is not None:
-    #     pass
-    
     return _atomic_write(DYNAMIC_WAYPOINTS_FILE, coord_line)
 
 
@@ -1115,17 +1133,186 @@ def mode_realistic_nearest(status_file: str = WAYPOINT_STATUS_FILE,
     ok = goto(target_x, target_y, heading_deg)
     return 0 if ok else 1
 
-# Build 0.1m point grid over [-1, 1] x [-1, 1], starting from (0.95, 0.95).
-# Shape: 20 x 20, each entry is (x, y).
+# Build 0.1m point grid over [-1, 1] x [-1, 1].
+# Top-left is (-0.95, 0.95), bottom-right is (0.95, -0.95).
 FIELD_TILES = [
     [
-        (round(0.95 - col * 0.1, 2), round(0.95 - row * 0.1, 2))
+        (round(-0.95 + col * 0.1, 2), round(0.95 - row * 0.1, 2))
         for col in range(20)
     ]
     for row in range(20)
 ]
 
-print(f"FIELD_TILES = {FIELD_TILES}", file=sys.stderr)
+
+def _read_seen_tile_matrix(path: str, rows: int, cols: int) -> list[list[float]]:
+    """Read seen tile matrix from text file; return zero matrix on failure/missing data."""
+    matrix = [[0.0 for _ in range(cols)] for _ in range(rows)]
+    try:
+        with open(path, "r") as f:
+            lines = f.readlines()
+    except Exception:
+        return matrix
+
+    for r in range(min(rows, len(lines))):
+        nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", lines[r])
+        for c in range(min(cols, len(nums))):
+            try:
+                matrix[r][c] = float(nums[c])
+            except Exception:
+                matrix[r][c] = 0.0
+    return matrix
+
+
+def _write_seen_tile_matrix(path: str, matrix: list[list[float]]) -> bool:
+    def _fmt(v: float) -> str:
+        return "0" if abs(v) < 1e-12 else f"{v:.3f}"
+
+    content = "\n".join(
+        ",".join(_fmt(v) for v in row)
+        for row in matrix
+    ) + "\n"
+    return _atomic_write(path, content)
+
+
+def update_seen_tiles(seen_tile_file: str = SEEN_TILE_FILE,
+                      fov: float = 60.0,
+                      view_range: float = 0.8) -> bool:
+    """Update seen_tile.txt based on FIELD_TILES and current visibility.
+
+    Rules:
+    - Visible & old value != 0: keep unchanged.
+    - Visible & old value == 0: write current simulation time.
+    - Not visible: write 0.
+    """
+    rows = len(FIELD_TILES)
+    cols = len(FIELD_TILES[0]) if rows > 0 else 0
+    if rows == 0 or cols == 0:
+        return False
+
+    seen = _read_seen_tile_matrix(seen_tile_file, rows, cols)
+    sim_time = _read_time_seconds(TIME_FILE)
+    current_time = sim_time if sim_time is not None else time.time()
+
+    for r in range(rows):
+        for c in range(cols):
+            point = FIELD_TILES[r][c]
+            visible = in_view(point, FOV=fov, Range=view_range)
+            old_val = seen[r][c]
+
+            if visible:
+                if abs(old_val) < 1e-12:
+                    seen[r][c] = current_time
+            else:
+                seen[r][c] = 0.0
+
+    seen_ok = _write_seen_tile_matrix(seen_tile_file, seen)
+
+    tile_seen_time = [
+        [
+            0.0 if abs(v) < 1e-12 else max(0.0, current_time - v)
+            for v in row
+        ]
+        for row in seen
+    ]
+    time_ok = _write_seen_tile_matrix(TILE_SEEN_TIME_FILE, tile_seen_time)
+
+    return seen_ok and time_ok
+
+
+def update_ball_memory(memory_tile_file: str = BALL_MEMORY_FILE,
+                       visible_balls_file: str = VISIBLE_BALLS_FILE,
+                       last_second_file: str = LAST_SECOND_FILE,
+                       ball_memory_file: str = BALL_LIST_MEMORY_FILE) -> bool:
+    """Update ball_tile_memory matrix and maintain deduplicated ball_memory.txt.
+
+    For each NEW visible ball (distance > 0.05 to all remembered points):
+    - nearest tile point: +5
+    - tiles within 0.1m: +3
+    - tiles within 0.2m: +2
+    """
+    rows = len(FIELD_TILES)
+    cols = len(FIELD_TILES[0]) if rows > 0 else 0
+    if rows == 0 or cols == 0:
+        return False
+
+    memory = _read_seen_tile_matrix(memory_tile_file, rows, cols)
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    current_second = int(sim_time if sim_time is not None else time.time())
+    last_second_raw = _read_status(last_second_file)
+    last_second = None
+    if last_second_raw is not None:
+        try:
+            last_second = int(float(last_second_raw))
+        except Exception:
+            last_second = None
+
+    if last_second != current_second:
+        _atomic_write(last_second_file, f"{current_second}\n")
+        for r in range(rows):
+            for c in range(cols):
+                memory[r][c] = max(0.0, memory[r][c] - 1.0)
+
+    visible_balls = _read_visible_ball_positions(visible_balls_file)
+    remembered_points = _read_ball_memory_points(ball_memory_file)
+    new_visible_balls = []
+
+    for bx, by, _ in visible_balls:
+        is_new = True
+        for mx, my in remembered_points:
+            if math.hypot(bx - mx, by - my) <= 0.1:
+                is_new = False
+                break
+        if is_new:
+            remembered_points.append((bx, by))
+            new_visible_balls.append((bx, by))
+
+    points_ok = _write_ball_memory_points(ball_memory_file, remembered_points)
+
+    flat_tiles = []
+    for r in range(rows):
+        for c in range(cols):
+            tx, ty = FIELD_TILES[r][c]
+            flat_tiles.append((r, c, tx, ty))
+
+    for bx, by in new_visible_balls:
+        nearest_rc = None
+        nearest_d2 = None
+
+        for r, c, tx, ty in flat_tiles:
+            dx = tx - bx
+            dy = ty - by
+            d2 = dx * dx + dy * dy
+
+            if nearest_d2 is None or d2 < nearest_d2:
+                nearest_d2 = d2
+                nearest_rc = (r, c)
+
+            if d2 <= 0.1 * 0.1:
+                memory[r][c] += 3.0
+
+        if nearest_rc is not None:
+            nr, nc = nearest_rc
+            memory[nr][nc] += 5
+
+    cur = _read_current_position(CURRENT_POSITION_FILE)
+    if cur is not None:
+        cx, cy, bearing = cur
+        theta = math.radians(bearing) if bearing is not None else 0.0
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        half = 0.2
+
+        for r, c, tx, ty in flat_tiles:
+            dx = tx - cx
+            dy = ty - cy
+            x_robot = dx * cos_t + dy * sin_t
+            y_robot = -dx * sin_t + dy * cos_t
+            if abs(x_robot) <= half and abs(y_robot) <= half:
+                memory[r][c] = 0.0
+
+    tile_ok = _write_seen_tile_matrix(memory_tile_file, memory)
+    return points_ok and tile_ok
 
 def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
                           waypoint_file: str = DYNAMIC_WAYPOINTS_FILE,
@@ -1133,7 +1320,8 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
                           current_file: str = CURRENT_POSITION_FILE) -> int:
     """Realistic nearest mode: choose nearest ball from visible_balls.txt only."""
 
-    
+    update_seen_tiles()
+    update_ball_memory(visible_balls_file=visible_balls_file)
 
     if collision_avoiding_v3(current_file, smart_factor=3.0):
         return 0
@@ -1154,6 +1342,26 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
     if not bx:
         if status != "reached":
             return 0
+
+        rows = len(FIELD_TILES)
+        cols = len(FIELD_TILES[0]) if rows > 0 else 0
+        memory = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+        best_rc = None
+        best_val = -1.0
+        for r in range(rows):
+            for c in range(cols):
+                v = memory[r][c]
+                if v > best_val:
+                    best_val = v
+                    best_rc = (r, c)
+
+        if best_rc is not None and best_val > 0.0:
+            tr, tc = best_rc
+            tx, ty = FIELD_TILES[tr][tc]
+            heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
+            goto(tx, ty, heading_deg)
+            return 0
+
         state = _read_state_pair(TEMP_STATE_FILE)
         if state is None:
             state = (0.0, 0.0)
@@ -1318,6 +1526,7 @@ _MODE_HANDLERS = {
     "random": mode_random,
     "nearest": mode_nearest,
     "realistic_nearest": mode_realistic_nearest,
+    "improved_nearest": mode_improved_nearest,
     "planned": mode_planned,
 }
 

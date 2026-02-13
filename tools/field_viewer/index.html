@@ -326,6 +326,56 @@
         ctx.restore();
       }
 
+      function drawTileSeenOverlay(tiles) {
+        if (!tiles || tiles.length === 0) return;
+
+        for (const t of tiles) {
+          if (!t || typeof t.value !== "number" || Math.abs(t.value) < 1e-12) {
+            continue;
+          }
+
+          const x1 = t.x - 0.0125;
+          const x2 = t.x + 0.0125;
+          const y1 = t.y - 0.0125;
+          const y2 = t.y + 0.0125;
+
+          const [px1, py1] = worldToCanvas(x1, y2);
+          const [px2, py2] = worldToCanvas(x2, y1);
+          const left = Math.min(px1, px2);
+          const top = Math.min(py1, py2);
+          const width = Math.abs(px2 - px1);
+          const height = Math.abs(py2 - py1);
+
+          ctx.save();
+          ctx.fillStyle = "rgba(0, 223, 108, 0.7)";
+          ctx.fillRect(left, top, width, height);
+          ctx.restore();
+        }
+      }
+
+      function drawBallTileMemoryOverlay(tiles) {
+        if (!tiles || tiles.length === 0) return;
+
+        for (const t of tiles) {
+          if (!t || typeof t.value !== "number") {
+            continue;
+          }
+
+          const [px, py] = worldToCanvas(t.x - 0.025, t.y + 0.025);
+          const valueText = Math.abs(t.value - Math.round(t.value)) < 1e-9
+            ? String(Math.round(t.value))
+            : t.value.toFixed(2);
+
+          ctx.save();
+          ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+          ctx.font = "10px IBM Plex Sans, Helvetica Neue, Arial, sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(valueText, px, py);
+          ctx.restore();
+        }
+      }
+
       function drawDashedCircle(x, y, color) {
         const [px, py] = worldToCanvas(x, y);
         const r = canvas.width * 0.015;
@@ -484,14 +534,16 @@
       }
 
       async function tick() {
-        const [current, balls, visible, obstacles, waypoints, robotAround, radarHistory] = await Promise.all([
+        const [current, balls, visible, obstacles, waypoints, robotAround, radarHistory, tileSeenTime, ballTileMemory] = await Promise.all([
           fetchJson("/data/current"),
           fetchJson("/data/balls"),
           fetchJson("/data/visible"),
           fetchJson("/data/obstacles"),
           fetchJson("/data/waypoints"),
           fetchJson("/data/robot-around"),
-          fetchJson("/data/radar-history")
+          fetchJson("/data/radar-history"),
+          fetchJson("/data/tile-seen-time"),
+          fetchJson("/data/ball-tile-memory")
         ]);
 
         const robot = current && current.current ? current.current : null;
@@ -502,8 +554,12 @@
         const stack = waypoints && waypoints.stack ? waypoints.stack : null;
         const aroundVectors = robotAround && robotAround.vectors ? robotAround.vectors : [];
         const radarSeries = radarHistory && radarHistory.history ? radarHistory.history : [];
+        const tileSeenList = tileSeenTime && tileSeenTime.tiles ? tileSeenTime.tiles : [];
+        const ballTileMemoryList = ballTileMemory && ballTileMemory.tiles ? ballTileMemory.tiles : [];
 
         drawField();
+        drawTileSeenOverlay(tileSeenList);
+        drawBallTileMemoryOverlay(ballTileMemoryList);
 
         const visibleSet = new Set(visibleList.map(makeVisibleKey));
         for (const b of ballList) {
