@@ -52,6 +52,9 @@ TILE_SEEN_TIME_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", 
 BALL_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "ball_tile_memory.txt")
 LAST_SECOND_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "last_second.txt")
 BALL_LIST_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "ball_memory.txt")
+UNSEEN_TILE_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "unseen_tile_memory.txt")
+LAST_SECOND_TILES_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "last_second_tiles.txt")
+UNSEEN_REGIONS_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "unseen_regions.txt")
 
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
@@ -62,7 +65,7 @@ DEFAULT_MODE = 'improved_nearest'
 X_MIN, X_MAX = -0.86, 0.86
 Y_MIN, Y_MAX = -0.86, 0.86
 RADAR_MAX_RANGE = 0.8
-MAX_SPEED = 0.5
+MAX_SPEED = 0.7
 NORMAL_SPEED = 0.3
 
 
@@ -1314,6 +1317,141 @@ def update_ball_memory(memory_tile_file: str = BALL_MEMORY_FILE,
     tile_ok = _write_seen_tile_matrix(memory_tile_file, memory)
     return points_ok and tile_ok
 
+
+def update_unseen_tiles(unseen_tile_file: str = UNSEEN_TILE_MEMORY_FILE,
+                        seen_tile_file: str = SEEN_TILE_FILE,
+                        last_second_tiles_file: str = LAST_SECOND_TILES_FILE) -> bool:
+    """Update unseen_tile_memory matrix with per-second accumulation.
+
+        Rules:
+        - If current integer second differs from last_second_tiles.txt, write current
+            second and add +1 to every unseen tile memory cell.
+        - Then read see_tile.txt and reset unseen tile memory cell to 0 only when
+            a tile has remained visible for at least 2.0 seconds.
+    """
+    rows = len(FIELD_TILES)
+    cols = len(FIELD_TILES[0]) if rows > 0 else 0
+    if rows == 0 or cols == 0:
+        return False
+
+    unseen = _read_seen_tile_matrix(unseen_tile_file, rows, cols)
+    seen = _read_seen_tile_matrix(seen_tile_file, rows, cols)
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    current_time = sim_time if sim_time is not None else time.time()
+    current_second = int(current_time)
+    last_second_raw = _read_status(last_second_tiles_file)
+    last_second = None
+    if last_second_raw is not None:
+        try:
+            last_second = int(float(last_second_raw))
+        except Exception:
+            last_second = None
+
+    second_ok = True
+    if last_second != current_second:
+        second_ok = _atomic_write(last_second_tiles_file, f"{current_second}\n")
+        for r in range(rows):
+            for c in range(cols):
+                unseen[r][c] += 1.0
+
+    for r in range(rows):
+        for c in range(cols):
+            seen_since = seen[r][c]
+            if seen_since > 0.0 and (current_time - seen_since) >= 0.5:
+                unseen[r][c] = 0.0
+
+    unseen_ok = _write_seen_tile_matrix(unseen_tile_file, unseen)
+    return second_ok and unseen_ok
+
+
+def update_unseen_regions(unseen_tile_file: str = UNSEEN_TILE_MEMORY_FILE,
+                          unseen_regions_file: str = UNSEEN_REGIONS_FILE) -> bool:
+    """Compute 0.4m-square local average unseen values for each tile center.
+
+    For each tile center, use a square window of side length 0.4m centered at
+    that tile. With 0.1m grid spacing this is a 5x5 index window (radius=2).
+    Out-of-field samples contribute 0 to the sum and are excluded from the
+    average denominator (average by actually existing points).
+    """
+    rows = len(FIELD_TILES)
+    cols = len(FIELD_TILES[0]) if rows > 0 else 0
+    if rows == 0 or cols == 0:
+        return False
+
+    unseen = _read_seen_tile_matrix(unseen_tile_file, rows, cols)
+    regions = [[0.0 for _ in range(cols)] for _ in range(rows)]
+
+    radius = 2  # 0.2m / 0.1m
+    for r in range(rows):
+        for c in range(cols):
+            total = 0.0
+            count = 0
+            for rr in range(r - radius, r + radius + 1):
+                for cc in range(c - radius, c + radius + 1):
+                    if 0 <= rr < rows and 0 <= cc < cols:
+                        total += unseen[rr][cc]
+                        count += 1
+                    else:
+                        total += 0.0
+
+            regions[r][c] = (total / count) if count > 0 else 0.0
+
+    return _write_seen_tile_matrix(unseen_regions_file, regions)
+
+
+def goto_unseen_region(cx: float,
+                      cy: float,
+                      unseen_tile_file: str = UNSEEN_REGIONS_FILE) -> bool:
+    """Goto the max unseen tile (nearest on ties). Return True if dispatched.
+
+    If all unseen tiles are 0, return False.
+    """
+    rows = len(FIELD_TILES)
+    cols = len(FIELD_TILES[0]) if rows > 0 else 0
+    if rows == 0 or cols == 0:
+        return False
+
+    memory_unseen = _read_seen_tile_matrix(unseen_tile_file, rows, cols)
+    best_unseen_rc = None
+    best_unseen_val = -1.0
+    best_unseen_d2 = None
+
+    for r in range(rows):
+        for c in range(cols):
+            v = memory_unseen[r][c]
+            tx, ty = FIELD_TILES[r][c]
+            dx = tx - cx
+            dy = ty - cy
+            d2 = dx * dx + dy * dy
+
+            if v > best_unseen_val:
+                best_unseen_val = v
+                best_unseen_rc = (r, c)
+                best_unseen_d2 = d2
+            elif abs(v - best_unseen_val) < 1e-9:
+                if best_unseen_d2 is None or d2 < best_unseen_d2:
+                    best_unseen_rc = (r, c)
+                    best_unseen_d2 = d2
+
+    if best_unseen_rc is None or best_unseen_val <= 0.0:
+        return False
+
+    tr, tc = best_unseen_rc
+    tx, ty = FIELD_TILES[tr][tc]
+    if tx >= 0:
+        dx = tx - 0.4
+    else:
+        dx = tx + 0.4
+    if ty >= 0:
+        dy = ty - 0.4
+    else:
+        dy = ty + 0.4
+    heading_deg = math.degrees(math.atan2(ty - dy, tx - dx))
+    goto(dx, dy, heading_deg)
+    # print(f"[waypoints_cruise] goto unseen region at tile ({tr}, {tc}, {heading_deg})", file=sys.stderr)
+    return True
+
 def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
                           waypoint_file: str = DYNAMIC_WAYPOINTS_FILE,
                           visible_balls_file: str = VISIBLE_BALLS_FILE,
@@ -1321,10 +1459,13 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
     """Realistic nearest mode: choose nearest ball from visible_balls.txt only."""
 
     update_seen_tiles()
+    update_unseen_tiles()
+    update_unseen_regions()
+    
     update_ball_memory(visible_balls_file=visible_balls_file)
 
-    if collision_avoiding_v3(current_file, smart_factor=3.0):
-        return 0
+    # if collision_avoiding_v3(current_file, smart_factor=3.0):
+    #     return 0
 
     sim_time = _read_time_seconds(TIME_FILE)
     if sim_time is not None and sim_time > 170.0:
@@ -1345,18 +1486,19 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
 
         rows = len(FIELD_TILES)
         cols = len(FIELD_TILES[0]) if rows > 0 else 0
-        memory = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
-        best_rc = None
-        best_val = -1.0
+
+        memory_ball = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+        best_ball_rc = None
+        best_ball_val = -1.0
         for r in range(rows):
             for c in range(cols):
-                v = memory[r][c]
-                if v > best_val:
-                    best_val = v
-                    best_rc = (r, c)
+                v = memory_ball[r][c]
+                if v > best_ball_val:
+                    best_ball_val = v
+                    best_ball_rc = (r, c)
 
-        if best_rc is not None and best_val > 0.0:
-            tr, tc = best_rc
+        if best_ball_rc is not None and best_ball_val > 0.0:
+            tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
             heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
             goto(tx, ty, heading_deg)
@@ -1376,12 +1518,18 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
           else:
               heading = None if bearing is None else bearing + 179.0
               goto(cx, cy, heading)
-          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+              _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
           return 0
         if miss_time == 1.0:
           heading = None if bearing is None else bearing + 179.0
           goto(cx, cy, heading)
           _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+        
+        if goto_unseen_region(cx, cy):
+            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            return 0
+
         if miss_time >= 2.0:
             index = search_record % len(SEARCHING_SEQUENCE)
             goto(SEARCHING_SEQUENCE[index][0], SEARCHING_SEQUENCE[index][1], SEARCHING_SEQUENCE[index][2])

@@ -890,6 +890,9 @@ def _write_visible_balls(path, viewfield_deg=60.0, visible_range_m=0.8):
                 dist_sq = x_robot * x_robot + y_robot * y_robot
                 if dist_sq > range_sq:
                     continue
+                
+                if dist_sq < 0.15*0.15:
+                    continue
 
                 angle = math.atan2(y_robot, x_robot)
                 if abs(angle) > half_fov:

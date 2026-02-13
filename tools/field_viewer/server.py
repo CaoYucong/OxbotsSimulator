@@ -43,6 +43,8 @@ ROBOT_AROUND_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "robot_a
 RADAR_HISTORY_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "radar_memory.txt")
 TILE_SEEN_TIME_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "tile_seen_time.txt")
 BALL_TILE_MEMORY_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "ball_tile_memory.txt")
+UNSEEN_TILE_MEMORY_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "unseen_tile_memory.txt")
+UNSEEN_REGIONS_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "unseen_regions.txt")
 
 
 def _read_lines(path: str) -> list[str]:
@@ -308,6 +310,106 @@ def _get_ball_tile_memory():
     return out
 
 
+def _get_unseen_tile_memory():
+    """Return unseen tile-memory entries mapped to world coordinates.
+
+    Matrix corners are mapped as:
+    - top-left     => (-0.95,  0.95)
+    - bottom-right => ( 0.95, -0.95)
+
+    Works for any matrix size (e.g. 10x10 or 20x20).
+    """
+    lines = _read_lines(UNSEEN_TILE_MEMORY_FILE)
+    if not lines:
+        return []
+
+    matrix = []
+    for line in lines:
+        nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
+        if not nums:
+            continue
+        row = []
+        for n in nums:
+            try:
+                row.append(float(n))
+            except Exception:
+                row.append(0.0)
+        matrix.append(row)
+
+    if not matrix:
+        return []
+
+    rows = len(matrix)
+    cols = min(len(r) for r in matrix if r) if any(matrix) else 0
+    if rows <= 0 or cols <= 0:
+        return []
+
+    x_step = 1.9 / (cols - 1) if cols > 1 else 0.0
+    y_step = 1.9 / (rows - 1) if rows > 1 else 0.0
+
+    out = []
+    for r in range(rows):
+        for c in range(cols):
+            try:
+                v = float(matrix[r][c])
+            except Exception:
+                v = 0.0
+            x = -0.95 + c * x_step
+            y = 0.95 - r * y_step
+            out.append({"x": x, "y": y, "value": v})
+    return out
+
+
+def _get_unseen_regions():
+    """Return unseen-regions entries mapped to world coordinates.
+
+    Matrix corners are mapped as:
+    - top-left     => (-0.95,  0.95)
+    - bottom-right => ( 0.95, -0.95)
+
+    Works for any matrix size (e.g. 10x10 or 20x20).
+    """
+    lines = _read_lines(UNSEEN_REGIONS_FILE)
+    if not lines:
+        return []
+
+    matrix = []
+    for line in lines:
+        nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
+        if not nums:
+            continue
+        row = []
+        for n in nums:
+            try:
+                row.append(float(n))
+            except Exception:
+                row.append(0.0)
+        matrix.append(row)
+
+    if not matrix:
+        return []
+
+    rows = len(matrix)
+    cols = min(len(r) for r in matrix if r) if any(matrix) else 0
+    if rows <= 0 or cols <= 0:
+        return []
+
+    x_step = 1.9 / (cols - 1) if cols > 1 else 0.0
+    y_step = 1.9 / (rows - 1) if rows > 1 else 0.0
+
+    out = []
+    for r in range(rows):
+        for c in range(cols):
+            try:
+                v = float(matrix[r][c])
+            except Exception:
+                v = 0.0
+            x = -0.95 + c * x_step
+            y = 0.95 - r * y_step
+            out.append({"x": x, "y": y, "value": v})
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
@@ -363,6 +465,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/data/ball-tile-memory":
             self._send_json({"tiles": _get_ball_tile_memory()})
+            return
+        if path == "/data/unseen-tile-memory":
+            self._send_json({"tiles": _get_unseen_tile_memory()})
+            return
+        if path == "/data/unseen-regions":
+            self._send_json({"tiles": _get_unseen_regions()})
             return
 
         self._send_text("not found", 404, "text/plain")
