@@ -1464,8 +1464,8 @@ def mode_improved_nearest(status_file: str = WAYPOINT_STATUS_FILE,
     
     update_ball_memory(visible_balls_file=visible_balls_file)
 
-    # if collision_avoiding_v3(current_file, smart_factor=3.0):
-    #     return 0
+    if collision_avoiding_v3(current_file, smart_factor=3.0):
+        return 0
 
     sim_time = _read_time_seconds(TIME_FILE)
     if sim_time is not None and sim_time > 170.0:
