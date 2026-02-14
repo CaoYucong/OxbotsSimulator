@@ -575,6 +575,61 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
     return [(direction, dist) for direction, dist in hits.items()]
 
 
+def _predict_wall_radar_distances(current_file: str = CURRENT_POSITION_FILE) -> dict[str, float]:
+    """Predict ideal wall radar distances (front/right/left/rear) from current pose.
+
+    Distances are measured like radar_sensor: from robot shell (robot_half=0.1)
+    along each robot axis direction to field boundary square [-1, 1] x [-1, 1].
+    """
+    cur = _read_current_position(current_file)
+    if cur is None:
+        return {}
+
+    cx, cy, bearing = cur
+    if bearing is None:
+        return {}
+
+    theta = math.radians(bearing)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+
+    axis_dirs = {
+        "front": (cos_t, sin_t),
+        "rear": (-cos_t, -sin_t),
+        "left": (-sin_t, cos_t),
+        "right": (sin_t, -cos_t),
+    }
+
+    def _distance_to_wall_along(dx: float, dy: float) -> Optional[float]:
+        eps = 1e-9
+        candidates = []
+
+        if dx > eps:
+            candidates.append((1.0 - cx) / dx)
+        elif dx < -eps:
+            candidates.append((-1.0 - cx) / dx)
+
+        if dy > eps:
+            candidates.append((1.0 - cy) / dy)
+        elif dy < -eps:
+            candidates.append((-1.0 - cy) / dy)
+
+        positives = [t for t in candidates if t > eps]
+        if not positives:
+            return None
+        return min(positives)
+
+    robot_half = 0.1
+    predicted = {}
+    for direction, (dx, dy) in axis_dirs.items():
+        t = _distance_to_wall_along(dx, dy)
+        if t is None:
+            continue
+        predicted[direction] = max(0.0, t - robot_half)
+
+    return predicted
+
+
 def collision_avoiding_v1(current_file: str = CURRENT_POSITION_FILE) -> bool:
     """Stop when radar detects a close obstacle inside the safe zone."""
     cur = _read_current_position(current_file)
@@ -682,6 +737,35 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
 
     return False
 
+def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) -> bool:
+    cur = _read_current_position(current_file)
+    if cur is None:
+        return False
+    cx, cy, bearing = cur
+
+    radar_hits = radar_sensor()
+    if not radar_hits:
+        return False
+
+    predicted_wall_hits = _predict_wall_radar_distances(current_file)
+    filtered_hits = []
+    for direction, dist in radar_hits:
+        predicted = predicted_wall_hits.get(direction)
+        if predicted is None or predicted > RADAR_MAX_RANGE:
+            filtered_hits.append((direction, dist))
+            continue
+
+        if predicted > 0 and abs(dist - predicted) <= (0.1 * predicted):
+            print(f"[waypoints_cruise] ignoring radar hit in {direction} at {dist:.3f}m close to predicted wall distance {predicted:.3f}m", file=sys.stderr)
+            continue
+
+        filtered_hits.append((direction, dist))
+
+    if any(dist < 0.05 for _, dist in filtered_hits):
+        return True
+
+    return False
+
 def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
                           smart_factor: float = 4.0) -> bool:
 
@@ -758,7 +842,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         "\n".join(f"({vx:.6f}, {vy:.6f})" for vx, vy in weighted_vectors) + "\n",
     )
 
-    if any(dist < trigger_distance for _, dist in radar_hits) and bearing is not None and abs(cx) <= 0.82 and abs(cy) <= 0.82:
+    if collision_activating_condition():
         
         destination_vector = None
         dynamic_type = _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)
@@ -777,6 +861,8 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         #     destination_vector = (dynamic_wp[0] - cx, dynamic_wp[1] - cy)
 
 
+        if destination_vector is None:
+            destination_vector = (0.0, 0.0)
         dest_mag = math.hypot(destination_vector[0], destination_vector[1])
         destination_vector = (destination_vector[0] / dest_mag, destination_vector[1] / dest_mag) if dest_mag > 0 else (0.0, 0.0)
 
