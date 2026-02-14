@@ -554,22 +554,27 @@ OBSTACLE_PLAN_FILE = os.path.join(REAL_TIME_DATA_DIR, "obstacle_plan.txt")
 SPEED_FILE = os.path.join(REAL_TIME_DATA_DIR, "speed.txt")
 VISIBLE_BALLS_FILE = os.path.join(REAL_TIME_DATA_DIR, "visible_balls.txt")
 
-# Clear contents of all .txt files in decision_making/real_time_data at startup
-try:
-    for name in os.listdir(DECISION_REAL_TIME_DIR):
-        if not name.endswith(".txt"):
-            continue
-        path = os.path.join(DECISION_REAL_TIME_DIR, name)
-        if os.path.isfile(path):
-            with open(path, "w") as f:
-                f.write("")
-except FileNotFoundError:
-    pass
-except Exception as e:
+# Clear contents of all .txt files in decision_making_cyc/real_time_data
+# and decision_making_wly/real_time_data at startup
+for _dir in (
+    os.path.join(PROJECT_ROOT, "decision_making_cyc", "real_time_data"),
+    os.path.join(PROJECT_ROOT, "decision_making_wly", "real_time_data"),
+):
     try:
-        print(f"[startup] failed to clear decision_making/real_time_data txt contents: {e}")
-    except Exception:
+        for name in os.listdir(_dir):
+            if not name.endswith(".txt"):
+                continue
+            path = os.path.join(_dir, name)
+            if os.path.isfile(path):
+                with open(path, "w") as f:
+                    f.write("")
+    except FileNotFoundError:
         pass
+    except Exception as e:
+        try:
+            print(f"[startup] failed to clear txt contents in {_dir}: {e}")
+        except Exception:
+            pass
 
 # Clear dynamic waypoints at startup before any other processing
 try:
