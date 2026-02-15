@@ -625,11 +625,11 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
     return [(direction, dist) for direction, dist in hits.items()]
 
 
-def _predict_wall_radar_distances(current_file: str = CURRENT_POSITION_FILE) -> dict[str, float]:
-    """Predict ideal wall radar distances (front/right/left/rear) from current pose.
+def wall_only_radar(current_file: str = CURRENT_POSITION_FILE) -> dict[str, float]:
+    """Predict wall-only radar distances using the same method as radar_sensor.
 
-    Distances are measured like radar_sensor: from robot shell (robot_half=0.1)
-    along each robot axis direction to field boundary square [-1, 1] x [-1, 1].
+    This function samples points on field walls and applies the same
+    projection/classification logic as radar_sensor, but without obstacle points.
     """
     cur = _read_current_position(current_file)
     if cur is None:
@@ -639,44 +639,51 @@ def _predict_wall_radar_distances(current_file: str = CURRENT_POSITION_FILE) -> 
     if bearing is None:
         return {}
 
+    max_range = RADAR_MAX_RANGE
+    corridor = 0.2
+    half_band = corridor / 2.0
+
     theta = math.radians(bearing)
     cos_t = math.cos(theta)
     sin_t = math.sin(theta)
-
-    axis_dirs = {
-        "front": (cos_t, sin_t),
-        "rear": (-cos_t, -sin_t),
-        "left": (-sin_t, cos_t),
-        "right": (sin_t, -cos_t),
-    }
-
-    def _distance_to_wall_along(dx: float, dy: float) -> Optional[float]:
-        eps = 1e-9
-        candidates = []
-
-        if dx > eps:
-            candidates.append((1.0 - cx) / dx)
-        elif dx < -eps:
-            candidates.append((-1.0 - cx) / dx)
-
-        if dy > eps:
-            candidates.append((1.0 - cy) / dy)
-        elif dy < -eps:
-            candidates.append((-1.0 - cy) / dy)
-
-        positives = [t for t in candidates if t > eps]
-        if not positives:
-            return None
-        return min(positives)
-
     robot_half = 0.1
-    predicted = {}
-    for direction, (dx, dy) in axis_dirs.items():
-        t = _distance_to_wall_along(dx, dy)
-        if t is None:
-            continue
-        predicted[direction] = max(0.0, t - robot_half)
+    predicted: dict[str, float] = {}
 
+    edge_samples = [i * 0.05 for i in range(-20, 21)]
+    wall_samples = (
+        [(x, 1.0) for x in edge_samples]
+        + [(x, -1.0) for x in edge_samples]
+        + [(1.0, y) for y in edge_samples]
+        + [(-1.0, y) for y in edge_samples]
+    )
+
+    for wx, wy in wall_samples:
+        dx = wx - cx
+        dy = wy - cy
+        x_robot = dx * cos_t + dy * sin_t
+        y_robot = -dx * sin_t + dy * cos_t
+
+        if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
+            dist = x_robot - robot_half
+            direction = "front"
+        elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
+            dist = -x_robot - robot_half
+            direction = "rear"
+        elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
+            dist = y_robot - robot_half
+            direction = "left"
+        elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
+            dist = -y_robot - robot_half
+            direction = "right"
+        else:
+            continue
+
+        dist = max(0.0, dist)
+        if dist <= max_range:
+            prev = predicted.get(direction)
+            if prev is None or dist < prev:
+                predicted[direction] = dist
+    # print(f"[waypoints_cruise] predicted wall radar distances: {predicted}", file=sys.stderr)
     return predicted
 
 
@@ -795,27 +802,35 @@ def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) ->
     cur = _read_current_position(current_file)
     if cur is None:
         return False
-    cx, cy, bearing = cur
+    _, _, _ = cur
 
     radar_hits = radar_sensor()
     if not radar_hits:
         return False
 
-    predicted_wall_hits = _predict_wall_radar_distances(current_file)
-    filtered_hits = []
+    predicted_wall_hits = wall_only_radar(current_file)
+    collision_threshold = 0.05
+    tolerance_ratio = 0.10
+
+    filtered_hits: list[tuple[str, float]] = []
     for direction, dist in radar_hits:
         predicted = predicted_wall_hits.get(direction)
+
+        # No wall prediction for this direction => keep this radar hit.
         if predicted is None or predicted > RADAR_MAX_RANGE:
             filtered_hits.append((direction, dist))
             continue
 
-        if predicted > 0 and abs(dist - predicted) <= (0.1 * predicted):
-            print(f"[waypoints_cruise] ignoring radar hit in {direction} at {dist:.3f}m close to predicted wall distance {predicted:.3f}m", file=sys.stderr)
+        # If radar hit is within 10% of wall-only prediction, treat it as wall
+        # and exclude it from collision triggering.
+        baseline = max(abs(predicted), 1e-9)
+        if abs(dist - predicted) <= (tolerance_ratio * baseline):
+            print(f"[waypoints_cruise] ignoring radar hit in {direction} direction as it matches wall prediction (predicted: {predicted:.3f}, actual: {dist:.3f})", file=sys.stderr)
             continue
 
         filtered_hits.append((direction, dist))
 
-    if any(dist < 0.05 for _, dist in filtered_hits):
+    if any(dist < collision_threshold for _, dist in filtered_hits):
         return True
 
     return False
