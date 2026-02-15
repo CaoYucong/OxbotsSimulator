@@ -437,80 +437,55 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
     if bearing is None:
         return []
 
-    obstacles = _read_obstacle_positions(OBSTACLE_ROBOT_FILE)
-    if not obstacles:
-        return []
-
     half_band = corridor / 2.0
     theta = math.radians(bearing)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
     hits = {}
 
     obstacle_half = 0.1
     robot_half = 0.1
-    sample_spacing = 0.1 * obstacle_half  # 0.01 spacing between sample points
-    corners_local = []
-    
-    # Generate dense samples along all four edges of the obstacle
-    num_samples = int(2 * obstacle_half / sample_spacing) + 1
-    for i in range(num_samples):
-        offset = -obstacle_half + i * sample_spacing
-        # Top edge (y = obstacle_half)
-        corners_local.append((offset, obstacle_half))
-        # Bottom edge (y = -obstacle_half)
-        corners_local.append((offset, -obstacle_half))
-        # Left edge (x = -obstacle_half)
-        corners_local.append((-obstacle_half, offset))
-        # Right edge (x = obstacle_half)
-        corners_local.append((obstacle_half, offset))
+    sample_points_world = []
 
-    for ox, oy, obearing in obstacles:
-        otheta = math.radians(obearing) if obearing is not None else 0.0
-        cos_o = math.cos(otheta)
-        sin_o = math.sin(otheta)
-        for lx, ly in corners_local:
-            # Obstacle local -> world
-            wx = ox + lx * cos_o - ly * sin_o
-            wy = oy + lx * sin_o + ly * cos_o
+    # 1) Collect obstacle edge samples in world frame.
+    obstacles = _read_obstacle_positions(OBSTACLE_ROBOT_FILE)
+    if obstacles:
+        sample_spacing = 0.1 * obstacle_half  # 0.01 spacing between sample points
+        obstacle_edge_samples_local = []
 
-            dx = wx - cx
-            dy = wy - cy
-            # World -> robot frame: x forward, y left
-            x_robot = dx * math.cos(theta) + dy * math.sin(theta)
-            y_robot = -dx * math.sin(theta) + dy * math.cos(theta)
+        num_samples = int(2 * obstacle_half / sample_spacing) + 1
+        for i in range(num_samples):
+            offset = -obstacle_half + i * sample_spacing
+            obstacle_edge_samples_local.append((offset, obstacle_half))
+            obstacle_edge_samples_local.append((offset, -obstacle_half))
+            obstacle_edge_samples_local.append((-obstacle_half, offset))
+            obstacle_edge_samples_local.append((obstacle_half, offset))
 
-            if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
-                dist = x_robot - robot_half
-                direction = "front"
-            elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
-                dist = -x_robot - robot_half
-                direction = "rear"
-            elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
-                dist = y_robot - robot_half
-                direction = "left"
-            elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
-                dist = -y_robot - robot_half
-                direction = "right"
-            else:
-                continue
+        for ox, oy, obearing in obstacles:
+            otheta = math.radians(obearing) if obearing is not None else 0.0
+            cos_o = math.cos(otheta)
+            sin_o = math.sin(otheta)
+            for lx, ly in obstacle_edge_samples_local:
+                wx = ox + lx * cos_o - ly * sin_o
+                wy = oy + lx * sin_o + ly * cos_o
+                sample_points_world.append((wx, wy))
 
-            if dist <= max_range:
-                prev = hits.get(direction)
-                if prev is None or dist < prev:
-                    hits[direction] = dist
-
-    # Add virtual points along boundaries using evenly spaced samples.
+    # 2) Collect wall boundary samples in world frame.
     edge_samples = [i * 0.05 for i in range(-20, 21)]
-    virtual_points = (
+    wall_samples = (
         [(x, 1.0) for x in edge_samples]
         + [(x, -1.0) for x in edge_samples]
         + [(1.0, y) for y in edge_samples]
         + [(-1.0, y) for y in edge_samples]
     )
-    for vx, vy in virtual_points:
-        dx = vx - cx
-        dy = vy - cy
-        x_robot = dx * math.cos(theta) + dy * math.sin(theta)
-        y_robot = -dx * math.sin(theta) + dy * math.cos(theta)
+    sample_points_world.extend(wall_samples)
+
+    # 3) Single pass radar projection/classification for all sample points.
+    for wx, wy in sample_points_world:
+        dx = wx - cx
+        dy = wy - cy
+        x_robot = dx * cos_t + dy * sin_t
+        y_robot = -dx * sin_t + dy * cos_t
 
         if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
             dist = x_robot - robot_half
@@ -527,6 +502,7 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
         else:
             continue
 
+        dist = max(0.0, dist)
         if dist <= max_range:
             prev = hits.get(direction)
             if prev is None or dist < prev:
