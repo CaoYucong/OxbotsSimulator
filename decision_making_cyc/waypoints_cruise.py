@@ -825,7 +825,7 @@ def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) ->
         # and exclude it from collision triggering.
         baseline = max(abs(predicted), 1e-9)
         if abs(dist - predicted) <= (tolerance_ratio * baseline):
-            print(f"[waypoints_cruise] ignoring radar hit in {direction} direction as it matches wall prediction (predicted: {predicted:.3f}, actual: {dist:.3f})", file=sys.stderr)
+            # print(f"[waypoints_cruise] ignoring radar hit in {direction} direction as it matches wall prediction (predicted: {predicted:.3f}, actual: {dist:.3f})", file=sys.stderr)
             continue
 
         filtered_hits.append((direction, dist))
@@ -848,7 +848,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
 
     collision_status = _read_status(COLLISION_STATUS_FILE)
     waypoint_status = _read_status(WAYPOINT_STATUS_FILE)
-    abandon_time_threshold = 5.0  # seconds, if stacked waypoint is older than this, abandon it to avoid going to stale location
+    abandon_time_threshold = 2.0  # seconds, if stacked waypoint is older than this, abandon it to avoid going to stale location
     if collision_status == "activated":
         if waypoint_status == "reached":
             _write_collision_status(False)
@@ -1056,9 +1056,12 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
               # If not task, check if stack waypoint exists and point towards it
               stack_waypoint = _read_stack_waypoint(WAYPOINTS_STACK_FILE)
               if stack_waypoint is not None:
-                  dx_to_goal = stack_waypoint[0] - target_x
-                  dy_to_goal = stack_waypoint[1] - target_y
-                  target_orientation = math.degrees(math.atan2(dy_to_goal, dx_to_goal))
+                  if stack_waypoint[2] is not None:
+                      target_orientation = stack_waypoint[2]
+                  else:
+                      dx_to_goal = stack_waypoint[0] - target_x
+                      dy_to_goal = stack_waypoint[1] - target_y
+                      target_orientation = math.degrees(math.atan2(dy_to_goal, dx_to_goal))
 
         if abs(cx + dx_world) < 0.9 and abs(cy + dy_world) < 0.9:
             goto(cx + dx_world, cy + dy_world, target_orientation, waypoint_type="collision")
