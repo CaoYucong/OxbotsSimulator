@@ -51,6 +51,8 @@ PLANNED_INDEX_FILE = os.path.join(REAL_TIME_DIR, "planned_waypoints_index.txt")
 TEMP_STATE_FILE = os.path.join(REAL_TIME_DIR, "search_state.txt")
 WAYPOINTS_STACK_FILE = os.path.join(REAL_TIME_DIR, "waypoints_stack.txt")
 RADAR_HISTORY_FILE = os.path.join(REAL_TIME_DIR, "radar_memory.txt")
+WALL_ONLY_RADAR_MEMORY_FILE = os.path.join(REAL_TIME_DIR, "wall_only_radar_memory.txt")
+ROBOT_ONLY_RADAR_MEMORY_FILE = os.path.join(REAL_TIME_DIR, "robot_only_radar_memory.txt")
 COLLISION_STATUS_FILE = os.path.join(REAL_TIME_DIR, "collision_avoiding_status.txt")
 COLLISION_COUNTER_FILE = os.path.join(REAL_TIME_DIR, "collision_counter.txt")
 COLLISION_COUNTER_STATE_FILE = os.path.join(REAL_TIME_DIR, "collision_counter_state.txt")
@@ -229,7 +231,7 @@ def _write_collision_state(last_time: Optional[float],
 
 
 def _process_collision_counter_from_history(
-    history_file: str = RADAR_HISTORY_FILE,
+    history_file: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
     counter_file: str = COLLISION_COUNTER_FILE,
     state_file: str = COLLISION_COUNTER_STATE_FILE,
     threshold: float = -0.001,
@@ -441,6 +443,118 @@ def _read_time_seconds(path: str) -> Optional[float]:
         return None
 
 
+def _read_wall_only_memory(
+    path: str = WALL_ONLY_RADAR_MEMORY_FILE,
+) -> list[tuple[float, dict[str, float]]]:
+    """Read wall-only radar memory records.
+
+    Format per line:
+    time,front,right,left,rear
+    Missing/invalid direction values are normalized to RADAR_MAX_RANGE.
+    """
+    entries: list[tuple[float, dict[str, float]]] = []
+    try:
+        with open(path, "r") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 5:
+                    continue
+                try:
+                    t = float(parts[0])
+                except Exception:
+                    continue
+                values: dict[str, float] = {}
+                keys = ("front", "right", "left", "rear")
+                for i, key in enumerate(keys, start=1):
+                    try:
+                        value = float(parts[i])
+                        if not math.isfinite(value):
+                            value = RADAR_MAX_RANGE
+                        values[key] = value
+                    except Exception:
+                        values[key] = RADAR_MAX_RANGE
+                entries.append((t, values))
+    except Exception:
+        pass
+    return entries
+
+
+def _write_wall_only_memory(
+    entries: list[tuple[float, dict[str, float]]],
+    path: str = WALL_ONLY_RADAR_MEMORY_FILE,
+) -> bool:
+    lines = []
+    for t, values in entries:
+        row = [f"{t:.3f}"]
+        for key in ("front", "right", "left", "rear"):
+            v = values.get(key, RADAR_MAX_RANGE)
+            if not math.isfinite(v):
+                v = RADAR_MAX_RANGE
+            row.append(f"{v:.6f}")
+        lines.append(",".join(row))
+    content = "\n".join(lines) + ("\n" if lines else "")
+    return _atomic_write(path, content)
+
+
+def _read_robot_only_memory(
+    path: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
+) -> list[tuple[float, dict[str, float]]]:
+    """Read robot-only radar memory records.
+
+    Format per line:
+    time,front,right,left,rear
+    Missing/invalid direction values are normalized to RADAR_MAX_RANGE.
+    """
+    entries: list[tuple[float, dict[str, float]]] = []
+    try:
+        with open(path, "r") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 5:
+                    continue
+                try:
+                    t = float(parts[0])
+                except Exception:
+                    continue
+                values: dict[str, float] = {}
+                keys = ("front", "right", "left", "rear")
+                for i, key in enumerate(keys, start=1):
+                    try:
+                        value = float(parts[i])
+                        if not math.isfinite(value):
+                            value = RADAR_MAX_RANGE
+                        values[key] = value
+                    except Exception:
+                        values[key] = RADAR_MAX_RANGE
+                entries.append((t, values))
+    except Exception:
+        pass
+    return entries
+
+
+def _write_robot_only_memory(
+    entries: list[tuple[float, dict[str, float]]],
+    path: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
+) -> bool:
+    lines = []
+    for t, values in entries:
+        row = [f"{t:.3f}"]
+        for key in ("front", "right", "left", "rear"):
+            v = values.get(key, RADAR_MAX_RANGE)
+            if not math.isfinite(v):
+                v = RADAR_MAX_RANGE
+            row.append(f"{v:.6f}")
+        lines.append(",".join(row))
+    content = "\n".join(lines) + ("\n" if lines else "")
+    return _atomic_write(path, content)
+
+
 def _read_collision_avoiding_config(
     path: str = COLLISION_AVOIDING_CONFIG_FILE,
 ) -> tuple[bool, Optional[float]]:
@@ -483,6 +597,7 @@ def _maybe_run_collision_avoiding(
     """Run collision avoiding based on collision_avoiding.txt config."""
     enabled, smart_factor_override = _read_collision_avoiding_config()
     if not enabled:
+        radar_sensor()  # Still update radar memory for potential collision counting, even if avoiding is off.
         return False
 
     smart_factor = (
@@ -802,17 +917,27 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
         )
         history_lines.append(record)
         _atomic_write(RADAR_HISTORY_FILE, "\n".join(history_lines) + "\n")
-        _process_collision_counter_from_history()
+        
 
     # print([(direction, dist) for direction, dist in hits.items()])
+    wall_only_radar()
+    robot_only_radar()
+    _process_collision_counter_from_history()
     return [(direction, dist) for direction, dist in hits.items()]
 
 
-def wall_only_radar(current_file: str = CURRENT_POSITION_FILE) -> dict[str, float]:
+def wall_only_radar(
+    current_file: str = CURRENT_POSITION_FILE,
+    memory_window_seconds: float = 2.0,
+    memory_file: str = WALL_ONLY_RADAR_MEMORY_FILE,
+) -> dict[str, float]:
     """Predict wall-only radar distances using the same method as radar_sensor.
 
     This function samples points on field walls and applies the same
     projection/classification logic as radar_sensor, but without obstacle points.
+
+    Also keeps a short memory (default 2s) and fills missing directions from
+    recent wall-only predictions.
     """
     cur = _read_current_position(current_file)
     if cur is None:
@@ -866,8 +991,149 @@ def wall_only_radar(current_file: str = CURRENT_POSITION_FILE) -> dict[str, floa
             prev = predicted.get(direction)
             if prev is None or dist < prev:
                 predicted[direction] = dist
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is None:
+        return predicted
+
+    cutoff_time = sim_time - max(0.0, float(memory_window_seconds))
+    entries = _read_wall_only_memory(memory_file)
+    entries = [(t, vals) for (t, vals) in entries if cutoff_time <= t <= sim_time]
+
+    merged = dict(predicted)
+    for direction in ("front", "right", "left", "rear"):
+        if direction in merged:
+            continue
+        for _, vals in reversed(entries):
+            v = vals.get(direction, max_range)
+            if math.isfinite(v) and 0.0 <= v <= max_range:
+                merged[direction] = v
+                break
+
+    current_record = {
+        "front": predicted.get("front", max_range),
+        "right": predicted.get("right", max_range),
+        "left": predicted.get("left", max_range),
+        "rear": predicted.get("rear", max_range),
+    }
+    entries.append((sim_time, current_record))
+    _write_wall_only_memory(entries, memory_file)
+
     # print(f"[waypoints_cruise] predicted wall radar distances: {predicted}", file=sys.stderr)
-    return predicted
+    return merged
+
+def robot_only_radar(
+    current_file: str = CURRENT_POSITION_FILE,
+    obstacle_file: str = OBSTACLE_ROBOT_FILE,
+    memory_window_seconds: float = 2.0,
+    memory_file: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
+) -> dict[str, float]:
+    """Predict robot-only radar distances using obstacle samples only.
+
+    Uses the same projection/classification logic as `radar_sensor` and
+    `wall_only_radar`, but excludes wall samples.
+
+    Also keeps a short memory (default 2s) and fills missing directions from
+    recent robot-only predictions.
+    """
+    cur = _read_current_position(current_file)
+    if cur is None:
+        return {}
+
+    cx, cy, bearing = cur
+    if bearing is None:
+        return {}
+
+    max_range = RADAR_MAX_RANGE
+    corridor = 0.2
+    half_band = corridor / 2.0
+
+    theta = math.radians(bearing)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    robot_half = 0.1
+    predicted: dict[str, float] = {}
+
+    obstacle_half = 0.1
+    sample_spacing = 0.1 * obstacle_half  # 0.01m
+    sample_points_world: list[tuple[float, float]] = []
+
+    obstacles = _read_obstacle_positions(obstacle_file)
+    if not obstacles:
+        return {}
+
+    obstacle_edge_samples_local: list[tuple[float, float]] = []
+    num_samples = int(2 * obstacle_half / sample_spacing) + 1
+    for i in range(num_samples):
+        offset = -obstacle_half + i * sample_spacing
+        obstacle_edge_samples_local.append((offset, obstacle_half))
+        obstacle_edge_samples_local.append((offset, -obstacle_half))
+        obstacle_edge_samples_local.append((-obstacle_half, offset))
+        obstacle_edge_samples_local.append((obstacle_half, offset))
+
+    for ox, oy, obearing in obstacles:
+        otheta = math.radians(obearing) if obearing is not None else 0.0
+        cos_o = math.cos(otheta)
+        sin_o = math.sin(otheta)
+        for lx, ly in obstacle_edge_samples_local:
+            wx = ox + lx * cos_o - ly * sin_o
+            wy = oy + lx * sin_o + ly * cos_o
+            sample_points_world.append((wx, wy))
+
+    for wx, wy in sample_points_world:
+        dx = wx - cx
+        dy = wy - cy
+        x_robot = dx * cos_t + dy * sin_t
+        y_robot = -dx * sin_t + dy * cos_t
+
+        if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
+            dist = x_robot - robot_half
+            direction = "front"
+        elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
+            dist = -x_robot - robot_half
+            direction = "rear"
+        elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
+            dist = y_robot - robot_half
+            direction = "left"
+        elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
+            dist = -y_robot - robot_half
+            direction = "right"
+        else:
+            continue
+
+        if dist <= max_range:
+            prev = predicted.get(direction)
+            if prev is None or dist < prev:
+                predicted[direction] = dist
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is None:
+        return predicted
+
+    cutoff_time = sim_time - max(0.0, float(memory_window_seconds))
+    entries = _read_robot_only_memory(memory_file)
+    entries = [(t, vals) for (t, vals) in entries if cutoff_time <= t <= sim_time]
+
+    merged = dict(predicted)
+    for direction in ("front", "right", "left", "rear"):
+        if direction in merged:
+            continue
+        for _, vals in reversed(entries):
+            v = vals.get(direction, max_range)
+            if math.isfinite(v) and 0.0 <= v <= max_range:
+                merged[direction] = v
+                break
+
+    current_record = {
+        "front": predicted.get("front", max_range),
+        "right": predicted.get("right", max_range),
+        "left": predicted.get("left", max_range),
+        "rear": predicted.get("rear", max_range),
+    }
+    entries.append((sim_time, current_record))
+    _write_robot_only_memory(entries, memory_file)
+
+    return merged
 
 
 # =============================================================================

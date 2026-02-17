@@ -700,7 +700,7 @@ def main():
     parser.add_argument("--status-running-values", nargs="*", default=["runnung", "running"], help="状态文件中表示运行中的值列表")
     parser.add_argument("--status-done-values", nargs="*", default=["exited"], help="状态文件中表示结束的值列表")
     parser.add_argument("--random-seed-file", default=DEFAULT_RANDOM_SEED_FILE, help="随机种子文件路径（supervisor_controller/random_seed.txt）")
-    parser.add_argument("--repeats-per-config", type=int, default=10, help="每种 mode+避障 组合重复次数")
+    parser.add_argument("--repeats-per-config", type=int, default=20, help="每种 mode+避障 组合重复次数")
     parser.add_argument("--seed-start", type=int, default=1000, help="随机种子起始值（含）")
     parser.add_argument("--seed-end", type=int, default=1010, help="随机种子结束值（含）")
     parser.add_argument("--seeds", nargs="*", type=int, default=None, help="显式指定种子列表；提供后优先于 seed-start/seed-end")
