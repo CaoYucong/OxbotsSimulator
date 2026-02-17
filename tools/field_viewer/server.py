@@ -37,6 +37,7 @@ BALLS_FILE = os.path.join(DATA_DIR, "ball_position.txt")
 VISIBLE_FILE = os.path.join(DATA_DIR, "visible_balls.txt")
 OBSTACLES_FILE = os.path.join(DATA_DIR, "obstacle_robot.txt")
 DYNAMIC_FILE = os.path.join(DATA_DIR, "dynamic_waypoints.txt")
+TIME_FILE = os.path.join(DATA_DIR, "time.txt")
 RANDOM_SEED_FILE = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "random_seed.txt")
 BALL_TAKEN_HISTORY_FILE = os.path.join(DATA_DIR, "ball_taken_history.txt")
 
@@ -450,6 +451,7 @@ def _get_text_status():
     return {
         "mode": _read_text(MODE_FILE),
         "collision_avoiding": _read_text(COLLISION_AVOIDING_FILE),
+        "simulation_time": _read_first_line_number(TIME_FILE),
         "random_seed": _read_text(RANDOM_SEED_FILE),
         "collision_counter": _read_first_line_number(COLLISION_COUNTER_FILE),
         "last_ball_taken": _read_last_line(BALL_TAKEN_HISTORY_FILE),

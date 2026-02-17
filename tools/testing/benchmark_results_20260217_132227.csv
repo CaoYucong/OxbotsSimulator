@@ -1,9 +1,0 @@
-run_index,mode,avoidance,repeat_index,seed,watch_text_found,last_ball_time,total_balls_taken,collision_count,ball_history_last_line,process_return_code,process_error,started_at,finished_at
-1,realistic_nearest,-1,1,1000,False,,,0,,0,,2026-02-17T13:22:27.396835,2026-02-17T13:22:28.835880
-2,improved_nearest,-1,1,1000,False,,,0,,0,,2026-02-17T13:22:29.842766,2026-02-17T13:22:31.152025
-3,nearest,-1,1,1000,False,,,0,,0,,2026-02-17T13:22:32.160138,2026-02-17T13:22:33.460915
-4,planned,-1,1,1000,False,,,0,,0,,2026-02-17T13:22:34.468100,2026-02-17T13:22:35.784051
-5,realistic_nearest,0,1,1000,False,,,0,,0,,2026-02-17T13:22:36.791228,2026-02-17T13:22:38.016281
-6,improved_nearest,0,1,1000,False,,,0,,0,,2026-02-17T13:22:39.023263,2026-02-17T13:22:40.281263
-7,nearest,0,1,1000,False,,,0,,0,,2026-02-17T13:22:41.288116,2026-02-17T13:22:42.575782
-8,planned,0,1,1000,False,,,0,,0,,2026-02-17T13:22:43.583098,2026-02-17T13:22:44.877817

@@ -1,1 +1,1 @@
-smart_factor = 5
+off

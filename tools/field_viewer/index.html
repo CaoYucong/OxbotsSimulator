@@ -164,6 +164,7 @@
       </div>
       <div class="panel hud">
         <h1>Field Viewer</h1>
+        <div class="stat" id="simTimeStat">Simulation Time: --</div>
         <div class="stat" id="robotStat">Robot: --</div>
         <div class="stat" id="ballStat">Balls: --</div>
         <div class="stat" id="visibleStat">Visible: --</div>
@@ -215,6 +216,7 @@
       const modeStat = document.getElementById("modeStat");
       const collisionAvoidingStat = document.getElementById("collisionAvoidingStat");
       const randomSeedStat = document.getElementById("randomSeedStat");
+      const simTimeStat = document.getElementById("simTimeStat");
       const collisionCounterStat = document.getElementById("collisionCounterStat");
       const lastBallTakenStat = document.getElementById("lastBallTakenStat");
 
@@ -692,6 +694,7 @@
         modeStat.textContent = `Mode: ${textStatus && textStatus.mode ? textStatus.mode : "--"}`;
         collisionAvoidingStat.textContent = `Collision Avoiding: ${textStatus && textStatus.collision_avoiding ? textStatus.collision_avoiding : "--"}`;
         randomSeedStat.textContent = `Random Seed: ${textStatus && textStatus.random_seed ? textStatus.random_seed : "--"}`;
+        simTimeStat.textContent = `Simulation Time: ${textStatus && textStatus.simulation_time !== undefined && textStatus.simulation_time !== null && textStatus.simulation_time !== "" ? `${Number(textStatus.simulation_time).toFixed(3)} s` : "--"}`;
         collisionCounterStat.textContent = `Collision Counter: ${textStatus && textStatus.collision_counter ? textStatus.collision_counter : "--"}`;
         lastBallTakenStat.textContent = `Last Ball Taken: ${textStatus && textStatus.last_ball_taken ? textStatus.last_ball_taken : "--"}`;
       }

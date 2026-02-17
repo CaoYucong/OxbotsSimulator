@@ -56,6 +56,7 @@ ROBOT_ONLY_RADAR_MEMORY_FILE = os.path.join(REAL_TIME_DIR, "robot_only_radar_mem
 COLLISION_STATUS_FILE = os.path.join(REAL_TIME_DIR, "collision_avoiding_status.txt")
 COLLISION_COUNTER_FILE = os.path.join(REAL_TIME_DIR, "collision_counter.txt")
 COLLISION_COUNTER_STATE_FILE = os.path.join(REAL_TIME_DIR, "collision_counter_state.txt")
+TOTAL_CONTACT_TIME_FILE = os.path.join(REAL_TIME_DIR, "total_contact_time.txt")
 DYNAMIC_WAYPOINTS_TYPE_FILE = os.path.join(REAL_TIME_DIR, "dynamic_waypoints_type.txt")
 ROBOT_AROUND_FILE = os.path.join(REAL_TIME_DIR, "robot_around.txt")
 LAST_BEST_VECTOR_FILE = os.path.join(REAL_TIME_DIR, "last_best_vector.txt")
@@ -230,10 +231,28 @@ def _write_collision_state(last_time: Optional[float],
     return _atomic_write(path, content)
 
 
+def _read_total_contact_time(path: str = TOTAL_CONTACT_TIME_FILE) -> float:
+    try:
+        with open(path, "r") as f:
+            raw = f.read().strip()
+        if not raw:
+            return 0.0
+        return max(0.0, float(raw))
+    except Exception:
+        return 0.0
+
+
+def _write_total_contact_time(total_seconds: float,
+                              path: str = TOTAL_CONTACT_TIME_FILE) -> bool:
+    safe_total = max(0.0, float(total_seconds))
+    return _atomic_write(path, f"{safe_total:.6f}\n")
+
+
 def _process_collision_counter_from_history(
     history_file: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
     counter_file: str = COLLISION_COUNTER_FILE,
     state_file: str = COLLISION_COUNTER_STATE_FILE,
+    total_contact_time_file: str = TOTAL_CONTACT_TIME_FILE,
     threshold: float = -0.01,
 ) -> None:
     """Count a collision only when distances recover above threshold after being below it."""
@@ -266,6 +285,7 @@ def _process_collision_counter_from_history(
     if last_time is None:
         latest_t, latest_dists = entries[-1]
         latest_in_collision = any(d < threshold for d in latest_dists)
+        _write_total_contact_time(0.0, total_contact_time_file)
         _write_collision_state(latest_t, latest_in_collision, state_file)
         return
 
@@ -274,7 +294,12 @@ def _process_collision_counter_from_history(
         return
 
     count, times = _read_collision_counter(counter_file)
+    total_contact_time = _read_total_contact_time(total_contact_time_file)
+    prev_time = last_time
     for t, dists in new_entries:
+        dt = t - prev_time
+        if in_collision and dt > 0.0:
+            total_contact_time += dt
         now_in_collision = any(d < threshold for d in dists)
         if now_in_collision:
             in_collision = True
@@ -282,8 +307,10 @@ def _process_collision_counter_from_history(
             count += 1
             times.append(t)
             in_collision = False
+        prev_time = t
 
     _write_collision_counter(count, times, counter_file)
+    _write_total_contact_time(total_contact_time, total_contact_time_file)
     _write_collision_state(new_entries[-1][0], in_collision, state_file)
 
 
