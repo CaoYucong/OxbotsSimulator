@@ -650,7 +650,7 @@
         drawUnseenTileOverlay(unseenTileMemoryList, unseenRegionsList);
         drawTileSeenOverlay(tileSeenList);
         drawBallTileMemoryDots(ballTileMemoryList);
-        drawBallTileMemoryOverlay(tileSeenList);
+        drawBallTileMemoryOverlay(ballTileMemoryList);
 
         const visibleSet = new Set(visibleList.map(makeVisibleKey));
         for (const b of ballList) {

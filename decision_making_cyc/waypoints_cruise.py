@@ -76,8 +76,10 @@ COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt"
 # =============================================================================
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
-# or `MODE` environment variable is provided. Example: 'random', 'nearest', 'realistic_nearest', 'planned' or 'developing'.
-DEFAULT_MODE = 'improved_nearest_v2'
+# or `MODE` environment variable is provided. 
+# Example: 'random', 'nearest', 'realistic_nearest', 'planned', 'developing'
+# 'improved_nearest_v1', 'improved_nearest_v2', 'improved_nearest_v2_5'
+DEFAULT_MODE = 'improved_nearest_v2_5'
 
 # generation bounds (match supervisor playground bounds)
 X_MIN, X_MAX = -0.86, 0.86
@@ -812,8 +814,8 @@ def in_view(point,
         for i in range(4):
             a = corners[i]
             b = corners[(i + 1) % 4]
-            if _segment_intersects(line_start, line_end, a, b):
-                return False
+            # if _segment_intersects(line_start, line_end, a, b):
+                # return False
 
     return True
 
@@ -2226,15 +2228,27 @@ def update_ball_memory_v2(memory_tile_file: str = BALL_MEMORY_FILE,
         theta = math.radians(bearing) if bearing is not None else 0.0
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
-        half = 0.2
-        tile_half = 0.05
+        half = 0.15  # robot half-size (actually 0.2m square)
+        tile_half = 0.05  # tile half-size (0.1m square)
 
         for r, c, tx, ty in flat_tiles:
-            dx = tx - cx
-            dy = ty - cy
-            x_robot = dx * cos_t + dy * sin_t
-            y_robot = -dx * sin_t + dy * cos_t
-            if abs(x_robot) <= half and abs(y_robot) <= half:
+            # Four corners of the tile
+            corners = [
+                (tx - tile_half, ty - tile_half),
+                (tx - tile_half, ty + tile_half),
+                (tx + tile_half, ty - tile_half),
+                (tx + tile_half, ty + tile_half),
+            ]
+            all_in_robot = True
+            for corner_x, corner_y in corners:
+                dx = corner_x - cx
+                dy = corner_y - cy
+                x_robot = dx * cos_t + dy * sin_t
+                y_robot = -dx * sin_t + dy * cos_t
+                if not (abs(x_robot) <= half and abs(y_robot) <= half):
+                    all_in_robot = False
+                    break
+            if all_in_robot:
                 memory[r][c] = 0.0
 
         for r, c, tx, ty in flat_tiles:
@@ -2263,12 +2277,12 @@ def update_ball_memory_v2(memory_tile_file: str = BALL_MEMORY_FILE,
                 nearest_d2 = d2
                 nearest_rc = (r, c)
 
-            if d2 <= 0.1 * 0.1:
-                memory[r][c] += 0.5
+            # if d2 <= 0.1 * 0.1:
+            #     memory[r][c] = 50
 
         if nearest_rc is not None:
             nr, nc = nearest_rc
-            memory[nr][nc] += 1
+            memory[nr][nc] = 180
 
     tile_ok = _write_seen_tile_matrix(memory_tile_file, memory)
     return points_ok and tile_ok
@@ -2322,7 +2336,7 @@ def mode_improved_nearest_v2(status_file: str = WAYPOINT_STATUS_FILE,
             tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
             heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
-            goto(tx, ty, heading_deg)
+            goto(tx, ty)
             return 0
 
         state = _read_state_pair(TEMP_STATE_FILE)
@@ -2346,6 +2360,115 @@ def mode_improved_nearest_v2(status_file: str = WAYPOINT_STATUS_FILE,
           goto(cx, cy, heading)
           _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
           return 0
+        
+        if goto_unseen_region(cx, cy):
+            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            return 0
+
+        if miss_time >= 2.0:
+            index = search_record % len(SEARCHING_SEQUENCE)
+            goto(SEARCHING_SEQUENCE[index][0], SEARCHING_SEQUENCE[index][1], SEARCHING_SEQUENCE[index][2])
+            _atomic_write(TEMP_STATE_FILE, f"({miss_time}, {(search_record+1)%len(SEARCHING_SEQUENCE)})\n")
+    else:
+        state = _read_state_pair(TEMP_STATE_FILE)
+        if state is not None:
+          search_record = int(state[1])
+        _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+    best = None
+    best_d2 = None
+    for (x, y, typ) in bx:
+        try:
+            dx = x - cx
+            dy = y - cy
+            d2 = dx * dx + dy * dy
+        except Exception:
+            continue
+        if best_d2 is None or d2 < best_d2:
+            best_d2 = d2
+            best = (x, y)
+
+    if best is None:
+        return 0
+
+    target_x, target_y = best
+    heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
+    ok = goto(target_x, target_y, heading_deg)
+    return 0 if ok else 1
+
+def mode_improved_nearest_v2_5(status_file: str = WAYPOINT_STATUS_FILE,
+                          waypoint_file: str = DYNAMIC_WAYPOINTS_FILE,
+                          visible_balls_file: str = VISIBLE_BALLS_FILE,
+                          current_file: str = CURRENT_POSITION_FILE) -> int:
+    """Realistic nearest mode: choose nearest ball from visible_balls.txt only."""
+
+    update_seen_tiles()
+    update_unseen_tiles()
+    update_unseen_regions()
+    
+    update_ball_memory_v2(visible_balls_file=visible_balls_file)
+
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+        return 0
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is not None and sim_time > 170.0:
+        goto(-0.9, 0.0, 180.0)
+        return 0
+
+    cur = _read_current_position(current_file)
+
+    status = _read_status(status_file)
+
+    if cur is None:
+        return 0
+    bx = _read_visible_ball_positions(visible_balls_file)
+    cx, cy, bearing = cur
+    if not bx:
+        if status != "reached":
+            return 0
+        
+        state = _read_state_pair(TEMP_STATE_FILE)
+        if state is None:
+            state = (0.0, 0.0)
+        miss_time = int(state[0])
+        search_record = int(state[1])
+        # print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
+        if miss_time == 0.0:
+          if abs(cx) > 0.8 or abs(cy) > 0.8:
+              cx = max(-0.8, min(0.8, cx))
+              cy = max(-0.8, min(0.8, cy))
+              goto(cx, cy, bearing)
+          else:
+              heading = None if bearing is None else bearing + 179.0
+              goto(cx, cy, heading)
+              _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+        if miss_time == 1.0:
+          heading = None if bearing is None else bearing + 179.0
+          goto(cx, cy, heading)
+          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+
+        rows = len(FIELD_TILES)
+        cols = len(FIELD_TILES[0]) if rows > 0 else 0
+
+        memory_ball = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+        best_ball_rc = None
+        best_ball_val = -1.0
+        for r in range(rows):
+            for c in range(cols):
+                v = memory_ball[r][c]
+                if v > best_ball_val:
+                    best_ball_val = v
+                    best_ball_rc = (r, c)
+
+        if best_ball_rc is not None and best_ball_val > 0.0:
+            tr, tc = best_ball_rc
+            tx, ty = FIELD_TILES[tr][tc]
+            heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
+            goto(tx, ty, heading_deg)
+            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            return 0
         
         if goto_unseen_region(cx, cy):
             _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
@@ -2496,6 +2619,7 @@ _MODE_HANDLERS = {
     "realistic_nearest": mode_realistic_nearest,
     "improved_nearest_v1": mode_improved_nearest_v1,
     "improved_nearest_v2": mode_improved_nearest_v2,
+    "improved_nearest_v2_5": mode_improved_nearest_v2_5,
     "planned": mode_planned,
 }
 
