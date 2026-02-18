@@ -2673,27 +2673,102 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
                               planned_file: str = PLANNED_WAYPOINTS_FILE,
                               index_file: str = PLANNED_INDEX_FILE,
                               balls_file: str = BALL_POS_FILE,
-                              current_file: str = CURRENT_POSITION_FILE) -> int:
+                              current_file: str = CURRENT_POSITION_FILE,
+                              visible_balls_file: str = VISIBLE_BALLS_FILE) -> int:
     """Build planned waypoints from all balls and follow them in order."""
-    balls = _read_ball_positions(balls_file)
+    update_seen_tiles()
+    update_unseen_tiles()
+    update_unseen_regions()
+    
+    update_ball_memory_v2(visible_balls_file=visible_balls_file)
+
+    rows = len(FIELD_TILES)
+    cols = len(FIELD_TILES[0]) if rows > 0 else 0
+    if rows == 0 or cols == 0:
+        return 0
+
+    memory = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+    balls = []
+    for r in range(rows):
+        for c in range(cols):
+            if memory[r][c] > 0.0:
+                tx, ty = FIELD_TILES[r][c]
+                balls.append((tx, ty, "memory"))
     if not balls:
         return 0
 
     cur = _read_current_position(current_file)
     if cur is not None:
         cx, cy, _ = cur
-        remaining = list(balls)
-        ordered = []
-        cur_x, cur_y = cx, cy
-        while remaining:
-            idx = min(
-                range(len(remaining)),
-                key=lambda i: (remaining[i][0] - cur_x) ** 2 + (remaining[i][1] - cur_y) ** 2,
-            )
-            next_ball = remaining.pop(idx)
-            ordered.append(next_ball)
-            cur_x, cur_y = next_ball[0], next_ball[1]
-        balls = ordered
+        _, _, bearing = cur
+        start_heading_deg = 0.0 if bearing is None else float(bearing)
+
+        def _normalize_deg(deg: float) -> float:
+            while deg <= -180.0:
+                deg += 360.0
+            while deg > 180.0:
+                deg -= 360.0
+            return deg
+
+        def _angle_to_deg(from_point: tuple[float, float], to_point: tuple[float, float]) -> float:
+            rad = math.atan2(to_point[1] - from_point[1], to_point[0] - from_point[0])
+            return _normalize_deg(math.degrees(rad))
+
+        def _angle_diff_deg(a_deg: float, b_deg: float) -> float:
+            return _normalize_deg(a_deg - b_deg)
+
+        def _total_cost(sequence: list[int]) -> float:
+            total_time = 0.0
+            prev_position = (cx, cy)
+            prev_heading_deg = start_heading_deg
+            for idx in sequence:
+                bx, by, _ = balls[idx]
+                distance = math.hypot(prev_position[0] - bx, prev_position[1] - by)
+                target_heading_deg = _angle_to_deg(prev_position, (bx, by))
+                turn_angle_deg = abs(_angle_diff_deg(target_heading_deg, prev_heading_deg))
+                move_time = distance / DEFAULT_LINEAR_VELOCITY
+                turn_time = turn_angle_deg / DEFAULT_ANGULAR_VELOCITY
+                total_time += move_time + turn_time
+                prev_position = (bx, by)
+                prev_heading_deg = target_heading_deg
+            return total_time
+
+        def _nearest_neighbor() -> list[int]:
+            unvisited = set(range(len(balls)))
+            seq: list[int] = []
+            cur_x, cur_y = cx, cy
+            while unvisited:
+                next_idx = min(
+                    unvisited,
+                    key=lambda i: (balls[i][0] - cur_x) ** 2 + (balls[i][1] - cur_y) ** 2,
+                )
+                seq.append(next_idx)
+                unvisited.remove(next_idx)
+                cur_x, cur_y = balls[next_idx][0], balls[next_idx][1]
+            return seq
+
+        def _two_opt(sequence: list[int]) -> list[int]:
+            improved = True
+            best_seq = sequence
+            best_cost = _total_cost(best_seq)
+            while improved:
+                improved = False
+                for i in range(len(best_seq) - 1):
+                    for j in range(i + 1, len(best_seq)):
+                        new_seq = best_seq[:i] + list(reversed(best_seq[i:j + 1])) + best_seq[j + 1:]
+                        new_cost = _total_cost(new_seq)
+                        if new_cost < best_cost:
+                            best_seq = new_seq
+                            best_cost = new_cost
+                            improved = True
+                            break
+                    if improved:
+                        break
+            return best_seq
+
+        initial_seq = _nearest_neighbor()
+        optimized_seq = _two_opt(initial_seq)
+        balls = [balls[i] for i in optimized_seq]
 
     waypoints = [(x, y, None) for x, y, _ in balls]
     existing = _read_planned_waypoints(planned_file)
@@ -2701,14 +2776,62 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
         _write_planned_waypoints(planned_file, waypoints)
         _write_planned_index(index_file, 0)
 
-    # status = _read_status(status_file)
+    status = _read_status(status_file)
     # if status != "reached":
     #     return 0
 
     first = waypoints[0] if waypoints else None
     if first is None:
+        if status != "reached":
+            return 0
+        
+        # print(f"[mode_all_ball_path_panned] no visible balls, status={status}", file=sys.stderr)
+
+        state = _read_state_pair(TEMP_STATE_FILE)
+        if state is None:
+            state = (0.0, 0.0)
+        miss_time = int(state[0])
+        search_record = int(state[1])
+        # print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
+        if miss_time == 0.0:
+          if abs(cx) > 0.8 or abs(cy) > 0.8:
+              cx = max(-0.8, min(0.8, cx))
+              cy = max(-0.8, min(0.8, cy))
+              goto(cx, cy, bearing)
+          else:
+              heading = None if bearing is None else bearing + 179.0
+              goto(cx, cy, heading)
+              _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+        if miss_time == 1.0:
+          heading = None if bearing is None else bearing + 179.0
+          goto(cx, cy, heading)
+          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+        
+        if goto_unseen_region(cx, cy):
+            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            return 0
         return 0
+    state = _read_state_pair(TEMP_STATE_FILE)
+    if state is not None:
+        _atomic_write(TEMP_STATE_FILE, f"(0, 0)\n")
     x, y, _ = first
+
+    if (abs(cx - x) <= 0.01 and abs(cy - y) <= 0.01) or (abs(x) >= 0.9 and abs(y) >= 0.9) or (abs(x) >= 0.9 and abs(cy - y) <= 0.01) or (abs(y) >= 0.9 and abs(cx - x) <= 0.01):
+        for r in range(rows):
+            for c in range(cols):
+                tx, ty = FIELD_TILES[r][c]
+                if abs(tx - x) <= 0.01 and abs(ty - y) <= 0.01:
+                    memory[r][c] = 0.0
+        _write_seen_tile_matrix(BALL_MEMORY_FILE, memory)
+        remaining = waypoints[1:]
+        _write_planned_waypoints(planned_file, remaining)
+        _write_planned_index(index_file, 0)
+        if not remaining:
+            return 0
+        x, y, _ = remaining[0]
+
     return 0 if goto(x, y) else 1
 
 
