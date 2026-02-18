@@ -68,8 +68,16 @@ West = math.pi
 CRUISE_INTERVAL_FRAMES = 15
 
 # Field viewer config
-FIELD_VIEWER_PORT = 5001
-
+def _load_html_port(path, default_port=5001):
+    try:
+        with open(path, "r") as f:
+            raw = f.read().strip()
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return port
+    except Exception:
+        pass
+    return default_port
 
 # =============================================================================
 # PATHS AND FILE LOCATIONS
@@ -83,7 +91,8 @@ REAL_TIME_DATA_DIR = os.path.join(THIS_DIR, "real_time_data")
 FIELD_VIEWER_PATH = os.path.abspath(
     os.path.join(THIS_DIR, "..", "..", "tools", "field_viewer", "server.py")
 )
-
+HTML_PORT_FILE = os.path.join(THIS_DIR, "html_port.txt")
+FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
 
 def _load_random_seed(path, default_seed=DEFAULT_RANDOM_SEED):
     """Load random seed from file, fallback to default on any error."""
