@@ -237,7 +237,9 @@
         radarFront: "#e4572e",
         radarRight: "#3d5a80",
         radarLeft: "#1d7d7a",
-        radarRear: "#6c757d"
+        radarRear: "#6c757d",
+        plannedPath: "rgba(29, 125, 122, 0.75)",
+        plannedNode: "#1d7d7a"
       };
 
       const RADAR_WINDOW_SEC = 2.0;
@@ -473,6 +475,35 @@
         ctx.restore();
       }
 
+      function drawPlannedPath(points) {
+        if (!points || points.length < 2) return;
+        ctx.save();
+        ctx.strokeStyle = COLORS.plannedPath;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        points.forEach((p, idx) => {
+          const [px, py] = worldToCanvas(p.x, p.y);
+          if (idx === 0) {
+            ctx.moveTo(px, py);
+          } else {
+            ctx.lineTo(px, py);
+          }
+        });
+        ctx.stroke();
+        ctx.restore();
+
+        for (const p of points) {
+          const [px, py] = worldToCanvas(p.x, p.y);
+          ctx.save();
+          ctx.fillStyle = COLORS.plannedNode;
+          ctx.beginPath();
+          ctx.arc(px, py, canvas.width * 0.006, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
       function drawRobotAround(vectors, bearingDeg) {
         const size = aroundCanvas.width;
         aroundCtx.clearRect(0, 0, size, size);
@@ -618,7 +649,7 @@
       }
 
       async function tick() {
-        const [current, balls, visible, obstacles, waypoints, robotAround, radarHistory, tileSeenTime, ballTileMemory, unseenTileMemory, unseenRegions, textStatus] = await Promise.all([
+        const [current, balls, visible, obstacles, waypoints, robotAround, radarHistory, tileSeenTime, ballTileMemory, unseenTileMemory, unseenRegions, textStatus, plannedPath] = await Promise.all([
           fetchJson("/data/current"),
           fetchJson("/data/balls"),
           fetchJson("/data/visible"),
@@ -630,7 +661,8 @@
           fetchJson("/data/ball-tile-memory"),
           fetchJson("/data/unseen-tile-memory"),
           fetchJson("/data/unseen-regions"),
-          fetchJson("/data/text-status")
+          fetchJson("/data/text-status"),
+          fetchJson("/data/all-ball-path")
         ]);
 
         const robot = current && current.current ? current.current : null;
@@ -645,12 +677,14 @@
         const ballTileMemoryList = ballTileMemory && ballTileMemory.tiles ? ballTileMemory.tiles : [];
         const unseenTileMemoryList = unseenTileMemory && unseenTileMemory.tiles ? unseenTileMemory.tiles : [];
         const unseenRegionsList = unseenRegions && unseenRegions.tiles ? unseenRegions.tiles : [];
+        const plannedPathPoints = plannedPath && plannedPath.enabled ? plannedPath.path : [];
 
         drawField();
         drawUnseenTileOverlay(unseenTileMemoryList, unseenRegionsList);
         drawTileSeenOverlay(tileSeenList);
         drawBallTileMemoryDots(ballTileMemoryList);
         drawBallTileMemoryOverlay(ballTileMemoryList);
+        drawPlannedPath(plannedPathPoints);
 
         const visibleSet = new Set(visibleList.map(makeVisibleKey));
         for (const b of ballList) {

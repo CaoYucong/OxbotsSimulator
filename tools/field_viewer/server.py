@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(ROOT_DIR, "..", ".."))
 WHO_IS_DEV_FILE = os.path.join(PROJECT_ROOT, "who_is_developing.txt")
+CYC_DECISION_DIR = os.path.join(PROJECT_ROOT, "decision_making_cyc")
 
 def _resolve_decision_making_dir() -> str:
     """Select decision_making folder based on who_is_developing.txt (cyc/wly)."""
@@ -51,6 +52,8 @@ UNSEEN_REGIONS_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "unsee
 MODE_FILE = os.path.join(DECISION_MAKING_DIR, "mode.txt")
 COLLISION_AVOIDING_FILE = os.path.join(DECISION_MAKING_DIR, "collision_avoiding.txt")
 COLLISION_COUNTER_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "collision_counter.txt")
+CYC_MODE_FILE = os.path.join(CYC_DECISION_DIR, "mode.txt")
+CYC_PLANNED_FILE = os.path.join(CYC_DECISION_DIR, "planned_waypoints.txt")
 
 
 def _read_lines(path: str) -> list[str]:
@@ -449,13 +452,28 @@ def _get_unseen_regions():
 
 def _get_text_status():
     return {
-        "mode": _read_text(MODE_FILE),
+        "mode": _read_text(CYC_MODE_FILE),
         "collision_avoiding": _read_text(COLLISION_AVOIDING_FILE),
         "simulation_time": _read_first_line_number(TIME_FILE),
         "random_seed": _read_text(RANDOM_SEED_FILE),
         "collision_counter": _read_first_line_number(COLLISION_COUNTER_FILE),
         "last_ball_taken": _read_last_line(BALL_TAKEN_HISTORY_FILE),
     }
+
+
+def _get_all_ball_path():
+    mode = _read_text(CYC_MODE_FILE).strip().lower()
+    if mode != "all_ball_path_panned":
+        return {"enabled": False, "path": []}
+
+    path = []
+    for line in _read_lines(CYC_PLANNED_FILE):
+        item = _extract_xy_from_line(line)
+        if item is None:
+            continue
+        x, y = item
+        path.append({"x": x, "y": y})
+    return {"enabled": True, "path": path}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -522,6 +540,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/data/text-status":
             self._send_json(_get_text_status())
+            return
+        if path == "/data/all-ball-path":
+            self._send_json(_get_all_ball_path())
             return
 
         self._send_text("not found", 404, "text/plain")

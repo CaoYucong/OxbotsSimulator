@@ -78,15 +78,16 @@ COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt"
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
 # or `MODE` environment variable is provided. 
 # Example: 'random', 'nearest', 'realistic_nearest', 'planned', 'developing'
-# 'improved_nearest_v1', 'improved_nearest_v2', 'improved_nearest_v2_5'
-DEFAULT_MODE = 'improved_nearest_v2'
+# 'improved_nearest_v1', 'improved_nearest_v2', 'improved_nearest_v2_5', 
+# 'all_ball_path_panned'
+DEFAULT_MODE = 'all_ball_path_panned'
 
 # generation bounds (match supervisor playground bounds)
 X_MIN, X_MAX = -0.86, 0.86
 Y_MIN, Y_MAX = -0.86, 0.86
 RADAR_MAX_RANGE = 0.8
-MAX_SPEED = 0.7
-NORMAL_SPEED = 0.3
+MAX_LINEAR_VELOCITY = 0.7
+DEFAULT_LINEAR_VELOCITY = 0.3
 DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
 
 SEARCHING_SEQUENCE = [
@@ -1205,7 +1206,7 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
     cur = _read_current_position(current_file)
     if cur is None:
         _write_collision_status(False)
-        set_velocity(NORMAL_SPEED)
+        set_velocity(DEFAULT_LINEAR_VELOCITY)
         return False
     cx, cy, bearing = cur
 
@@ -1214,7 +1215,7 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
     if collision_status == "activated":
         if waypoint_status == "reached":
             _write_collision_status(False)
-            set_velocity(NORMAL_SPEED)
+            set_velocity(DEFAULT_LINEAR_VELOCITY)
             stack_wp = _read_stack_waypoint(WAYPOINTS_STACK_FILE)
             if stack_wp is not None:
                 _atomic_write(WAYPOINTS_STACK_FILE, "")
@@ -1256,7 +1257,7 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
         total_w = sum(weights)
         if total_w <= 0.0:
             _write_collision_status(False)
-            set_velocity(NORMAL_SPEED)
+            set_velocity(DEFAULT_LINEAR_VELOCITY)
             return False
 
         world_normals = []
@@ -1283,7 +1284,7 @@ def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
         step = 0.15
         dx_world = step * best_vec[0]
         dy_world = step * best_vec[1]
-        set_velocity(MAX_SPEED)
+        set_velocity(MAX_LINEAR_VELOCITY)
         _write_collision_status(True)
         _stack_current_waypoint()
         # print(f"[waypoints_cruise] collision avoiding activated, radar values: {weights}, move vector: ({dx_world:.3f}, {dy_world:.3f})", file=sys.stderr)
@@ -1340,7 +1341,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
     cur = _read_current_position(current_file)
     if cur is None:
         _write_collision_status(False)
-        set_velocity(NORMAL_SPEED)
+        set_velocity(DEFAULT_LINEAR_VELOCITY)
         return False
     cx, cy, bearing = cur
 
@@ -1350,7 +1351,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
     if collision_status == "activated":
         if waypoint_status == "reached":
             _write_collision_status(False)
-            set_velocity(NORMAL_SPEED)
+            set_velocity(DEFAULT_LINEAR_VELOCITY)
             stack_wp = _read_stack_waypoint(WAYPOINTS_STACK_FILE)
             if stack_wp is not None:
                 # Check if stacked waypoint is too old
@@ -1462,7 +1463,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         total_w = sum(values.values())
         if total_w <= 0.0:
             _write_collision_status(False)
-            set_velocity(NORMAL_SPEED)
+            set_velocity(DEFAULT_LINEAR_VELOCITY)
             return False
 
         world_normals = []
@@ -1532,7 +1533,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
 
         dx_world = jump_step * (best_vec[0] / best_mag)
         dy_world = jump_step * (best_vec[1] / best_mag)
-        set_velocity(MAX_SPEED)
+        set_velocity(MAX_LINEAR_VELOCITY)
         _write_collision_status(True)
         _stack_current_waypoint()
         # print(f"[waypoints_cruise] collision avoiding activated, radar values: {weights}, move vector: ({dx_world:.3f}, {dy_world:.3f})", file=sys.stderr)
@@ -1610,6 +1611,17 @@ def _read_planned_waypoints(path: str):
     return out
 
 
+def _write_planned_waypoints(path: str, waypoints: list[tuple[float, float, Optional[float]]]) -> bool:
+    lines = []
+    for x, y, ang in waypoints:
+        if ang is None:
+            lines.append(f"({x:.6f}, {y:.6f}, None)")
+        else:
+            lines.append(f"({x:.6f}, {y:.6f}, {float(ang):.6f})")
+    content = "\n".join(lines) + ("\n" if lines else "")
+    return _atomic_write(path, content)
+
+
 def _read_planned_index(path: str) -> Optional[int]:
     try:
         with open(path, "r") as f:
@@ -1649,8 +1661,16 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
     x = max(-0.9, min(0.9, x))
     y = max(-0.9, min(0.9, y))
 
+    cur = _read_current_position(CURRENT_POSITION_FILE)
+    cx, cy, bearing = (0.0, 0.0, None) if cur is None else cur
+    heading_deg = math.degrees(math.atan2(y - cy, x - cx))
+
     if orientation is None:
-        coord_line = f"({x:.6f}, {y:.6f}, None)\n"
+        distance_thread = (abs(heading_deg - bearing) % 360.0) / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
+        if math.hypot(x - cx, y - cy) >= distance_thread:
+            coord_line = f"({x:.6f}, {y:.6f}, {heading_deg:.6f})\n"
+        else:
+            coord_line = f"({x:.6f}, {y:.6f}, None)\n"
     else:
         coord_line = f"({x:.6f}, {y:.6f}, {orientation:.6f})\n"
 
@@ -2367,7 +2387,7 @@ def mode_improved_nearest_v2(status_file: str = WAYPOINT_STATUS_FILE,
             tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
             heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
-            distance_thread = (abs(heading_deg - bearing) % 360.0) / DEFAULT_ANGULAR_VELOCITY * NORMAL_SPEED + 0.1
+            distance_thread = (abs(heading_deg - bearing) % 360.0) / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
             if math.hypot(tx - cx, ty - cy) >= distance_thread:
                 goto(tx, ty, heading_deg)
             else:
@@ -2649,6 +2669,49 @@ def mode_planned(status_file: str = WAYPOINT_STATUS_FILE,
     return 0
 
 
+def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
+                              planned_file: str = PLANNED_WAYPOINTS_FILE,
+                              index_file: str = PLANNED_INDEX_FILE,
+                              balls_file: str = BALL_POS_FILE,
+                              current_file: str = CURRENT_POSITION_FILE) -> int:
+    """Build planned waypoints from all balls and follow them in order."""
+    balls = _read_ball_positions(balls_file)
+    if not balls:
+        return 0
+
+    cur = _read_current_position(current_file)
+    if cur is not None:
+        cx, cy, _ = cur
+        remaining = list(balls)
+        ordered = []
+        cur_x, cur_y = cx, cy
+        while remaining:
+            idx = min(
+                range(len(remaining)),
+                key=lambda i: (remaining[i][0] - cur_x) ** 2 + (remaining[i][1] - cur_y) ** 2,
+            )
+            next_ball = remaining.pop(idx)
+            ordered.append(next_ball)
+            cur_x, cur_y = next_ball[0], next_ball[1]
+        balls = ordered
+
+    waypoints = [(x, y, None) for x, y, _ in balls]
+    existing = _read_planned_waypoints(planned_file)
+    if existing != waypoints:
+        _write_planned_waypoints(planned_file, waypoints)
+        _write_planned_index(index_file, 0)
+
+    # status = _read_status(status_file)
+    # if status != "reached":
+    #     return 0
+
+    first = waypoints[0] if waypoints else None
+    if first is None:
+        return 0
+    x, y, _ = first
+    return 0 if goto(x, y) else 1
+
+
 
 # Mode dispatch table: add new handlers here
 _MODE_HANDLERS = {
@@ -2659,6 +2722,7 @@ _MODE_HANDLERS = {
     "improved_nearest_v2": mode_improved_nearest_v2,
     "improved_nearest_v2_5": mode_improved_nearest_v2_5,
     "planned": mode_planned,
+    "all_ball_path_panned": mode_all_ball_path_panned,
 }
 
 
