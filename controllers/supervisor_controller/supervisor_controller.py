@@ -105,6 +105,8 @@ def _resolve_decision_making_dir():
             return os.path.join(PROJECT_ROOT, "decision_making_cyc")
         if dev == "wly":
             return os.path.join(PROJECT_ROOT, "decision_making_wly")
+        if dev == "xjj":
+            return os.path.join(PROJECT_ROOT, "decision_making_xjj")
     except Exception:
         pass
     return default_dir
