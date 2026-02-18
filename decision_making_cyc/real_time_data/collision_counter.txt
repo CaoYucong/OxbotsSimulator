@@ -1,1 +1,7 @@
-count=0
+count=6
+time=4.096
+time=8.536
+time=10.096
+time=27.736
+time=28.396
+time=50.056

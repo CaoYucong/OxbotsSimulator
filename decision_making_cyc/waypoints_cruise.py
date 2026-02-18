@@ -79,7 +79,7 @@ COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt"
 # or `MODE` environment variable is provided. 
 # Example: 'random', 'nearest', 'realistic_nearest', 'planned', 'developing'
 # 'improved_nearest_v1', 'improved_nearest_v2', 'improved_nearest_v2_5'
-DEFAULT_MODE = 'improved_nearest_v2_5'
+DEFAULT_MODE = 'improved_nearest_v2'
 
 # generation bounds (match supervisor playground bounds)
 X_MIN, X_MAX = -0.86, 0.86
@@ -87,6 +87,7 @@ Y_MIN, Y_MAX = -0.86, 0.86
 RADAR_MAX_RANGE = 0.8
 MAX_SPEED = 0.7
 NORMAL_SPEED = 0.3
+DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
 
 SEARCHING_SEQUENCE = [
     (0, 0, 0),
@@ -195,6 +196,25 @@ def _read_collision_counter(path: str = COLLISION_COUNTER_FILE) -> tuple[int, li
         pass
     return count, times
 
+def _read_dynamic_waypoints(path: str = DYNAMIC_WAYPOINTS_FILE):
+    """Read dynamic waypoints from file. Returns list of (x, y, orientation_or_none)."""
+    try:
+        with open(path, "r") as f:
+            raw = f.read().strip()
+            if not raw:
+                return None
+            line = raw
+            if line.startswith("(") and line.endswith(")"):
+                line = line[1:-1]
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                return None
+            x = float(parts[0])
+            y = float(parts[1])
+            bearing = float(parts[2]) if len(parts) >= 3 else None
+            return (x, y, bearing)
+    except Exception:
+        return None
 
 def _write_collision_counter(count: int,
                              times: list[float],
@@ -2316,19 +2336,30 @@ def mode_improved_nearest_v2(status_file: str = WAYPOINT_STATUS_FILE,
     bx = _read_visible_ball_positions(visible_balls_file)
     cx, cy, bearing = cur
     if not bx:
-        if status != "reached":
-            return 0
-
+        
         rows = len(FIELD_TILES)
         cols = len(FIELD_TILES[0]) if rows > 0 else 0
-
         memory_ball = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+
+        if status != "reached":
+            dynamic_waypoint = _read_dynamic_waypoints()
+            # print(f"[mode_improved_nearest_v2] no visible balls, status={status}, dynamic_waypoint={dynamic_waypoint}", file=sys.stderr)
+            dx, dy, dbearing = dynamic_waypoint if dynamic_waypoint is not None else (None, None, None)
+            # print(f"[mode_improved_nearest_v2] current position=({cx}, {cy}), dynamic_waypoint=({dx}, {dy})", file=sys.stderr)
+            if dx is not None and dy is not None:
+              for r in range(rows):
+                  for c in range(cols):
+                      tx, ty = FIELD_TILES[r][c]
+                      if abs(tx - dx) <= 0.05 and abs(ty - dy) <= 0.05:
+                          if memory_ball[r][c] > 0.0:
+                              return 0
+
         best_ball_rc = None
         best_ball_val = -1.0
         for r in range(rows):
             for c in range(cols):
                 v = memory_ball[r][c]
-                if v > best_ball_val:
+                if v > best_ball_val and math.hypot(FIELD_TILES[r][c][0] - cx, FIELD_TILES[r][c][1] - cy) >= 0.15:
                     best_ball_val = v
                     best_ball_rc = (r, c)
 
@@ -2336,7 +2367,14 @@ def mode_improved_nearest_v2(status_file: str = WAYPOINT_STATUS_FILE,
             tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
             heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
-            goto(tx, ty)
+            distance_thread = (abs(heading_deg - bearing) % 360.0) / DEFAULT_ANGULAR_VELOCITY * NORMAL_SPEED + 0.1
+            if math.hypot(tx - cx, ty - cy) >= distance_thread:
+                goto(tx, ty, heading_deg)
+            else:
+                goto(tx, ty)
+            return 0
+
+        if status != "reached":
             return 0
 
         state = _read_state_pair(TEMP_STATE_FILE)
