@@ -19,20 +19,20 @@ TEMPLATE_ROOT="$ROOT_BASE"
 SCRIPT_REL="tools/testing/webots_auto_loop_crossplatform.py"
 
 MODES=(
-  "improved_nearest_v2"
   "improved_nearest_v2_5"
+  "improved_nearest_v2"
 )
 
 AVOIDANCE=(
-  "off" "0" "2" "5" "8" "10"
+  "off" "0" "2" "5"
 )
 
-SEED1_START=1007
-SEED1_END=1009
-SEED2_START=1017
-SEED2_END=1019
-SEED3_START=1027
-SEED3_END=1029
+SEED1_START=1000
+SEED1_END=1006
+SEED2_START=1010
+SEED2_END=1016
+SEED3_START=1020
+SEED3_END=1026
 
 PID_FILE="$HOME/Desktop/OxbotsSimulator_parallel_3.pids"
 MERGED_CSV_DEFAULT="$HOME/Desktop/benchmark_merged_all.csv"
