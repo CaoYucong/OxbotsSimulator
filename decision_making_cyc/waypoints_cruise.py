@@ -89,6 +89,7 @@ RADAR_MAX_RANGE = 0.8
 MAX_LINEAR_VELOCITY = 0.7
 DEFAULT_LINEAR_VELOCITY = 0.3
 DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
+VIRTUAL_WALL = 0.98  # Virtual wall distance for collision avoiding (meters)
 
 SEARCHING_SEQUENCE = [
     (0, 0, 0),
@@ -1666,17 +1667,19 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
     edge_close_right = False
     edge_close_top = False
     edge_close_left = False
-    if y < -0.86 and abs(x) <= 0.86:
-        edge_close_bottom = True
-    if x > 0.86 and abs(y) <= 0.86:
-        edge_close_right = True
-    if y > 0.86 and abs(x) <= 0.86:
-        edge_close_top = True
-    if x < -0.86 and abs(y) <= 0.86:
-        edge_close_left = True
+    half_diagonal = 0.1 * math.sqrt(2.0)
+    half_robot = 0.1
+    # if cy < -abs(VIRTUAL_WALL - half_diagonal) and abs(cx) <= abs(VIRTUAL_WALL - half_diagonal) and y < -abs(VIRTUAL_WALL - half_diagonal):
+    #     edge_close_bottom = True
+    # if cx > abs(VIRTUAL_WALL - half_diagonal) and abs(cy) <= abs(VIRTUAL_WALL - half_diagonal) and x > abs(VIRTUAL_WALL - half_diagonal):
+    #     edge_close_right = True
+    # if cy > abs(VIRTUAL_WALL - half_diagonal) and abs(cx) <= abs(VIRTUAL_WALL - half_diagonal) and y > abs(VIRTUAL_WALL - half_diagonal):
+    #     edge_close_top = True
+    # if cx < -abs(VIRTUAL_WALL - half_diagonal) and abs(cy) <= abs(VIRTUAL_WALL - half_diagonal) and x < -abs(VIRTUAL_WALL - half_diagonal):
+    #     edge_close_left = True
 
-    x = max(-0.9, min(0.9, x))
-    y = max(-0.9, min(0.9, y))
+    x = max(-abs(VIRTUAL_WALL - half_robot), min(abs(VIRTUAL_WALL - half_robot), x))
+    y = max(-abs(VIRTUAL_WALL - half_robot), min(abs(VIRTUAL_WALL - half_robot), y))
 
     final_deg = None
 
@@ -1689,14 +1692,12 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
     else:
         final_deg = orientation
 
-    cur = _read_current_position(CURRENT_POSITION_FILE)
-    cx, cy, bearing = (0.0, 0.0, None) if cur is None else cur
-
     if edge_close_bottom:
         normal_deg = -90
-        ratio = (y + 0.84) / (0.1 * math.sqrt(2.0))
+        centre_to_edge_dist = abs(abs(cy) - abs(VIRTUAL_WALL))
+        ratio = centre_to_edge_dist / half_diagonal
         ratio = max(-1.0, min(1.0, ratio))
-        angle_range = abs(45.0 - math.degrees(math.acos(ratio)))
+        angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
         if final_deg is None:
             final_deg = normal_deg + angle_range if x >= cx else normal_deg - angle_range
         else:
@@ -1706,14 +1707,58 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
                 final_deg = normal_deg + angle_range
             else:                
                 final_deg = normal_deg - angle_range
-        print(f"goto: edge_close_bottom=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
+        # print(f"goto: edge_close_bottom=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
 
     if edge_close_right:
-        coord_line = f"({x:.6f}, {y:.6f}, 0.0)\n"
+        normal_deg = 0
+        centre_to_edge_dist = abs(abs(cx) - abs(VIRTUAL_WALL))
+        ratio = centre_to_edge_dist / half_diagonal
+        ratio = max(-1.0, min(1.0, ratio))
+        angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
+        if final_deg is None:
+            final_deg = normal_deg + angle_range if y >= cy else normal_deg - angle_range
+        else:
+            if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
+                pass
+            elif final_deg >= normal_deg + angle_range:
+                final_deg = normal_deg + angle_range
+            else:                
+                final_deg = normal_deg - angle_range
+        # print(f"goto: edge_close_right=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
+
     if edge_close_top:
-        coord_line = f"({x:.6f}, {y:.6f}, 90.0)\n"
+        normal_deg = 90
+        centre_to_edge_dist = abs(abs(cy) - abs(VIRTUAL_WALL))
+        ratio = centre_to_edge_dist / half_diagonal
+        ratio = max(-1.0, min(1.0, ratio))
+        angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
+        if final_deg is None:
+            final_deg = normal_deg + angle_range if x >= cx else normal_deg - angle_range
+        else:
+            if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
+                pass
+            elif final_deg >= normal_deg + angle_range:
+                final_deg = normal_deg + angle_range
+            else:                
+                final_deg = normal_deg - angle_range
+        # print(f"goto: edge_close_top=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
+
     if edge_close_left:
-        coord_line = f"({x:.6f}, {y:.6f}, 180.0)\n"
+        normal_deg = 180
+        centre_to_edge_dist = abs(abs(cx) - abs(VIRTUAL_WALL))
+        ratio = centre_to_edge_dist / half_diagonal
+        ratio = max(-1.0, min(1.0, ratio))
+        angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
+        if final_deg is None:
+            final_deg = normal_deg + angle_range if y >= cy else normal_deg - angle_range
+        else:
+            if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
+                pass
+            elif final_deg >= normal_deg + angle_range:
+                final_deg = normal_deg + angle_range
+            else:                
+                final_deg = normal_deg - angle_range
+        # print(f"goto: edge_close_left=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
 
     if final_deg is not None:
         coord_line = f"({x:.6f}, {y:.6f}, {final_deg:.6f})\n"
@@ -2722,11 +2767,9 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
                               current_file: str = CURRENT_POSITION_FILE,
                               visible_balls_file: str = VISIBLE_BALLS_FILE) -> int:
     """Build planned waypoints from all balls and follow them in order."""
-    update_seen_tiles()
-    update_unseen_tiles()
-    update_unseen_regions()
-    
-    update_ball_memory_v2(visible_balls_file=visible_balls_file)
+
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+        return 0
 
     rows = len(FIELD_TILES)
     cols = len(FIELD_TILES[0]) if rows > 0 else 0
@@ -2822,56 +2865,7 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
     #     return 0
 
     first = waypoints[0] if waypoints else None
-    if first is None:
-        if status != "reached":
-            return 0
-        
-        # print(f"[mode_all_ball_path_panned] no visible balls, status={status}", file=sys.stderr)
-
-        state = _read_state_pair(TEMP_STATE_FILE)
-        if state is None:
-            state = (0.0, 0.0)
-        miss_time = int(state[0])
-        search_record = int(state[1])
-        # print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
-        if miss_time == 0.0:
-          if abs(cx) > 0.8 or abs(cy) > 0.8:
-              cx = max(-0.8, min(0.8, cx))
-              cy = max(-0.8, min(0.8, cy))
-              goto(cx, cy, bearing)
-          else:
-              heading = None if bearing is None else bearing + 179.0
-              goto(cx, cy, heading)
-              _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
-          return 0
-        if miss_time == 1.0:
-          heading = None if bearing is None else bearing + 179.0
-          goto(cx, cy, heading)
-          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
-          return 0
-        
-        if goto_unseen_region(cx, cy):
-            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
-            return 0
-        return 0
-    state = _read_state_pair(TEMP_STATE_FILE)
-    if state is not None:
-        _atomic_write(TEMP_STATE_FILE, f"(0, 0)\n")
     x, y, _ = first
-
-    # if (abs(cx - x) <= 0.01 and abs(cy - y) <= 0.01) or (abs(x) >= 0.9 and abs(y) >= 0.9) or (abs(x) >= 0.9 and abs(cy - y) <= 0.01) or (abs(y) >= 0.9 and abs(cx - x) <= 0.01):
-    #     for r in range(rows):
-    #         for c in range(cols):
-    #             tx, ty = FIELD_TILES[r][c]
-    #             if abs(tx - x) <= 0.01 and abs(ty - y) <= 0.01:
-    #                 memory[r][c] = 0.0
-    #     _write_seen_tile_matrix(BALL_MEMORY_FILE, memory)
-    #     remaining = waypoints[1:]
-    #     _write_planned_waypoints(planned_file, remaining)
-    #     _write_planned_index(index_file, 0)
-    #     if not remaining:
-    #         return 0
-    #     x, y, _ = remaining[0]
 
     return 0 if goto(x, y) else 1
 
