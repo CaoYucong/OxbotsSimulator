@@ -1170,7 +1170,7 @@ while supervisor.step(TIME_STEP) != -1:
     if written_ball_count == 0:
         print("[Supervisor] ball_position.txt is empty. Stopping simulation.")
         _write_supervisor_status(SUPERVISOR_STATUS_FILE, "exited")
-        break
+        # break
     
     # 2.6) Write robot current position to file
     _write_current_position(CURRENT_POSITION_FILE)
