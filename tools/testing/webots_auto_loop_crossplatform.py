@@ -34,8 +34,9 @@ import threading
 import queue
 import os
 import signal
+import atexit
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TextIO
 
 # 默认路径（你之前给出的 mac 路径 & world）
 DEFAULT_WEBOTS_MAC = "/Applications/Webots.app/Contents/MacOS/webots"
@@ -43,8 +44,68 @@ DEFAULT_WEBOTS_LINUX = "/usr/local/webots/bin/webots"
 DEFAULT_WEBOTS_WINDOWS = r"C:\Program Files\Webots\webots.exe"
 
 WATCH_TEXT = "Supervisor controller exiting."
+DEFAULT_SHARED_OUTPUT_FILE = os.path.expanduser("~/Desktop/webots_auto_loop_shared_output.txt")
+
+_ORIGINAL_STDOUT = sys.stdout
+_ORIGINAL_STDERR = sys.stderr
+_SHARED_OUTPUT_HANDLE: Optional[TextIO] = None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class TeeStream:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            try:
+                stream.write(data)
+            except Exception:
+                pass
+        return len(data)
+
+    def flush(self):
+        for stream in self.streams:
+            try:
+                stream.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        try:
+            return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+        except Exception:
+            return False
+
+
+def setup_shared_output(shared_output_file: Optional[str]) -> None:
+    global _SHARED_OUTPUT_HANDLE
+
+    if not shared_output_file:
+        return
+
+    shared_output_file = os.path.expanduser(os.path.expandvars(shared_output_file))
+    os.makedirs(os.path.dirname(shared_output_file), exist_ok=True)
+
+    _SHARED_OUTPUT_HANDLE = open(shared_output_file, "a", buffering=1, encoding="utf-8")
+    _SHARED_OUTPUT_HANDLE.write(f"\n===== session start {datetime.now().isoformat()} =====\n")
+    _SHARED_OUTPUT_HANDLE.flush()
+
+    sys.stdout = TeeStream(_ORIGINAL_STDOUT, _SHARED_OUTPUT_HANDLE)
+    sys.stderr = TeeStream(_ORIGINAL_STDERR, _SHARED_OUTPUT_HANDLE)
+
+    def _close_shared_output():
+        try:
+            if _SHARED_OUTPUT_HANDLE and not _SHARED_OUTPUT_HANDLE.closed:
+                _SHARED_OUTPUT_HANDLE.write(f"\n===== session end {datetime.now().isoformat()} =====\n")
+                _SHARED_OUTPUT_HANDLE.flush()
+                _SHARED_OUTPUT_HANDLE.close()
+        except Exception:
+            pass
+
+    atexit.register(_close_shared_output)
+    print(f"[INFO] 已启用共享输出日志：{shared_output_file}")
 
 
 def resolve_project_root() -> str:
@@ -74,8 +135,8 @@ DEFAULT_TOTAL_CONTACT_TIME_FILE = os.path.join(PROJECT_ROOT, "decision_making_cy
 DEFAULT_SUPERVISOR_STATUS_FILE = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data", "supervisor_controller_status.txt")
 DEFAULT_RANDOM_SEED_FILE = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "random_seed.txt")
 
-DEFAULT_BENCHMARK_MODES = ["realistic_nearest", "improved_nearest","nearest",  "planned"]
-DEFAULT_AVOIDANCE_SETTINGS = ["off", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+DEFAULT_BENCHMARK_MODES = ["realistic_nearest", "improved_nearest","nearest"]
+DEFAULT_AVOIDANCE_SETTINGS = ["100"]
 
 
 def _ts() -> str:
@@ -578,17 +639,11 @@ def run_benchmark_matrix(args) -> int:
         log_error("未生成任何随机种子，请检查 --seed-start/--seed-end 或 --seeds")
         return 1
 
-    if len(seed_values) < args.repeats_per_config:
-        log_error(
-            f"可用种子数量不足：需要 {args.repeats_per_config} 个，但只有 {len(seed_values)} 个。"
-        )
-        return 1
-
-    if len(seed_values) > args.repeats_per_config:
+    if args.repeats_per_config != len(seed_values):
         log_warn(
-            f"可用种子数量为 {len(seed_values)}，按 repeats_per_config={args.repeats_per_config} 截断使用前 {args.repeats_per_config} 个。"
+            f"检测到 repeats_per_config={args.repeats_per_config} 与种子数量 {len(seed_values)} 不一致；"
+            "当前版本按 seed 列表完整运行，不再截断种子。"
         )
-    seed_values = seed_values[:args.repeats_per_config]
 
     nowstr = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_csv = args.result_csv
@@ -600,7 +655,7 @@ def run_benchmark_matrix(args) -> int:
     log_step(f"开始矩阵测试，总计 {total_runs} 组")
     log_info(f"modes={modes}")
     log_info(f"avoidance={avoidance_settings}")
-    log_info(f"repeats_per_config={args.repeats_per_config}")
+    log_info(f"repeats_per_config={args.repeats_per_config} (effective_by_seeds={len(seed_values)})")
     log_info(f"seed_values={seed_values}")
     log_info(f"结果 CSV：{result_csv}")
     log_info(f"mode_file={mode_file}")
@@ -781,6 +836,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=None, help="每次运行查找文本的超时时间（秒），空表示不超时")
     parser.add_argument("--log-file", default=None, help="追加日志到此文件（可选）")
     parser.add_argument("--watch-text", default=WATCH_TEXT, help="要匹配的目标文本（默认 'Supervisor controller exiting.'）")
+    parser.add_argument("--shared-output-file", default=DEFAULT_SHARED_OUTPUT_FILE, help="将 stdout/stderr 追加写入共享文本文件（默认桌面同一文件）")
     parser.add_argument("--benchmark-matrix", action="store_true", help="按 mode × collision 配置矩阵批量测试并导出 CSV")
     parser.add_argument("--modes", nargs="*", default=DEFAULT_BENCHMARK_MODES, help="矩阵测试使用的 mode 列表")
     parser.add_argument("--avoidance", nargs="*", default=DEFAULT_AVOIDANCE_SETTINGS, help="矩阵测试避障设置列表，例如 off 1 2 3")
@@ -794,12 +850,14 @@ def main():
     parser.add_argument("--status-running-values", nargs="*", default=["runnung", "running"], help="状态文件中表示运行中的值列表")
     parser.add_argument("--status-done-values", nargs="*", default=["exited"], help="状态文件中表示结束的值列表")
     parser.add_argument("--random-seed-file", default=DEFAULT_RANDOM_SEED_FILE, help="随机种子文件路径（supervisor_controller/random_seed.txt）")
-    parser.add_argument("--repeats-per-config", type=int, default=30, help="每种 mode+避障 组合重复次数")
+    parser.add_argument("--repeats-per-config", type=int, default=30, help="保留参数；实际重复次数由 seeds 数量决定")
     parser.add_argument("--seed-start", type=int, default=1000, help="随机种子起始值（含）")
     parser.add_argument("--seed-end", type=int, default=1029, help="随机种子结束值（含）")
     parser.add_argument("--seeds", nargs="*", type=int, default=None, help="显式指定种子列表；提供后优先于 seed-start/seed-end")
     parser.add_argument("--result-csv", default=None, help="矩阵测试结果 CSV 路径（默认 testing/benchmark_results_时间戳.csv）")
     args = parser.parse_args()
+
+    setup_shared_output(args.shared_output_file)
 
     WATCH_TEXT = args.watch_text
 
