@@ -17,7 +17,7 @@ webots_auto_loop_crossplatform.py
         --world "~/Desktop/OxbotsSimulator/worlds/Decision_making.wbt" \
         --modes realistic_nearest improved_nearest nearest planned \
         --avoidance off 0 1 2 3 4 5 6 7 8 9 \
-        --repeats-per-config 30 --seed-start 1000 --seed-end 1029 \
+        --seed-start 1000 --seed-end 1029 \
         --result-csv "~/Desktop/OxbotsSimulator/tools/testing/benchmark_results.csv"
 
 注意：

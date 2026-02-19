@@ -6,16 +6,69 @@ WEBOTS="/Applications/Webots.app/Contents/MacOS/webots"
 ROOT1="$HOME/Desktop/OxbotsSimulator_run1"
 ROOT2="$HOME/Desktop/OxbotsSimulator_run2"
 ROOT3="$HOME/Desktop/OxbotsSimulator_run3"
+TEMPLATE_ROOT="$HOME/Desktop/OxbotsSimulator"
 
 SCRIPT_REL="tools/testing/webots_auto_loop_crossplatform.py"
+
+MODES=(
+  "improved_nearest_v2"
+  "improved_nearest_v2_5"
+)
+
+AVOIDANCE=(
+  "off" "0" "2" "5" "8" "10"
+)
+
+SEED1_START=1007
+SEED1_END=1009
+SEED2_START=1017
+SEED2_END=1019
+SEED3_START=1027
+SEED3_END=1029
 
 PID_FILE="$HOME/Desktop/OxbotsSimulator_parallel_3.pids"
 MERGED_CSV_DEFAULT="$HOME/Desktop/benchmark_merged_all.csv"
 
-CSV1="$ROOT1/tools/testing/benchmark_1007_1009.csv"
-CSV2="$ROOT2/tools/testing/benchmark_1017_1019.csv"
-CSV3="$ROOT3/tools/testing/benchmark_1027_1029.csv"
+CSV1="$ROOT1/tools/testing/benchmark_${SEED1_START}_${SEED1_END}.csv"
+CSV2="$ROOT2/tools/testing/benchmark_${SEED2_START}_${SEED2_END}.csv"
+CSV3="$ROOT3/tools/testing/benchmark_${SEED3_START}_${SEED3_END}.csv"
 
+
+dir_has_files() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 1
+  local first_entry
+  first_entry=$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)
+  [[ -n "$first_entry" ]]
+}
+
+ensure_root_copy() {
+  local target="$1"
+
+  if dir_has_files "$target"; then
+    return 0
+  fi
+
+  if [[ ! -d "$TEMPLATE_ROOT" ]]; then
+    echo "模板目录不存在：$TEMPLATE_ROOT"
+    echo "请先准备模板工程，或修改脚本顶部 TEMPLATE_ROOT。"
+    exit 1
+  fi
+
+  echo "检测到目录缺失或为空，开始复制模板：$target"
+  mkdir -p "$target"
+  cp -R "$TEMPLATE_ROOT"/. "$target"/
+  echo "复制完成：$target"
+}
+
+bootstrap_roots_if_needed() {
+  ensure_root_copy "$ROOT1"
+  ensure_root_copy "$ROOT2"
+  ensure_root_copy "$ROOT3"
+}
+
+
+bootstrap_roots_if_needed
 mkdir -p "$ROOT1/tools/testing" "$ROOT2/tools/testing" "$ROOT3/tools/testing"
 
 start_all() {
@@ -31,27 +84,33 @@ start_all() {
     --webots "$WEBOTS" \
     --world "$ROOT1/worlds/Decision_making.wbt" \
     --benchmark-matrix \
-    --seed-start 1007 --seed-end 1009 \
-    --result-csv "$ROOT1/tools/testing/benchmark_1007_1009.csv" \
-    > "$ROOT1/tools/testing/stdout_1007_1009.log" 2>&1 &
+    --modes "${MODES[@]}" \
+    --avoidance "${AVOIDANCE[@]}" \
+    --seed-start "$SEED1_START" --seed-end "$SEED1_END" \
+    --result-csv "$CSV1" \
+    > "$ROOT1/tools/testing/stdout_${SEED1_START}_${SEED1_END}.log" 2>&1 &
   PID1=$!
 
   python3 "$ROOT2/$SCRIPT_REL" \
     --webots "$WEBOTS" \
     --world "$ROOT2/worlds/Decision_making.wbt" \
     --benchmark-matrix \
-    --seed-start 1017 --seed-end 1019 \
-    --result-csv "$ROOT2/tools/testing/benchmark_1017_1019.csv" \
-    > "$ROOT2/tools/testing/stdout_1017_1019.log" 2>&1 &
+    --modes "${MODES[@]}" \
+    --avoidance "${AVOIDANCE[@]}" \
+    --seed-start "$SEED2_START" --seed-end "$SEED2_END" \
+    --result-csv "$CSV2" \
+    > "$ROOT2/tools/testing/stdout_${SEED2_START}_${SEED2_END}.log" 2>&1 &
   PID2=$!
 
   python3 "$ROOT3/$SCRIPT_REL" \
     --webots "$WEBOTS" \
     --world "$ROOT3/worlds/Decision_making.wbt" \
     --benchmark-matrix \
-    --seed-start 1027 --seed-end 1029 \
-    --result-csv "$ROOT3/tools/testing/benchmark_1027_1029.csv" \
-    > "$ROOT3/tools/testing/stdout_1027_1029.log" 2>&1 &
+    --modes "${MODES[@]}" \
+    --avoidance "${AVOIDANCE[@]}" \
+    --seed-start "$SEED3_START" --seed-end "$SEED3_END" \
+    --result-csv "$CSV3" \
+    > "$ROOT3/tools/testing/stdout_${SEED3_START}_${SEED3_END}.log" 2>&1 &
   PID3=$!
 
   {
@@ -113,9 +172,9 @@ status_all() {
 
 logs_one() {
   case "${1:-}" in
-    1) tail -f "$ROOT1/tools/testing/stdout_1007_1009.log" ;;
-    2) tail -f "$ROOT2/tools/testing/stdout_1017_1019.log" ;;
-    3) tail -f "$ROOT3/tools/testing/stdout_1027_1029.log" ;;
+    1) tail -f "$ROOT1/tools/testing/stdout_${SEED1_START}_${SEED1_END}.log" ;;
+    2) tail -f "$ROOT2/tools/testing/stdout_${SEED2_START}_${SEED2_END}.log" ;;
+    3) tail -f "$ROOT3/tools/testing/stdout_${SEED3_START}_${SEED3_END}.log" ;;
     *)
       echo "用法: $0 logs 1|2|3"
       exit 1
@@ -195,7 +254,7 @@ merge_watch() {
 usage() {
   cat <<EOF
 用法：
-  $0 start        启动 3 路并发（1007-1009 / 1017-1019 / 1027-1029）
+  $0 start        启动 3 路并发（${SEED1_START}-${SEED1_END} / ${SEED2_START}-${SEED2_END} / ${SEED3_START}-${SEED3_END}）
   $0 stop         停止本脚本启动的 3 路任务
   $0 status       查看 3 路任务状态
   $0 logs 1|2|3   跟踪某一路 stdout 日志
