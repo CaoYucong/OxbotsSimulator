@@ -89,7 +89,7 @@ RADAR_MAX_RANGE = 0.8
 MAX_LINEAR_VELOCITY = 0.7
 DEFAULT_LINEAR_VELOCITY = 0.3
 DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
-VIRTUAL_WALL = 0.98  # Virtual wall distance for collision avoiding (meters)
+VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 
 SEARCHING_SEQUENCE = [
     (0, 0, 0),
@@ -1692,72 +1692,72 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
     else:
         final_deg = orientation
 
-    if edge_close_bottom:
-        normal_deg = -90
-        centre_to_edge_dist = abs(abs(cy) - abs(VIRTUAL_WALL))
-        ratio = centre_to_edge_dist / half_diagonal
-        ratio = max(-1.0, min(1.0, ratio))
-        angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
-        if final_deg is None:
-            final_deg = normal_deg + angle_range if x >= cx else normal_deg - angle_range
-        else:
-            if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
-                pass
-            elif final_deg >= normal_deg + angle_range:
-                final_deg = normal_deg + angle_range
-            else:                
-                final_deg = normal_deg - angle_range
-        # print(f"goto: edge_close_bottom=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
+    # if edge_close_bottom:
+    #     normal_deg = -90
+    #     centre_to_edge_dist = abs(abs(cy) - abs(VIRTUAL_WALL))
+    #     ratio = centre_to_edge_dist / half_diagonal
+    #     ratio = max(-1.0, min(1.0, ratio))
+    #     angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
+    #     if final_deg is None:
+    #         final_deg = normal_deg + angle_range if x >= cx else normal_deg - angle_range
+    #     else:
+    #         if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
+    #             pass
+    #         elif final_deg >= normal_deg + angle_range:
+    #             final_deg = normal_deg + angle_range
+    #         else:                
+    #             final_deg = normal_deg - angle_range
+    #     # print(f"goto: edge_close_bottom=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
 
-    if edge_close_right:
-        normal_deg = 0
-        centre_to_edge_dist = abs(abs(cx) - abs(VIRTUAL_WALL))
-        ratio = centre_to_edge_dist / half_diagonal
-        ratio = max(-1.0, min(1.0, ratio))
-        angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
-        if final_deg is None:
-            final_deg = normal_deg + angle_range if y >= cy else normal_deg - angle_range
-        else:
-            if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
-                pass
-            elif final_deg >= normal_deg + angle_range:
-                final_deg = normal_deg + angle_range
-            else:                
-                final_deg = normal_deg - angle_range
-        # print(f"goto: edge_close_right=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
+    # if edge_close_right:
+    #     normal_deg = 0
+    #     centre_to_edge_dist = abs(abs(cx) - abs(VIRTUAL_WALL))
+    #     ratio = centre_to_edge_dist / half_diagonal
+    #     ratio = max(-1.0, min(1.0, ratio))
+    #     angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
+    #     if final_deg is None:
+    #         final_deg = normal_deg + angle_range if y >= cy else normal_deg - angle_range
+    #     else:
+    #         if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
+    #             pass
+    #         elif final_deg >= normal_deg + angle_range:
+    #             final_deg = normal_deg + angle_range
+    #         else:                
+    #             final_deg = normal_deg - angle_range
+    #     # print(f"goto: edge_close_right=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
 
-    if edge_close_top:
-        normal_deg = 90
-        centre_to_edge_dist = abs(abs(cy) - abs(VIRTUAL_WALL))
-        ratio = centre_to_edge_dist / half_diagonal
-        ratio = max(-1.0, min(1.0, ratio))
-        angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
-        if final_deg is None:
-            final_deg = normal_deg + angle_range if x >= cx else normal_deg - angle_range
-        else:
-            if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
-                pass
-            elif final_deg >= normal_deg + angle_range:
-                final_deg = normal_deg + angle_range
-            else:                
-                final_deg = normal_deg - angle_range
-        # print(f"goto: edge_close_top=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
+    # if edge_close_top:
+    #     normal_deg = 90
+    #     centre_to_edge_dist = abs(abs(cy) - abs(VIRTUAL_WALL))
+    #     ratio = centre_to_edge_dist / half_diagonal
+    #     ratio = max(-1.0, min(1.0, ratio))
+    #     angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
+    #     if final_deg is None:
+    #         final_deg = normal_deg + angle_range if x >= cx else normal_deg - angle_range
+    #     else:
+    #         if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
+    #             pass
+    #         elif final_deg >= normal_deg + angle_range:
+    #             final_deg = normal_deg + angle_range
+    #         else:                
+    #             final_deg = normal_deg - angle_range
+    #     # print(f"goto: edge_close_top=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
 
-    if edge_close_left:
-        normal_deg = 180
-        centre_to_edge_dist = abs(abs(cx) - abs(VIRTUAL_WALL))
-        ratio = centre_to_edge_dist / half_diagonal
-        ratio = max(-1.0, min(1.0, ratio))
-        angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
-        if final_deg is None:
-            final_deg = normal_deg + angle_range if y >= cy else normal_deg - angle_range
-        else:
-            if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
-                pass
-            elif final_deg >= normal_deg + angle_range:
-                final_deg = normal_deg + angle_range
-            else:                
-                final_deg = normal_deg - angle_range
+    # if edge_close_left:
+    #     normal_deg = 180
+    #     centre_to_edge_dist = abs(abs(cx) - abs(VIRTUAL_WALL))
+    #     ratio = centre_to_edge_dist / half_diagonal
+    #     ratio = max(-1.0, min(1.0, ratio))
+    #     angle_range = abs(45.0 - abs(math.degrees(math.acos(ratio))))
+    #     if final_deg is None:
+    #         final_deg = normal_deg + angle_range if y >= cy else normal_deg - angle_range
+    #     else:
+    #         if final_deg < normal_deg + angle_range and final_deg > normal_deg - angle_range:
+    #             pass
+    #         elif final_deg >= normal_deg + angle_range:
+    #             final_deg = normal_deg + angle_range
+    #         else:                
+    #             final_deg = normal_deg - angle_range
         # print(f"goto: edge_close_left=True, ratio={ratio:.3f}, normal_deg={normal_deg}, angle_range={angle_range:.3f}, final_deg={final_deg}", file=sys.stderr)
 
     if final_deg is not None:
@@ -1766,7 +1766,6 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
         coord_line = f"({x:.6f}, {y:.6f}, None)\n"
 
     return _atomic_write(DYNAMIC_WAYPOINTS_FILE, coord_line)
-
 
 def stop(waypoint_type: str = "task") -> bool:
     """Stop by setting dynamic waypoint to current robot position."""
