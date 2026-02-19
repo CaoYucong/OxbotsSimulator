@@ -7,6 +7,14 @@ ROOT1="$HOME/Desktop/OxbotsSimulator_run1"
 ROOT2="$HOME/Desktop/OxbotsSimulator_run2"
 ROOT3="$HOME/Desktop/OxbotsSimulator_run3"
 TEMPLATE_ROOT="$HOME/Desktop/OxbotsSimulator"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_BASE="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ROOT_PARENT="$(cd "$ROOT_BASE/.." && pwd)"
+
+ROOT1="$ROOT_PARENT/OxbotsSimulator_run1"
+ROOT2="$ROOT_PARENT/OxbotsSimulator_run2"
+ROOT3="$ROOT_PARENT/OxbotsSimulator_run3"
+TEMPLATE_ROOT="$ROOT_BASE"
 
 SCRIPT_REL="tools/testing/webots_auto_loop_crossplatform.py"
 
@@ -44,6 +52,13 @@ dir_has_files() {
 
 ensure_root_copy() {
   local target="$1"
+  local port=""
+
+  case "$target" in
+    "$ROOT1") port="5001" ;;
+    "$ROOT2") port="5002" ;;
+    "$ROOT3") port="5003" ;;
+  esac
 
   if dir_has_files "$target"; then
     return 0
@@ -59,6 +74,11 @@ ensure_root_copy() {
   mkdir -p "$target"
   cp -R "$TEMPLATE_ROOT"/. "$target"/
   echo "复制完成：$target"
+
+  if [[ -n "$port" ]]; then
+    printf '%s\n' "$port" > "$target/controllers/supervisor_controller/html_port.txt"
+    echo "已设置 html_port: $port"
+  fi
 }
 
 bootstrap_roots_if_needed() {
