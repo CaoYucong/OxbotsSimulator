@@ -90,6 +90,7 @@ MAX_LINEAR_VELOCITY = 0.7
 DEFAULT_LINEAR_VELOCITY = 0.3
 DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
 VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
+INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball (meters)
 
 SEARCHING_SEQUENCE = [
     (0, 0, 0),
@@ -1663,11 +1664,11 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
     cx, cy, bearing = (0.0, 0.0, None) if cur is None else cur
     heading_deg = math.degrees(math.atan2(y - cy, x - cx))
 
-    edge_close_bottom = False
-    edge_close_right = False
-    edge_close_top = False
-    edge_close_left = False
-    half_diagonal = 0.1 * math.sqrt(2.0)
+    # edge_close_bottom = False
+    # edge_close_right = False
+    # edge_close_top = False
+    # edge_close_left = False
+    # half_diagonal = 0.1 * math.sqrt(2.0)
     half_robot = 0.1
     # if cy < -abs(VIRTUAL_WALL - half_diagonal) and abs(cx) <= abs(VIRTUAL_WALL - half_diagonal) and y < -abs(VIRTUAL_WALL - half_diagonal):
     #     edge_close_bottom = True
@@ -1682,10 +1683,12 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
     y = max(-abs(VIRTUAL_WALL - half_robot), min(abs(VIRTUAL_WALL - half_robot), y))
 
     final_deg = None
+    intake_angle = abs(math.degrees(math.atan(INTAKE_RANGE / (2.0 * half_robot))))
+    turning_angle = max(0, (abs(heading_deg - bearing) % 360.0) - intake_angle) if bearing is not None else 0.0
 
     if orientation is None:
-        distance_thread = (abs(heading_deg - bearing) % 360.0) / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
-        if math.hypot(x - cx, y - cy) >= distance_thread:
+        distance_threashold = turning_angle / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
+        if math.hypot(x - cx, y - cy) >= distance_threashold:
             final_deg = heading_deg
         else:
             final_deg = None
@@ -2477,8 +2480,8 @@ def mode_improved_nearest_v2(status_file: str = WAYPOINT_STATUS_FILE,
             tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
             heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
-            distance_thread = (abs(heading_deg - bearing) % 360.0) / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
-            if math.hypot(tx - cx, ty - cy) >= distance_thread:
+            distance_threashold = (abs(heading_deg - bearing) % 360.0) / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
+            if math.hypot(tx - cx, ty - cy) >= distance_threashold:
                 goto(tx, ty, heading_deg)
             else:
                 goto(tx, ty)
@@ -2801,14 +2804,17 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
             return _normalize_deg(a_deg - b_deg)
 
         def _total_cost(sequence: list[int]) -> float:
+            half_robot = 0.1
             total_time = 0.0
             prev_position = (cx, cy)
             prev_heading_deg = start_heading_deg
+            intake_angle = abs(math.degrees(math.atan(INTAKE_RANGE / (2.0 * half_robot))))
             for idx in sequence:
                 bx, by, _ = balls[idx]
                 distance = math.hypot(prev_position[0] - bx, prev_position[1] - by)
                 target_heading_deg = _angle_to_deg(prev_position, (bx, by))
                 turn_angle_deg = abs(_angle_diff_deg(target_heading_deg, prev_heading_deg))
+                # turn_angle_deg = max(0, (abs(target_heading_deg - bearing) % 360.0) - intake_angle)  if bearing is not None else 0.0
                 move_time = distance / DEFAULT_LINEAR_VELOCITY
                 turn_time = turn_angle_deg / DEFAULT_ANGULAR_VELOCITY
                 total_time += move_time + turn_time

@@ -23,7 +23,7 @@ MODES=(
 )
 
 AVOIDANCE=(
-  "off" "2"
+  "0" "5" "10"
 )
 
 SEED1_START=1000

@@ -1168,7 +1168,7 @@ while supervisor.step(TIME_STEP) != -1:
     # 2.5) Write per-frame ball positions to file
     written_ball_count = _write_ball_positions(BALL_POS_FILE)
     if written_ball_count == 0:
-        print("[Supervisor] ball_position.txt is empty. Stopping simulation.")
+        # print("[Supervisor] ball_position.txt is empty. Stopping simulation.")
         _write_supervisor_status(SUPERVISOR_STATUS_FILE, "exited")
         # break
     
