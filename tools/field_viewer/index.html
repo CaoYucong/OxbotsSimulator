@@ -165,6 +165,7 @@
       <div class="panel hud">
         <h1>Field Viewer</h1>
         <div class="stat" id="simTimeStat">Simulation Time: --</div>
+        <div class="stat" id="waypointStatusStat">Waypoint Status: --</div>
         <div class="stat" id="robotStat">Robot: --</div>
         <div class="stat" id="ballStat">Balls: --</div>
         <div class="stat" id="visibleStat">Visible: --</div>
@@ -217,6 +218,7 @@
       const collisionAvoidingStat = document.getElementById("collisionAvoidingStat");
       const randomSeedStat = document.getElementById("randomSeedStat");
       const simTimeStat = document.getElementById("simTimeStat");
+      const waypointStatusStat = document.getElementById("waypointStatusStat");
       const collisionCounterStat = document.getElementById("collisionCounterStat");
       const lastBallTakenStat = document.getElementById("lastBallTakenStat");
 
@@ -259,6 +261,26 @@
         ctx.strokeStyle = "rgba(0,0,0,0.6)";
         ctx.lineWidth = 2;
         ctx.strokeRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      }
+
+      function drawGridOverlay() {
+        const size = canvas.width;
+        const step = size / 10;
+        ctx.save();
+        ctx.strokeStyle = "rgba(0,0,0,0.10)";
+        ctx.lineWidth = 1;
+        for (let i = 1; i < 10; i += 1) {
+          const p = i * step;
+          ctx.beginPath();
+          ctx.moveTo(p, 0);
+          ctx.lineTo(p, size);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(0, p);
+          ctx.lineTo(size, p);
+          ctx.stroke();
+        }
         ctx.restore();
       }
 
@@ -684,6 +706,7 @@
         drawTileSeenOverlay(tileSeenList);
         drawBallTileMemoryDots(ballTileMemoryList);
         drawBallTileMemoryOverlay(ballTileMemoryList);
+        drawGridOverlay();
         drawPlannedPath(plannedPathPoints);
 
         const visibleSet = new Set(visibleList.map(makeVisibleKey));
@@ -729,6 +752,7 @@
         collisionAvoidingStat.textContent = `Collision Avoiding: ${textStatus && textStatus.collision_avoiding ? textStatus.collision_avoiding : "--"}`;
         randomSeedStat.textContent = `Random Seed: ${textStatus && textStatus.random_seed ? textStatus.random_seed : "--"}`;
         simTimeStat.textContent = `Simulation Time: ${textStatus && textStatus.simulation_time !== undefined && textStatus.simulation_time !== null && textStatus.simulation_time !== "" ? `${Number(textStatus.simulation_time).toFixed(3)} s` : "--"}`;
+        waypointStatusStat.textContent = `Waypoint Status: ${textStatus && textStatus.waypoint_status ? textStatus.waypoint_status : "--"}`;
         collisionCounterStat.textContent = `Collision Counter: ${textStatus && textStatus.collision_counter ? textStatus.collision_counter : "--"}`;
         lastBallTakenStat.textContent = `Last Ball Taken: ${textStatus && textStatus.last_ball_taken ? textStatus.last_ball_taken : "--"}`;
       }

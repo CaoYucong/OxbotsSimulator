@@ -44,9 +44,9 @@ TIME_FILE = os.path.join(BASE_DIR, "time.txt")
 SPEED_FILE = os.path.join(BASE_DIR, "speed.txt")
 VISIBLE_BALLS_FILE = os.path.join(BASE_DIR, "visible_balls.txt")
 
-PLANNED_WAYPOINTS_FILE = os.path.join(THIS_DIR, "planned_waypoints.txt")
 MODE_FILE = os.path.join(THIS_DIR, "mode.txt")
 
+PLANNED_WAYPOINTS_FILE = os.path.join(REAL_TIME_DIR, "planned_waypoints.txt")
 PLANNED_INDEX_FILE = os.path.join(REAL_TIME_DIR, "planned_waypoints_index.txt")
 TEMP_STATE_FILE = os.path.join(REAL_TIME_DIR, "search_state.txt")
 WAYPOINTS_STACK_FILE = os.path.join(REAL_TIME_DIR, "waypoints_stack.txt")
@@ -79,8 +79,9 @@ COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt"
 # or `MODE` environment variable is provided. 
 # Example: 'random', 'nearest', 'realistic_nearest', 'planned', 'developing'
 # 'improved_nearest_v1', 'improved_nearest_v2', 'improved_nearest_v2_5', 
-# 'all_ball_path_panned'
-DEFAULT_MODE = 'all_ball_path_panned'
+# 'improved_nearest_v3', 'improved_nearest_v3_5'
+# 'all_ball_path_planned', 'seen_ball_path_planned'
+DEFAULT_MODE = 'improved_nearest_v3'
 
 # generation bounds (match supervisor playground bounds)
 X_MIN, X_MAX = -0.86, 0.86
@@ -1579,7 +1580,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
     return False
 
 def _read_planned_waypoints(path: str):
-    """Return list of (x, y, angle_or_none) from planned_waypoints.txt."""
+    """Return list of (x, y, angle_or_none, type_or_none) from planned_waypoints.txt."""
     namespace = {"North": math.pi / 2, "East": 0.0, "South": -math.pi / 2, "West": math.pi, "None": None}
     out = []
     try:
@@ -1598,28 +1599,45 @@ def _read_planned_waypoints(path: str):
                         x = float(nums[0])
                         y = float(nums[1])
                         ang = float(nums[2]) if len(nums) >= 3 else None
-                        wp = (x, y, ang)
+                        wp = (x, y, ang, None)
                     else:
                         continue
                 if isinstance(wp, tuple) and len(wp) >= 2:
                     if len(wp) == 2:
-                        out.append((float(wp[0]), float(wp[1]), None))
+                        out.append((float(wp[0]), float(wp[1]), None, None))
                     else:
                         ang = wp[2]
                         ang = float(ang) if ang is not None else None
-                        out.append((float(wp[0]), float(wp[1]), ang))
+                        typ = None
+                        if len(wp) >= 4 and wp[3] is not None:
+                            typ = str(wp[3]).strip().upper()
+                        out.append((float(wp[0]), float(wp[1]), ang, typ))
     except Exception:
         return []
     return out
 
 
-def _write_planned_waypoints(path: str, waypoints: list[tuple[float, float, Optional[float]]]) -> bool:
+def _write_planned_waypoints(path: str, waypoints: list[tuple]) -> bool:
     lines = []
-    for x, y, ang in waypoints:
+    for wp in waypoints:
+        if len(wp) < 2:
+            continue
+        x = float(wp[0])
+        y = float(wp[1])
+        ang = wp[2] if len(wp) >= 3 else None
+        typ = wp[3] if len(wp) >= 4 else None
+        typ = None if typ is None else str(typ).strip().upper()
+
         if ang is None:
-            lines.append(f"({x:.6f}, {y:.6f}, None)")
+            if typ:
+                lines.append(f"({x:.6f}, {y:.6f}, None, '{typ}')")
+            else:
+                lines.append(f"({x:.6f}, {y:.6f}, None)")
         else:
-            lines.append(f"({x:.6f}, {y:.6f}, {float(ang):.6f})")
+            if typ:
+                lines.append(f"({x:.6f}, {y:.6f}, {float(ang):.6f}, '{typ}')")
+            else:
+                lines.append(f"({x:.6f}, {y:.6f}, {float(ang):.6f})")
     content = "\n".join(lines) + ("\n" if lines else "")
     return _atomic_write(path, content)
 
@@ -1639,12 +1657,83 @@ def _write_planned_index(path: str, index: int) -> bool:
     return _atomic_write(path, f"{int(index)}\n")
     
 
+def next_point_time_cost(
+    prev_position: tuple[float, float],
+    prev_bearing_deg: Optional[float],
+    next_position: tuple[float, float],
+    next_bearing_deg: Optional[float],
+    type: Optional[str] = None,
+    debug: bool = False) -> float:
+
+    distance = math.hypot(prev_position[0] - next_position[0], prev_position[1] - next_position[1])
+    move_time = distance / DEFAULT_LINEAR_VELOCITY
+
+    half_robot = 0.1
+    intake_angle = abs(math.degrees(math.atan(INTAKE_RANGE / (2.0 * half_robot))))
+    turning_angle = 0.0
+    rotation_avoidance_buffer = 0.2 if type == "MEMORY" else 0.1
+
+    if next_bearing_deg is None:
+        next_bearing_deg = math.degrees(math.atan2(next_position[1] - prev_position[1], next_position[0] - prev_position[0]))
+
+    next_x_in_prev = None
+    next_y_in_prev = None
+    if prev_bearing_deg is not None:
+        dx = next_position[0] - prev_position[0]
+        dy = next_position[1] - prev_position[1]
+
+        # Transform next_position into prev_position reference frame.
+        # In this project, bearing corresponds to robot -x axis, so shift by 180°
+        # to obtain the expected robot-forward (+x) frame.
+        theta = math.radians(prev_bearing_deg)
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        next_x_in_prev = dx * cos_t + dy * sin_t
+        next_y_in_prev = -dx * sin_t + dy * cos_t
+
+        # Compute turning angle by quadrant in prev frame:
+        # - Q1/Q2: use angle from +x axis directly.
+        # - Q3/Q4: mirror across x-axis first, then use angle from +x axis.
+        if next_y_in_prev >= 0.0:
+            angle_from_x_deg = math.degrees(math.atan2(next_y_in_prev, next_x_in_prev))
+        else:
+            mirrored_y = -next_y_in_prev
+            angle_from_x_deg = math.degrees(math.atan2(mirrored_y, next_x_in_prev))
+
+        turning_angle = max(0.0, angle_from_x_deg - intake_angle)
+        turn_time = turning_angle / DEFAULT_ANGULAR_VELOCITY
+
+    time_threashold = move_time - rotation_avoidance_buffer / DEFAULT_LINEAR_VELOCITY
+
+    total_time = 0
+    if turn_time < time_threashold:
+        total_time = move_time
+    else:
+        total_time = move_time + turn_time - time_threashold
+    
+    if debug:
+        print(
+            f"------[next_point_time_cost]------\n"
+            f"_single_cost from {prev_position} (bearing={prev_bearing_deg}) to {next_position} (bearing={next_bearing_deg}): \n"
+            f"next_in_prev=({next_x_in_prev}, {next_y_in_prev}), angle_from_x={angle_from_x_deg:.1f}, turning_angle={turning_angle:.1f}, \n"
+            f"distance={distance:.3f}, linear move time={move_time:.3f}, turning_angle={turning_angle:.1f}, turn_time={turn_time:.3f},\n"
+            f"threashold = {time_threashold:.3f}s, total_cost={total_time:.3f}\n",
+            f"------[next_point_time_cost]------\n",
+            file=sys.stderr,
+        )
+    return total_time
+
+
+def _minimal_abs_angle_diff_deg(a_deg: float, b_deg: float) -> float:
+    """Return minimal absolute angle difference in degrees, in [0, 180]."""
+    diff = (a_deg - b_deg + 180.0) % 360.0 - 180.0
+    return abs(diff)
 
 # =============================================================================
 # WAYPOINT AND SPEED COMMANDS
 # Action primitives for writing dynamic waypoint and speed outputs.
 # =============================================================================
-def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> bool:
+def goto(x: float, y: float, orientation=None, waypoint_type: str = "task", rotation_avoidance_buffer: float = 0.1) -> bool:
     """Set the dynamic waypoint to the specified coordinates.
     
     Args:
@@ -1684,10 +1773,10 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
 
     final_deg = None
     intake_angle = abs(math.degrees(math.atan(INTAKE_RANGE / (2.0 * half_robot))))
-    turning_angle = max(0, (abs(heading_deg - bearing) % 360.0) - intake_angle) if bearing is not None else 0.0
+    turning_angle = max(0.0, _minimal_abs_angle_diff_deg(heading_deg, bearing) - intake_angle) if bearing is not None else 0.0
 
     if orientation is None:
-        distance_threashold = turning_angle / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
+        distance_threashold = turning_angle / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + rotation_avoidance_buffer
         if math.hypot(x - cx, y - cy) >= distance_threashold:
             final_deg = heading_deg
         else:
@@ -2168,15 +2257,9 @@ def goto_unseen_region(cx: float,
 
     tr, tc = best_unseen_rc
     tx, ty = FIELD_TILES[tr][tc]
-    if tx >= 0:
-        dx = tx - 0.4
-    else:
-        dx = tx + 0.4
-    if ty >= 0:
-        dy = ty - 0.4
-    else:
-        dy = ty + 0.4
-    heading_deg = math.degrees(math.atan2(ty - dy, tx - dx))
+    dx = tx - tx / math.hypot(ty, tx) * 0.4
+    dy = ty - ty / math.hypot(ty, tx) * 0.4
+    heading_deg = math.degrees(math.atan2(ty, tx))
     goto(dx, dy, heading_deg)
     # print(f"[waypoints_cruise] goto unseen region at tile ({tr}, {tc}, {heading_deg})", file=sys.stderr)
     return True
@@ -2361,7 +2444,7 @@ def update_ball_memory_v2(memory_tile_file: str = BALL_MEMORY_FILE,
         theta = math.radians(bearing) if bearing is not None else 0.0
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
-        half = 0.15  # robot half-size (actually 0.2m square)
+        half = 0.2  # robot half-size (actually 0.2m square)
         tile_half = 0.05  # tile half-size (0.1m square)
 
         for r, c, tx, ty in flat_tiles:
@@ -2480,7 +2563,7 @@ def mode_improved_nearest_v2(status_file: str = WAYPOINT_STATUS_FILE,
             tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
             heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
-            distance_threashold = (abs(heading_deg - bearing) % 360.0) / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
+            distance_threashold = _minimal_abs_angle_diff_deg(heading_deg, bearing) / DEFAULT_ANGULAR_VELOCITY * DEFAULT_LINEAR_VELOCITY + 0.1
             if math.hypot(tx - cx, ty - cy) >= distance_threashold:
                 goto(tx, ty, heading_deg)
             else:
@@ -2655,6 +2738,252 @@ def mode_improved_nearest_v2_5(status_file: str = WAYPOINT_STATUS_FILE,
     ok = goto(target_x, target_y, heading_deg)
     return 0 if ok else 1
 
+def mode_improved_nearest_v3(status_file: str = WAYPOINT_STATUS_FILE,
+                          waypoint_file: str = DYNAMIC_WAYPOINTS_FILE,
+                          visible_balls_file: str = VISIBLE_BALLS_FILE,
+                          current_file: str = CURRENT_POSITION_FILE) -> int:
+    """Realistic nearest mode: choose nearest ball from visible_balls.txt only."""
+
+    update_seen_tiles()
+    update_unseen_tiles()
+    update_unseen_regions()
+    
+    update_ball_memory_v2(visible_balls_file=visible_balls_file)
+
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+        return 0
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is not None and sim_time > 170.0:
+        goto(-0.9, 0.0, 180.0)
+        return 0
+
+    cur = _read_current_position(current_file)
+
+    status = _read_status(status_file)
+
+    if cur is None:
+        return 0
+    bx = _read_visible_ball_positions(visible_balls_file)
+    cx, cy, bearing = cur
+    if not bx:
+        
+        rows = len(FIELD_TILES)
+        cols = len(FIELD_TILES[0]) if rows > 0 else 0
+        memory_ball = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+
+        if status != "reached":
+            dynamic_waypoint = _read_dynamic_waypoints()
+            # print(f"[mode_improved_nearest_v2] no visible balls, status={status}, dynamic_waypoint={dynamic_waypoint}", file=sys.stderr)
+            dx, dy, dbearing = dynamic_waypoint if dynamic_waypoint is not None else (None, None, None)
+            # print(f"[mode_improved_nearest_v2] current position=({cx}, {cy}), dynamic_waypoint=({dx}, {dy})", file=sys.stderr)
+            if dx is not None and dy is not None:
+              for r in range(rows):
+                  for c in range(cols):
+                      tx, ty = FIELD_TILES[r][c]
+                      if abs(tx - dx) <= 0.05 and abs(ty - dy) <= 0.05:
+                          if memory_ball[r][c] > 0.0:
+                              return 0
+
+        best_ball_rc = None
+        best_ball_time_cost = 180.0
+        best_ball_val = -1.0
+        for r in range(rows):
+            for c in range(cols):
+                v = memory_ball[r][c]
+                tx, ty = FIELD_TILES[r][c]
+                dist = math.hypot(tx - cx, ty - cy)
+                time_cost = next_point_time_cost((cx, cy), bearing, (tx, ty), None)
+                if time_cost <  best_ball_time_cost and dist >= 0.15 and v > 0.0:
+                    best_ball_time_cost = time_cost
+                    best_ball_val = v
+                    best_ball_rc = (r, c)
+
+        print(f"[mode_improved_nearest_v3] (-0.25, -0.55)best_ball_time_cost={next_point_time_cost((cx, cy), bearing, ((-0.25, -0.55)), None, debug = True)}")
+        print(f"[mode_improved_nearest_v3] (0.45, -0.55)best_ball_time_cost={next_point_time_cost((cx, cy), bearing, ((0.45, -0.55)), None, debug = True)}")
+        print("----Comparison done----")
+
+
+        if best_ball_rc is not None and best_ball_val > 0.0:
+            tr, tc = best_ball_rc
+            tx, ty = FIELD_TILES[tr][tc]
+            goto(tx, ty, rotation_avoidance_buffer=0.2)
+            # print(f"[mode_improved_nearest_v3] goto remembered ball at tile ({tr}, {tc}) with value {best_ball_val}", file=sys.stderr)
+            print(f"[mode_improved_nearest_v3] best_ball_time_cost={next_point_time_cost((cx, cy), bearing, (FIELD_TILES[tr][tc]), None, debug = True)}", file=sys.stderr)
+
+            return 0
+
+        if status != "reached":
+            # stop()
+            return 0
+
+        state = _read_state_pair(TEMP_STATE_FILE)
+        if state is None:
+            state = (0.0, 0.0)
+        miss_time = int(state[0])
+        search_record = int(state[1])
+        # print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
+        if miss_time == 0.0:
+          if abs(cx) > 0.8 or abs(cy) > 0.8:
+              cx = max(-0.8, min(0.8, cx))
+              cy = max(-0.8, min(0.8, cy))
+              goto(cx, cy, bearing)
+          else:
+              heading = None if bearing is None else bearing + 179.0
+              goto(cx, cy, heading)
+              _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+        if miss_time == 1.0:
+          heading = None if bearing is None else bearing + 179.0
+          goto(cx, cy, heading)
+          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+        
+        if goto_unseen_region(cx, cy):
+            # _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            return 0
+
+        if miss_time >= 2.0:
+            index = search_record % len(SEARCHING_SEQUENCE)
+            goto(SEARCHING_SEQUENCE[index][0], SEARCHING_SEQUENCE[index][1], SEARCHING_SEQUENCE[index][2])
+            _atomic_write(TEMP_STATE_FILE, f"({miss_time}, {(search_record+1)%len(SEARCHING_SEQUENCE)})\n")
+    else:
+        state = _read_state_pair(TEMP_STATE_FILE)
+        if state is not None:
+          search_record = int(state[1])
+        _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+    best = None
+    best_d2 = None
+    for (x, y, typ) in bx:
+        try:
+            dx = x - cx
+            dy = y - cy
+            d2 = dx * dx + dy * dy
+        except Exception:
+            continue
+        if best_d2 is None or d2 < best_d2:
+            best_d2 = d2
+            best = (x, y)
+
+    if best is None:
+        return 0
+
+    target_x, target_y = best
+    heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
+    ok = goto(target_x, target_y, heading_deg)
+    return 0 if ok else 1
+
+
+def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
+                          waypoint_file: str = DYNAMIC_WAYPOINTS_FILE,
+                          visible_balls_file: str = VISIBLE_BALLS_FILE,
+                          current_file: str = CURRENT_POSITION_FILE) -> int:
+    """Realistic nearest mode: choose nearest ball from visible_balls.txt only."""
+
+    update_seen_tiles()
+    update_unseen_tiles()
+    update_unseen_regions()
+    
+    update_ball_memory_v2(visible_balls_file=visible_balls_file)
+
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+        return 0
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is not None and sim_time > 170.0:
+        goto(-0.9, 0.0, 180.0)
+        return 0
+
+    cur = _read_current_position(current_file)
+
+    status = _read_status(status_file)
+
+    if cur is None:
+        return 0
+    bx = _read_visible_ball_positions(visible_balls_file)
+    cx, cy, bearing = cur
+    if not bx:
+        if status != "reached":
+            return 0
+        
+        state = _read_state_pair(TEMP_STATE_FILE)
+        if state is None:
+            state = (0.0, 0.0)
+        miss_time = int(state[0])
+        search_record = int(state[1])
+        # print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
+        if miss_time == 0.0:
+          if abs(cx) > 0.8 or abs(cy) > 0.8:
+              cx = max(-0.8, min(0.8, cx))
+              cy = max(-0.8, min(0.8, cy))
+              goto(cx, cy, bearing)
+          else:
+              heading = None if bearing is None else bearing + 179.0
+              goto(cx, cy, heading)
+              _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+        if miss_time == 1.0:
+          heading = None if bearing is None else bearing + 179.0
+          goto(cx, cy, heading)
+          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+          return 0
+
+        rows = len(FIELD_TILES)
+        cols = len(FIELD_TILES[0]) if rows > 0 else 0
+
+        memory_ball = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+        best_ball_rc = None
+        best_ball_val = -1.0
+        for r in range(rows):
+            for c in range(cols):
+                v = memory_ball[r][c]
+                if v > best_ball_val:
+                    best_ball_val = v
+                    best_ball_rc = (r, c)
+
+        if best_ball_rc is not None and best_ball_val > 0.0:
+            tr, tc = best_ball_rc
+            tx, ty = FIELD_TILES[tr][tc]
+            heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
+            goto(tx, ty, heading_deg)
+            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            return 0
+        
+        if goto_unseen_region(cx, cy):
+            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            return 0
+
+        if miss_time >= 2.0:
+            index = search_record % len(SEARCHING_SEQUENCE)
+            goto(SEARCHING_SEQUENCE[index][0], SEARCHING_SEQUENCE[index][1], SEARCHING_SEQUENCE[index][2])
+            _atomic_write(TEMP_STATE_FILE, f"({miss_time}, {(search_record+1)%len(SEARCHING_SEQUENCE)})\n")
+    else:
+        state = _read_state_pair(TEMP_STATE_FILE)
+        if state is not None:
+          search_record = int(state[1])
+        _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+    best = None
+    best_d2 = None
+    for (x, y, typ) in bx:
+        try:
+            dx = x - cx
+            dy = y - cy
+            d2 = dx * dx + dy * dy
+        except Exception:
+            continue
+        if best_d2 is None or d2 < best_d2:
+            best_d2 = d2
+            best = (x, y)
+
+    if best is None:
+        return 0
+
+    target_x, target_y = best
+    heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
+    ok = goto(target_x, target_y, heading_deg)
+    return 0 if ok else 1
+
+
 def mode_random(status_file: str = WAYPOINT_STATUS_FILE, waypoint_file: str = DYNAMIC_WAYPOINTS_FILE) -> int:
     """Random mode: if status == 'reached', generate and write a new waypoint.
 
@@ -2698,15 +3027,11 @@ def mode_nearest(status_file: str = WAYPOINT_STATUS_FILE,
     if not bx:
         return 0
 
-    cx, cy, _ = cur
+    cx, cy, bearing = cur
     best = None
     best_d2 = None
     for (x, y, typ) in bx:
-        try:
-            dx = x - cx; dy = y - cy
-            d2 = dx*dx + dy*dy
-        except Exception:
-            continue
+        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
         if best_d2 is None or d2 < best_d2:
             best_d2 = d2
             best = (x, y)
@@ -2753,7 +3078,9 @@ def mode_planned(status_file: str = WAYPOINT_STATUS_FILE,
             index = (index + 1) % len(waypoints)
         _write_planned_index(index_file, index)
 
-        x, y, ang = waypoints[index]
+        current_wp = waypoints[index]
+        x, y = current_wp[0], current_wp[1]
+        ang = current_wp[2] if len(current_wp) >= 3 else None
         if ang is None:
             goto(x, y)
         else:
@@ -2762,7 +3089,7 @@ def mode_planned(status_file: str = WAYPOINT_STATUS_FILE,
     return 0
 
 
-def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
+def mode_all_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
                               planned_file: str = PLANNED_WAYPOINTS_FILE,
                               index_file: str = PLANNED_INDEX_FILE,
                               balls_file: str = BALL_POS_FILE,
@@ -2783,11 +3110,15 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
     if not balls:
         return 0
 
+    plan_range = 20  # only consider balls within 1.0m for planning
     cur = _read_current_position(current_file)
     if cur is not None:
         cx, cy, _ = cur
         _, _, bearing = cur
         start_heading_deg = 0.0 if bearing is None else float(bearing)
+        balls = [b for b in balls if math.hypot(b[0] - cx, b[1] - cy) <= plan_range]
+        if not balls:
+            return 0
 
         def _normalize_deg(deg: float) -> float:
             while deg <= -180.0:
@@ -2803,21 +3134,18 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
         def _angle_diff_deg(a_deg: float, b_deg: float) -> float:
             return _normalize_deg(a_deg - b_deg)
 
+        half_robot = 0.1
+        intake_angle = abs(math.degrees(math.atan(INTAKE_RANGE / (2.0 * half_robot))))
+
         def _total_cost(sequence: list[int]) -> float:
-            half_robot = 0.1
             total_time = 0.0
             prev_position = (cx, cy)
-            prev_heading_deg = start_heading_deg
-            intake_angle = abs(math.degrees(math.atan(INTAKE_RANGE / (2.0 * half_robot))))
+            prev_heading_deg = None if bearing is None else start_heading_deg
             for idx in sequence:
-                bx, by, _ = balls[idx]
-                distance = math.hypot(prev_position[0] - bx, prev_position[1] - by)
-                target_heading_deg = _angle_to_deg(prev_position, (bx, by))
-                turn_angle_deg = abs(_angle_diff_deg(target_heading_deg, prev_heading_deg))
-                # turn_angle_deg = max(0, (abs(target_heading_deg - bearing) % 360.0) - intake_angle)  if bearing is not None else 0.0
-                move_time = distance / DEFAULT_LINEAR_VELOCITY
-                turn_time = turn_angle_deg / DEFAULT_ANGULAR_VELOCITY
-                total_time += move_time + turn_time
+                bx, by, next_type = balls[idx]
+                next_position = (bx, by)
+                target_heading_deg = _angle_to_deg(prev_position, next_position)
+                total_time += next_point_time_cost(prev_position, prev_heading_deg, next_position, target_heading_deg, next_type)
                 prev_position = (bx, by)
                 prev_heading_deg = target_heading_deg
             return total_time
@@ -2825,11 +3153,18 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
         def _nearest_neighbor() -> list[int]:
             unvisited = set(range(len(balls)))
             seq: list[int] = []
-            cur_x, cur_y = cx, cy
+            cur_x, cur_y, bearing = cx, cy, start_heading_deg
             while unvisited:
                 next_idx = min(
                     unvisited,
-                    key=lambda i: (balls[i][0] - cur_x) ** 2 + (balls[i][1] - cur_y) ** 2,
+                    # key=lambda i: (balls[i][0] - cur_x) ** 2 + (balls[i][1] - cur_y) ** 2,
+                    key = lambda i: next_point_time_cost(
+                        (cur_x, cur_y),
+                        bearing,
+                        (balls[i][0], balls[i][1]),
+                        math.degrees(math.atan2(balls[i][1] - cur_y, balls[i][0] - cur_x)),
+                        balls[i][2],
+                    )
                 )
                 seq.append(next_idx)
                 unvisited.remove(next_idx)
@@ -2842,7 +3177,7 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
             best_cost = _total_cost(best_seq)
             while improved:
                 improved = False
-                for i in range(len(best_seq) - 1):
+                for i in range(1, len(best_seq) - 1):
                     for j in range(i + 1, len(best_seq)):
                         new_seq = best_seq[:i] + list(reversed(best_seq[i:j + 1])) + best_seq[j + 1:]
                         new_cost = _total_cost(new_seq)
@@ -2859,21 +3194,349 @@ def mode_all_ball_path_panned(status_file: str = WAYPOINT_STATUS_FILE,
         optimized_seq = _two_opt(initial_seq)
         balls = [balls[i] for i in optimized_seq]
 
-    waypoints = [(x, y, None) for x, y, _ in balls]
+    waypoints = [(x, y, None, str(typ).strip().upper()) for x, y, typ in balls]
+    existing = _read_planned_waypoints(planned_file)
+    if existing != waypoints:
+        _write_planned_waypoints(planned_file, waypoints)
+        _write_planned_index(index_file, 0)
+
+    # status = _read_status(status_file)
+    # if status != "reached":
+    #     return 0
+
+    first = waypoints[0] if waypoints else None
+    x, y = first[0], first[1]
+
+    return 0 if goto(x, y) else 1
+
+def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
+                       visible_balls_file: str = VISIBLE_BALLS_FILE,
+                       last_second_file: str = LAST_SECOND_FILE,
+                       ball_memory_file: str = BALL_LIST_MEMORY_FILE,
+                       seen_tile_file: str = SEEN_TILE_FILE) -> bool:
+    """Update ball_tile_memory matrix and maintain deduplicated ball_memory.txt.
+
+    For each NEW visible ball (distance > 0.05 to all remembered points):
+    - nearest tile point: +5
+    - tiles within 0.1m: +3
+    - tiles within 0.2m: +2
+    """
+    rows = len(FIELD_TILES)
+    cols = len(FIELD_TILES[0]) if rows > 0 else 0
+    if rows == 0 or cols == 0:
+        return False
+
+    memory = _read_seen_tile_matrix(memory_tile_file, rows, cols)
+    seen = _read_seen_tile_matrix(seen_tile_file, rows, cols)
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    current_second = int(sim_time if sim_time is not None else time.time())
+    last_second_raw = _read_status(last_second_file)
+    last_second = None
+    if last_second_raw is not None:
+        try:
+            last_second = int(float(last_second_raw))
+        except Exception:
+            last_second = None
+
+    if last_second != current_second:
+        _atomic_write(last_second_file, f"{current_second}\n")
+        for r in range(rows):
+            for c in range(cols):
+                memory[r][c] = max(0.0, memory[r][c] - 1.0)
+
+    visible_balls = _read_visible_ball_positions(visible_balls_file)
+    remembered_points = _read_ball_memory_points(ball_memory_file)
+    new_visible_balls = []
+
+    for bx, by, _ in visible_balls:
+        is_new = True
+        # for mx, my in remembered_points:
+        #     if math.hypot(bx - mx, by - my) <= 0.1:
+        #         is_new = False
+        #         break
+        if is_new:
+            remembered_points.append((bx, by))
+            new_visible_balls.append((bx, by))
+
+    points_ok = _write_ball_memory_points(ball_memory_file, remembered_points)
+
+    flat_tiles = []
+    for r in range(rows):
+        for c in range(cols):
+            tx, ty = FIELD_TILES[r][c]
+            flat_tiles.append((r, c, tx, ty))
+
+    cur = _read_current_position(CURRENT_POSITION_FILE)
+    if cur is not None:
+        cx, cy, bearing = cur
+        theta = math.radians(bearing) if bearing is not None else 0.0
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        half = 0.2  # robot half-size (actually 0.2m square)
+        tile_half = 0.05  # tile half-size (0.1m square)
+
+        for r, c, tx, ty in flat_tiles:
+            # Four corners of the tile
+            corners = [
+                (tx - tile_half, ty - tile_half),
+                (tx - tile_half, ty + tile_half),
+                (tx + tile_half, ty - tile_half),
+                (tx + tile_half, ty + tile_half),
+            ]
+            all_in_robot = True
+            for corner_x, corner_y in corners:
+                dx = corner_x - cx
+                dy = corner_y - cy
+                x_robot = dx * cos_t + dy * sin_t
+                y_robot = -dx * sin_t + dy * cos_t
+                if not (abs(x_robot) <= half and abs(y_robot) <= half):
+                    all_in_robot = False
+                    break
+            if all_in_robot:
+                memory[r][c] = 0.0
+
+        for r, c, tx, ty in flat_tiles:
+            if not tile_completely_seen(tx, ty, FOV=60.0, Range=RADAR_MAX_RANGE):
+                continue
+
+            has_ball_in_tile = False
+            for bx, by, _ in visible_balls:
+                if abs(bx - tx) <= tile_half and abs(by - ty) <= tile_half:
+                    has_ball_in_tile = True
+                    break
+                
+            distance = math.hypot(tx - cx, ty - cy)
+            if (memory[r][c] > 0.0) and (not has_ball_in_tile) and distance < 0.2:
+                # print(f"tile ({tx}, {ty}), no balls inside and seen for {seen[r][c]} second, zeroed.")
+                memory[r][c] = 0.0
+
+    for bx, by in new_visible_balls:
+        nearest_rc = None
+        nearest_d2 = None
+
+        for r, c, tx, ty in flat_tiles:
+            dx = tx - bx
+            dy = ty - by
+            d2 = dx * dx + dy * dy
+
+            if nearest_d2 is None or d2 < nearest_d2:
+                nearest_d2 = d2
+                nearest_rc = (r, c)
+
+            # if d2 <= 0.1 * 0.1:
+            #     memory[r][c] = 50
+
+        if nearest_rc is not None:
+            nr, nc = nearest_rc
+            memory[nr][nc] = 180
+
+    tile_ok = _write_seen_tile_matrix(memory_tile_file, memory)
+    return points_ok and tile_ok
+
+def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
+                              planned_file: str = PLANNED_WAYPOINTS_FILE,
+                              index_file: str = PLANNED_INDEX_FILE,
+                              balls_file: str = BALL_POS_FILE,
+                              current_file: str = CURRENT_POSITION_FILE,
+                              visible_balls_file: str = VISIBLE_BALLS_FILE) -> int:
+    """Build planned waypoints from all balls and follow them in order."""
+
+    update_seen_tiles()
+    update_unseen_tiles()
+    update_unseen_regions()
+    
+    update_ball_memory_v3(visible_balls_file=visible_balls_file)
+
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+        return 0
+
+    rows = len(FIELD_TILES)
+    cols = len(FIELD_TILES[0]) if rows > 0 else 0
+    if rows == 0 or cols == 0:
+        return 0
+
+    memory = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+    visible_balls = _read_visible_ball_positions(visible_balls_file)
+    priority_memory_keys: set[tuple[float, float]] = set()
+
+    balls: list[tuple[float, float, str]] = []
+
+    def _append_ball_if_new(x: float, y: float, typ: str) -> None:
+        for bx, by, _ in balls:
+            if math.hypot(bx - x, by - y) <= 0.05:
+                return
+        balls.append((x, y, str(typ).strip().upper()))
+
+    # 1) Add all currently visible balls first.
+    for x, y, typ in visible_balls:
+        _append_ball_if_new(x, y, typ)
+
+    # 2) Add non-zero ball-memory points that are currently not in view.
+    for r in range(rows):
+        for c in range(cols):
+            if memory[r][c] <= 0.0:
+                continue
+            tx, ty = FIELD_TILES[r][c]
+            if memory[r][c] > 178.0 and not in_view(tx, ty):
+                priority_memory_keys.add((round(tx, 3), round(ty, 3)))
+            _append_ball_if_new(tx, ty, "MEMORY")
+
+    plan_range = 20  # only consider balls within 1.0m for planning
+    cur = _read_current_position(current_file)
+    if cur is not None:
+        cx, cy, _ = cur
+        _, _, bearing = cur
+        start_heading_deg = bearing if bearing is not None else None
+        balls = [b for b in balls if math.hypot(b[0] - cx, b[1] - cy) <= plan_range]
+        # print(f"Planning with {len(balls)} balls within range {plan_range} of current position ({cx:.2f}, {cy:.2f})", file=sys.stderr)
+        # print(f"Balls considered for planning: {balls}", file=sys.stderr)
+        if not balls:
+            # print(f"Time to search!", file=sys.stderr)
+            goto_unseen_region(cx, cy)
+            return 0
+
+        def _normalize_deg(deg: float) -> float:
+            while deg <= -180.0:
+                deg += 360.0
+            while deg > 180.0:
+                deg -= 360.0
+            return deg
+
+        def _angle_to_deg(from_point: tuple[float, float], to_point: tuple[float, float]) -> float:
+            rad = math.atan2(to_point[1] - from_point[1], to_point[0] - from_point[0])
+            return _normalize_deg(math.degrees(rad))
+
+        def _total_cost(
+            sequence: list[int],
+            subset: list[tuple[float, float, str]],
+            start_position: tuple[float, float],
+            start_heading_deg_local: Optional[float],
+        ) -> float:
+            total_time = 0.0
+            prev_position = start_position
+            prev_heading_deg = start_heading_deg_local
+            for idx in sequence:
+                bx, by, next_type = subset[idx]
+                next_position = (bx, by)
+                target_heading_deg = _angle_to_deg(prev_position, next_position)
+                total_time += next_point_time_cost(prev_position, prev_heading_deg, next_position, target_heading_deg, next_type)
+                prev_position = (bx, by)
+                prev_heading_deg = target_heading_deg
+            return total_time
+
+        def _nearest_neighbor(
+            subset: list[tuple[float, float, str]],
+            start_position: tuple[float, float],
+            start_heading_deg_local: Optional[float],
+        ) -> list[int]:
+            unvisited = set(range(len(subset)))
+            seq: list[int] = []
+            cur_x, cur_y = start_position
+            cur_heading = start_heading_deg_local
+            while unvisited:
+                next_idx = min(
+                    unvisited,
+                    key=lambda i: next_point_time_cost(
+                        (cur_x, cur_y),
+                        cur_heading,
+                        (subset[i][0], subset[i][1]),
+                        math.degrees(math.atan2(subset[i][1] - cur_y, subset[i][0] - cur_x)),
+                        subset[i][2],
+                    )
+                )
+                seq.append(next_idx)
+                unvisited.remove(next_idx)
+                next_x, next_y, _ = subset[next_idx]
+                cur_heading = _angle_to_deg((cur_x, cur_y), (next_x, next_y))
+                cur_x, cur_y = next_x, next_y
+            return seq
+
+        def _two_opt(
+            sequence: list[int],
+            subset: list[tuple[float, float, str]],
+            start_position: tuple[float, float],
+            start_heading_deg_local: Optional[float],
+        ) -> list[int]:
+            improved = True
+            best_seq = sequence
+            best_cost = _total_cost(best_seq, subset, start_position, start_heading_deg_local)
+            while improved:
+                improved = False
+                for i in range(2, len(best_seq) - 1):
+                    for j in range(i + 1, len(best_seq)):
+                        new_seq = best_seq[:i] + list(reversed(best_seq[i:j + 1])) + best_seq[j + 1:]
+                        new_cost = _total_cost(new_seq, subset, start_position, start_heading_deg_local)
+                        if new_cost < best_cost:
+                            best_seq = new_seq
+                            best_cost = new_cost
+                            improved = True
+                            break
+                    if improved:
+                        break
+            return best_seq
+
+        def _optimize_subset(
+            subset: list[tuple[float, float, str]],
+            start_position: tuple[float, float],
+            start_heading_deg_local: Optional[float],
+        ) -> tuple[list[tuple[float, float, str]], tuple[float, float], Optional[float]]:
+            if not subset:
+                return [], start_position, start_heading_deg_local
+
+            initial_seq = _nearest_neighbor(subset, start_position, start_heading_deg_local)
+            optimized_seq = _two_opt(initial_seq, subset, start_position, start_heading_deg_local)
+            ordered_subset = [subset[i] for i in optimized_seq]
+
+            end_position = start_position
+            end_heading = start_heading_deg_local
+            for x, y, _ in ordered_subset:
+                end_heading = _angle_to_deg(end_position, (x, y))
+                end_position = (x, y)
+
+            return ordered_subset, end_position, end_heading
+
+        def _ball_key(ball: tuple[float, float, str]) -> tuple[float, float]:
+            return (round(ball[0], 3), round(ball[1], 3))
+
+        non_memory_balls = [
+            b for b in balls
+            if str(b[2]).strip().upper() != "MEMORY" or _ball_key(b) in priority_memory_keys
+        ]
+        memory_balls = [
+            b for b in balls
+            if str(b[2]).strip().upper() == "MEMORY" and _ball_key(b) not in priority_memory_keys
+        ]
+
+        optimized_non_memory, end_pos, end_heading = _optimize_subset(
+            non_memory_balls,
+            (cx, cy),
+            start_heading_deg,
+        )
+        optimized_memory, _, _ = _optimize_subset(memory_balls, end_pos, end_heading)
+
+        balls = optimized_non_memory + optimized_memory
+
+
+    waypoints = [(x, y, None, str(typ).strip().upper()) for x, y, typ in balls]
     existing = _read_planned_waypoints(planned_file)
     if existing != waypoints:
         _write_planned_waypoints(planned_file, waypoints)
         _write_planned_index(index_file, 0)
 
     status = _read_status(status_file)
-    # if status != "reached":
-    #     return 0
+    # print(f"Optimized sequence waypoints: {waypoints}, len(waypoints) = {len(waypoints)}, status = {status} with total cost {_total_cost(optimized_seq):.3f}", file=sys.stderr)
+    # print(f"-----------------------------------------sim time = {_read_time_seconds(TIME_FILE)}--------------------------------------------------", file=sys.stderr)
 
     first = waypoints[0] if waypoints else None
-    x, y, _ = first
+    if first is None:
+        return 0
 
+    x, y = first[0], first[1]
+    waypoint_type = str(first[3]).strip().upper() if len(first) >= 4 and first[3] is not None else None
+    if waypoint_type == "MEMORY":
+        return 0 if goto(x, y, rotation_avoidance_buffer=0.2) else 1
     return 0 if goto(x, y) else 1
-
 
 
 # Mode dispatch table: add new handlers here
@@ -2884,8 +3547,11 @@ _MODE_HANDLERS = {
     "improved_nearest_v1": mode_improved_nearest_v1,
     "improved_nearest_v2": mode_improved_nearest_v2,
     "improved_nearest_v2_5": mode_improved_nearest_v2_5,
+    "improved_nearest_v3": mode_improved_nearest_v3,
+    "improved_nearest_v3_5": mode_improved_nearest_v3_5,
     "planned": mode_planned,
-    "all_ball_path_panned": mode_all_ball_path_panned,
+    "all_ball_path_planned": mode_all_ball_path_planned,
+    "seen_ball_path_planned": mode_seen_ball_path_planned,
 }
 
 

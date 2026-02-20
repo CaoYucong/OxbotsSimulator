@@ -12,10 +12,9 @@ from urllib.parse import urlparse
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(ROOT_DIR, "..", ".."))
 WHO_IS_DEV_FILE = os.path.join(PROJECT_ROOT, "who_is_developing.txt")
-CYC_DECISION_DIR = os.path.join(PROJECT_ROOT, "decision_making_cyc")
 
 def _resolve_decision_making_dir() -> str:
-    """Select decision_making folder based on who_is_developing.txt (cyc/wly)."""
+    """Select decision_making folder based on who_is_developing.txt (cyc/wly/xjj)."""
     default_dir = os.path.join(PROJECT_ROOT, "decision_making")
     try:
         with open(WHO_IS_DEV_FILE, "r") as f:
@@ -24,6 +23,8 @@ def _resolve_decision_making_dir() -> str:
             return os.path.join(PROJECT_ROOT, "decision_making_cyc")
         if dev == "wly":
             return os.path.join(PROJECT_ROOT, "decision_making_wly")
+        if dev == "xjj":
+            return os.path.join(PROJECT_ROOT, "decision_making_xjj")
     except Exception:
         pass
     return default_dir
@@ -38,6 +39,7 @@ BALLS_FILE = os.path.join(DATA_DIR, "ball_position.txt")
 VISIBLE_FILE = os.path.join(DATA_DIR, "visible_balls.txt")
 OBSTACLES_FILE = os.path.join(DATA_DIR, "obstacle_robot.txt")
 DYNAMIC_FILE = os.path.join(DATA_DIR, "dynamic_waypoints.txt")
+WAYPOINT_STATUS_FILE = os.path.join(DATA_DIR, "waypoint_status.txt")
 TIME_FILE = os.path.join(DATA_DIR, "time.txt")
 RANDOM_SEED_FILE = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "random_seed.txt")
 BALL_TAKEN_HISTORY_FILE = os.path.join(DATA_DIR, "ball_taken_history.txt")
@@ -52,8 +54,7 @@ UNSEEN_REGIONS_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "unsee
 MODE_FILE = os.path.join(DECISION_MAKING_DIR, "mode.txt")
 COLLISION_AVOIDING_FILE = os.path.join(DECISION_MAKING_DIR, "collision_avoiding.txt")
 COLLISION_COUNTER_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "collision_counter.txt")
-CYC_MODE_FILE = os.path.join(CYC_DECISION_DIR, "mode.txt")
-CYC_PLANNED_FILE = os.path.join(CYC_DECISION_DIR, "planned_waypoints.txt")
+PLANNED_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "planned_waypoints.txt")
 
 
 def _read_lines(path: str) -> list[str]:
@@ -452,7 +453,8 @@ def _get_unseen_regions():
 
 def _get_text_status():
     return {
-        "mode": _read_text(CYC_MODE_FILE),
+        "waypoint_status": _read_text(WAYPOINT_STATUS_FILE),
+        "mode": _read_text(MODE_FILE),
         "collision_avoiding": _read_text(COLLISION_AVOIDING_FILE),
         "simulation_time": _read_first_line_number(TIME_FILE),
         "random_seed": _read_text(RANDOM_SEED_FILE),
@@ -462,18 +464,14 @@ def _get_text_status():
 
 
 def _get_all_ball_path():
-    mode = _read_text(CYC_MODE_FILE).strip().lower()
-    if mode != "all_ball_path_panned":
-        return {"enabled": False, "path": []}
-
     path = []
-    for line in _read_lines(CYC_PLANNED_FILE):
+    for line in _read_lines(PLANNED_FILE):
         item = _extract_xy_from_line(line)
         if item is None:
             continue
         x, y = item
         path.append({"x": x, "y": y})
-    return {"enabled": True, "path": path}
+    return {"enabled": len(path) > 0, "path": path}
 
 
 class Handler(BaseHTTPRequestHandler):

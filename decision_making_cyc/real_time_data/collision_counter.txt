@@ -1,2 +1,10 @@
-count=1
-time=2.776
+count=9
+time=3.136
+time=6.676
+time=8.056
+time=11.476
+time=34.336
+time=38.116
+time=45.376
+time=46.216
+time=54.616
