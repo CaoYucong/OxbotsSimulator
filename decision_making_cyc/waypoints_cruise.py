@@ -646,7 +646,7 @@ def _read_collision_avoiding_config(
 def _maybe_run_collision_avoiding(
     current_file: str = CURRENT_POSITION_FILE,
     default_smart_factor: float = 2.0,
-    stack_waypoint: bool = False,
+    stack_waypoint: bool = True,
 ) -> bool:
     """Run collision avoiding based on collision_avoiding.txt config."""
     enabled, smart_factor_override = _read_collision_avoiding_config()
@@ -1340,7 +1340,7 @@ def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) ->
 
 def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
                           smart_factor: float = 4.0,
-                          stack_waypoint: bool = False) -> bool:
+                          stack_waypoint: bool = True) -> bool:
 
     trigger_distance = 0.05
     cur = _read_current_position(current_file)
@@ -2802,9 +2802,9 @@ def mode_improved_nearest_v3(status_file: str = WAYPOINT_STATUS_FILE,
                     best_ball_val = v
                     best_ball_rc = (r, c)
 
-        print(f"[mode_improved_nearest_v3] (-0.25, -0.55)best_ball_time_cost={next_point_time_cost((cx, cy), bearing, ((-0.25, -0.55)), None, debug = True)}")
-        print(f"[mode_improved_nearest_v3] (0.45, -0.55)best_ball_time_cost={next_point_time_cost((cx, cy), bearing, ((0.45, -0.55)), None, debug = True)}")
-        print("----Comparison done----")
+        # print(f"[mode_improved_nearest_v3] (-0.25, -0.55)best_ball_time_cost={next_point_time_cost((cx, cy), bearing, ((-0.25, -0.55)), None, debug = True)}")
+        # print(f"[mode_improved_nearest_v3] (0.45, -0.55)best_ball_time_cost={next_point_time_cost((cx, cy), bearing, ((0.45, -0.55)), None, debug = True)}")
+        # print("----Comparison done----")
 
 
         if best_ball_rc is not None and best_ball_val > 0.0:
@@ -2812,7 +2812,7 @@ def mode_improved_nearest_v3(status_file: str = WAYPOINT_STATUS_FILE,
             tx, ty = FIELD_TILES[tr][tc]
             goto(tx, ty, rotation_avoidance_buffer=0.2)
             # print(f"[mode_improved_nearest_v3] goto remembered ball at tile ({tr}, {tc}) with value {best_ball_val}", file=sys.stderr)
-            print(f"[mode_improved_nearest_v3] best_ball_time_cost={next_point_time_cost((cx, cy), bearing, (FIELD_TILES[tr][tc]), None, debug = True)}", file=sys.stderr)
+            # print(f"[mode_improved_nearest_v3] best_ball_time_cost={next_point_time_cost((cx, cy), bearing, (FIELD_TILES[tr][tc]), None, debug = True)}", file=sys.stderr)
 
             return 0
 
@@ -2858,12 +2858,7 @@ def mode_improved_nearest_v3(status_file: str = WAYPOINT_STATUS_FILE,
     best = None
     best_d2 = None
     for (x, y, typ) in bx:
-        try:
-            dx = x - cx
-            dy = y - cy
-            d2 = dx * dx + dy * dy
-        except Exception:
-            continue
+        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
         if best_d2 is None or d2 < best_d2:
             best_d2 = d2
             best = (x, y)
@@ -2875,7 +2870,6 @@ def mode_improved_nearest_v3(status_file: str = WAYPOINT_STATUS_FILE,
     heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
     ok = goto(target_x, target_y, heading_deg)
     return 0 if ok else 1
-
 
 def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
                           waypoint_file: str = DYNAMIC_WAYPOINTS_FILE,
@@ -2906,74 +2900,96 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     bx = _read_visible_ball_positions(visible_balls_file)
     cx, cy, bearing = cur
     if not bx:
-        if status != "reached":
-            return 0
         
-        state = _read_state_pair(TEMP_STATE_FILE)
-        if state is None:
-            state = (0.0, 0.0)
-        miss_time = int(state[0])
-        search_record = int(state[1])
-        # print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
-        if miss_time == 0.0:
-          if abs(cx) > 0.8 or abs(cy) > 0.8:
-              cx = max(-0.8, min(0.8, cx))
-              cy = max(-0.8, min(0.8, cy))
-              goto(cx, cy, bearing)
-          else:
-              heading = None if bearing is None else bearing + 179.0
-              goto(cx, cy, heading)
-              _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
-          return 0
-        if miss_time == 1.0:
-          heading = None if bearing is None else bearing + 179.0
-          goto(cx, cy, heading)
-          _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
-          return 0
-
         rows = len(FIELD_TILES)
         cols = len(FIELD_TILES[0]) if rows > 0 else 0
-
         memory_ball = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
+
+        if status != "reached":
+            dynamic_waypoint = _read_dynamic_waypoints()
+            # print(f"[mode_improved_nearest_v2] no visible balls, status={status}, dynamic_waypoint={dynamic_waypoint}", file=sys.stderr)
+            dx, dy, dbearing = dynamic_waypoint if dynamic_waypoint is not None else (None, None, None)
+            # print(f"[mode_improved_nearest_v2] current position=({cx}, {cy}), dynamic_waypoint=({dx}, {dy})", file=sys.stderr)
+            if dx is not None and dy is not None:
+              for r in range(rows):
+                  for c in range(cols):
+                      tx, ty = FIELD_TILES[r][c]
+                      if abs(tx - dx) <= 0.05 and abs(ty - dy) <= 0.05:
+                          if memory_ball[r][c] > 0.0:
+                              return 0
+
         best_ball_rc = None
+        best_ball_time_cost = 180.0
         best_ball_val = -1.0
         for r in range(rows):
             for c in range(cols):
                 v = memory_ball[r][c]
-                if v > best_ball_val:
+                tx, ty = FIELD_TILES[r][c]
+                dist = math.hypot(tx - cx, ty - cy)
+                time_cost = next_point_time_cost((cx, cy), bearing, (tx, ty), None)
+                if time_cost <  best_ball_time_cost and dist >= 0.15 and v > 0.0:
+                    best_ball_time_cost = time_cost
                     best_ball_val = v
                     best_ball_rc = (r, c)
+
+        # print(f"[mode_improved_nearest_v3] (-0.25, -0.55)best_ball_time_cost={next_point_time_cost((cx, cy), bearing, ((-0.25, -0.55)), None, debug = True)}")
+        # print(f"[mode_improved_nearest_v3] (0.45, -0.55)best_ball_time_cost={next_point_time_cost((cx, cy), bearing, ((0.45, -0.55)), None, debug = True)}")
+        # print("----Comparison done----")
+
 
         if best_ball_rc is not None and best_ball_val > 0.0:
             tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
-            heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
-            goto(tx, ty, heading_deg)
-            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
-            return 0
-        
-        if goto_unseen_region(cx, cy):
-            _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            goto(tx, ty, rotation_avoidance_buffer=0.2)
+            # print(f"[mode_improved_nearest_v3] goto remembered ball at tile ({tr}, {tc}) with value {best_ball_val}", file=sys.stderr)
+            # print(f"[mode_improved_nearest_v3] best_ball_time_cost={next_point_time_cost((cx, cy), bearing, (FIELD_TILES[tr][tc]), None, debug = True)}", file=sys.stderr)
+
             return 0
 
-        if miss_time >= 2.0:
-            index = search_record % len(SEARCHING_SEQUENCE)
-            goto(SEARCHING_SEQUENCE[index][0], SEARCHING_SEQUENCE[index][1], SEARCHING_SEQUENCE[index][2])
-            _atomic_write(TEMP_STATE_FILE, f"({miss_time}, {(search_record+1)%len(SEARCHING_SEQUENCE)})\n")
+        if status != "reached":
+            # stop()
+            return 0
+
+        # state = _read_state_pair(TEMP_STATE_FILE)
+        # if state is None:
+        #     state = (0.0, 0.0)
+        # miss_time = int(state[0])
+        # search_record = int(state[1])
+        # # print(f"[waypoints_cruise] no visible balls, miss_time={miss_time}, search_record={search_record}", file=sys.stderr)
+        # if miss_time == 0.0:
+        #   if abs(cx) > 0.8 or abs(cy) > 0.8:
+        #       cx = max(-0.8, min(0.8, cx))
+        #       cy = max(-0.8, min(0.8, cy))
+        #       goto(cx, cy, bearing)
+        #   else:
+        #       heading = None if bearing is None else bearing + 179.0
+        #       goto(cx, cy, heading)
+        #       _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+        #   return 0
+        # if miss_time == 1.0:
+        #   heading = None if bearing is None else bearing + 179.0
+        #   goto(cx, cy, heading)
+        #   _atomic_write(TEMP_STATE_FILE, f"({miss_time+1}, {search_record})\n")
+        #   return 0
+        
+        if goto_unseen_region(cx, cy):
+            # _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+            return 0
+
+        # if miss_time >= 2.0:
+        #     index = search_record % len(SEARCHING_SEQUENCE)
+        #     goto(SEARCHING_SEQUENCE[index][0], SEARCHING_SEQUENCE[index][1], SEARCHING_SEQUENCE[index][2])
+        #     _atomic_write(TEMP_STATE_FILE, f"({miss_time}, {(search_record+1)%len(SEARCHING_SEQUENCE)})\n")
     else:
-        state = _read_state_pair(TEMP_STATE_FILE)
-        if state is not None:
-          search_record = int(state[1])
-        _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
+        pass
+        # state = _read_state_pair(TEMP_STATE_FILE)
+        # if state is not None:
+        #   search_record = int(state[1])
+        # _atomic_write(TEMP_STATE_FILE, f"(0, {search_record})\n")
     best = None
     best_d2 = None
     for (x, y, typ) in bx:
-        try:
-            dx = x - cx
-            dy = y - cy
-            d2 = dx * dx + dy * dy
-        except Exception:
-            continue
+        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
         if best_d2 is None or d2 < best_d2:
             best_d2 = d2
             best = (x, y)
@@ -2985,7 +3001,6 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
     ok = goto(target_x, target_y, heading_deg)
     return 0 if ok else 1
-
 
 def mode_random(status_file: str = WAYPOINT_STATUS_FILE, waypoint_file: str = DYNAMIC_WAYPOINTS_FILE) -> int:
     """Random mode: if status == 'reached', generate and write a new waypoint.
@@ -3099,6 +3114,9 @@ def mode_all_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
                               current_file: str = CURRENT_POSITION_FILE,
                               visible_balls_file: str = VISIBLE_BALLS_FILE) -> int:
     """Build planned waypoints from all balls and follow them in order."""
+
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+            return 0
 
     rows = len(FIELD_TILES)
     cols = len(FIELD_TILES[0]) if rows > 0 else 0
@@ -3273,7 +3291,7 @@ def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
         theta = math.radians(bearing) if bearing is not None else 0.0
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
-        half = 0.2  # robot half-size (actually 0.2m square)
+        half = 0.15  # robot half-size (actually 0.2m square)
         tile_half = 0.05  # tile half-size (0.1m square)
 
         for r, c, tx, ty in flat_tiles:
@@ -3307,7 +3325,7 @@ def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
                     break
                 
             distance = math.hypot(tx - cx, ty - cy)
-            if (memory[r][c] > 0.0) and (not has_ball_in_tile) and distance < 20.0:
+            if (memory[r][c] > 0.0) and (not has_ball_in_tile) and distance < 0.4:
                 # print(f"tile ({tx}, {ty}), no balls inside and seen for {seen[r][c]} second, zeroed.")
                 memory[r][c] = 0.0
 
@@ -3348,6 +3366,9 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
     
     update_ball_memory_v3(visible_balls_file=visible_balls_file)
 
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+        return 0
+
     rows = len(FIELD_TILES)
     cols = len(FIELD_TILES[0]) if rows > 0 else 0
     if rows == 0 or cols == 0:
@@ -3355,7 +3376,7 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
 
     memory = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
     visible_balls = _read_visible_ball_positions(visible_balls_file)
-    priority_memory_keys: set[tuple[float, float]] = set()
+    high_memory_keys: set[tuple[float, float]] = set()
 
     balls: list[tuple[float, float, str]] = []
 
@@ -3375,8 +3396,8 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
             if memory[r][c] <= 0.0:
                 continue
             tx, ty = FIELD_TILES[r][c]
-            if memory[r][c] > 178.0 and not in_view(tx, ty):
-                priority_memory_keys.add((round(tx, 3), round(ty, 3)))
+            if memory[r][c] > 176.0:
+                high_memory_keys.add((round(tx, 3), round(ty, 3)))
             _append_ball_if_new(tx, ty, "MEMORY")
 
     plan_range = 20  # only consider balls within 1.0m for planning
@@ -3498,11 +3519,15 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
 
         non_memory_balls = [
             b for b in balls
-            if str(b[2]).strip().upper() != "MEMORY" or _ball_key(b) in priority_memory_keys
+            if str(b[2]).strip().upper() != "MEMORY"
         ]
-        memory_balls = [
+        high_memory_balls = [
             b for b in balls
-            if str(b[2]).strip().upper() == "MEMORY" and _ball_key(b) not in priority_memory_keys
+            if str(b[2]).strip().upper() == "MEMORY" and _ball_key(b) in high_memory_keys
+        ]
+        other_balls = [
+            b for b in balls
+            if b not in non_memory_balls and b not in high_memory_balls
         ]
 
         optimized_non_memory, end_pos, end_heading = _optimize_subset(
@@ -3510,9 +3535,18 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
             (cx, cy),
             start_heading_deg,
         )
-        optimized_memory, _, _ = _optimize_subset(memory_balls, end_pos, end_heading)
+        optimized_high_memory, end_pos_2, end_heading_2 = _optimize_subset(
+            high_memory_balls,
+            end_pos,
+            end_heading,
+        )
+        optimized_others, _, _ = _optimize_subset(
+            other_balls,
+            end_pos_2,
+            end_heading_2,
+        )
 
-        balls = optimized_non_memory + optimized_memory
+        balls = optimized_non_memory + optimized_high_memory + optimized_others
 
 
     waypoints = [(x, y, None, str(typ).strip().upper()) for x, y, typ in balls]
@@ -3531,9 +3565,6 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
 
     x, y = first[0], first[1]
     waypoint_type = str(first[3]).strip().upper() if len(first) >= 4 and first[3] is not None else None
-
-    # if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
-    #     return 0
 
     if waypoint_type == "MEMORY":
         return 0 if goto(x, y, rotation_avoidance_buffer=0.2) else 1
