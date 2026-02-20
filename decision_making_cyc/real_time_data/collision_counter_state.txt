@@ -1,2 +1,0 @@
-last_time=58.516000
-in_collision=0

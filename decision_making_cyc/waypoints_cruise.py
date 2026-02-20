@@ -646,6 +646,7 @@ def _read_collision_avoiding_config(
 def _maybe_run_collision_avoiding(
     current_file: str = CURRENT_POSITION_FILE,
     default_smart_factor: float = 2.0,
+    stack_waypoint: bool = False,
 ) -> bool:
     """Run collision avoiding based on collision_avoiding.txt config."""
     enabled, smart_factor_override = _read_collision_avoiding_config()
@@ -658,7 +659,7 @@ def _maybe_run_collision_avoiding(
         if smart_factor_override is not None
         else default_smart_factor
     )
-    return collision_avoiding_v3(current_file, smart_factor=smart_factor)
+    return collision_avoiding_v3(current_file, smart_factor=smart_factor, stack_waypoint=stack_waypoint)
 
 
 def _read_state_pair(path: str) -> Optional[tuple[float, float]]:
@@ -1338,7 +1339,8 @@ def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) ->
     return False
 
 def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
-                          smart_factor: float = 4.0) -> bool:
+                          smart_factor: float = 4.0,
+                          stack_waypoint: bool = False) -> bool:
 
     trigger_distance = 0.05
     cur = _read_current_position(current_file)
@@ -1538,7 +1540,8 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         dy_world = jump_step * (best_vec[1] / best_mag)
         set_velocity(MAX_LINEAR_VELOCITY)
         _write_collision_status(True)
-        _stack_current_waypoint()
+        if stack_waypoint:
+            _stack_current_waypoint()
         # print(f"[waypoints_cruise] collision avoiding activated, radar values: {weights}, move vector: ({dx_world:.3f}, {dy_world:.3f})", file=sys.stderr)
 
         # Determine orientation based on waypoint hierarchy
@@ -2641,7 +2644,7 @@ def mode_improved_nearest_v2_5(status_file: str = WAYPOINT_STATUS_FILE,
     
     update_ball_memory_v2(visible_balls_file=visible_balls_file)
 
-    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0, stack_waypoint = False):
         return 0
 
     sim_time = _read_time_seconds(TIME_FILE)
@@ -3097,9 +3100,6 @@ def mode_all_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
                               visible_balls_file: str = VISIBLE_BALLS_FILE) -> int:
     """Build planned waypoints from all balls and follow them in order."""
 
-    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
-        return 0
-
     rows = len(FIELD_TILES)
     cols = len(FIELD_TILES[0]) if rows > 0 else 0
     if rows == 0 or cols == 0:
@@ -3307,7 +3307,7 @@ def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
                     break
                 
             distance = math.hypot(tx - cx, ty - cy)
-            if (memory[r][c] > 0.0) and (not has_ball_in_tile) and distance < 0.2:
+            if (memory[r][c] > 0.0) and (not has_ball_in_tile) and distance < 20.0:
                 # print(f"tile ({tx}, {ty}), no balls inside and seen for {seen[r][c]} second, zeroed.")
                 memory[r][c] = 0.0
 
@@ -3347,9 +3347,6 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
     update_unseen_regions()
     
     update_ball_memory_v3(visible_balls_file=visible_balls_file)
-
-    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
-        return 0
 
     rows = len(FIELD_TILES)
     cols = len(FIELD_TILES[0]) if rows > 0 else 0
@@ -3463,7 +3460,7 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
             best_cost = _total_cost(best_seq, subset, start_position, start_heading_deg_local)
             while improved:
                 improved = False
-                for i in range(2, len(best_seq) - 1):
+                for i in range(0, len(best_seq) - 1):
                     for j in range(i + 1, len(best_seq)):
                         new_seq = best_seq[:i] + list(reversed(best_seq[i:j + 1])) + best_seq[j + 1:]
                         new_cost = _total_cost(new_seq, subset, start_position, start_heading_deg_local)
@@ -3534,6 +3531,10 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
 
     x, y = first[0], first[1]
     waypoint_type = str(first[3]).strip().upper() if len(first) >= 4 and first[3] is not None else None
+
+    # if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+    #     return 0
+
     if waypoint_type == "MEMORY":
         return 0 if goto(x, y, rotation_avoidance_buffer=0.2) else 1
     return 0 if goto(x, y) else 1
