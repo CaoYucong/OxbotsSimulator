@@ -3058,8 +3058,7 @@ def mode_nearest(status_file: str = WAYPOINT_STATUS_FILE,
         return 0
 
     target_x, target_y = best
-    heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
-    ok = goto(target_x, target_y, heading_deg)
+    ok = goto(target_x, target_y)
     return 0 if ok else 1
 
 def mode_planned(status_file: str = WAYPOINT_STATUS_FILE,
