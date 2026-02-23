@@ -1031,7 +1031,7 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
     # Only in emergency situations (e.g., collision detection requiring immediate avoidance)
     # should you call goto() to set a new target without waiting for "reached" status.
     
-    #if collision_avoiding_v3(current_file, smart_factor=2.0): return 0
+    if collision_avoiding_v3(current_file, smart_factor=2.0): return 0
     
     if status != "reached":
         return 0
