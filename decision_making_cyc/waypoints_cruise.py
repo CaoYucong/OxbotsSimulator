@@ -2178,10 +2178,24 @@ def update_unseen_tiles(unseen_tile_file: str = UNSEEN_TILE_MEMORY_FILE,
             for c in range(cols):
                 unseen[r][c] += 1.0
 
+    radar_hits = radar_sensor()
+    radar_front = RADAR_MAX_RANGE
+    # print(f"[update_ball_memory_v3] radar_hits={radar_hits}", file=sys.stderr)
+    if radar_hits:
+        for direction, dist in radar_hits:
+            if direction == "front":
+                radar_front = dist
+                break
+    radar_front = max(0.0, min(RADAR_MAX_RANGE, radar_front))
+
+    cur = _read_current_position(CURRENT_POSITION_FILE)
+    cx, cy, _ = (0.0, 0.0, None) if cur is None else cur
+
     for r in range(rows):
         for c in range(cols):
             seen_since = seen[r][c]
-            if seen_since > 0.0 and (current_time - seen_since) >= 0.5:
+            distance = math.hypot(FIELD_TILES[r][c][0] - cx, FIELD_TILES[r][c][1] - cy)
+            if seen_since > 0.0 and (current_time - seen_since) >= 0.5 and distance <= radar_front + 0.1:
                 unseen[r][c] = 0.0
 
     unseen_ok = _write_seen_tile_matrix(unseen_tile_file, unseen)
@@ -3244,7 +3258,6 @@ def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
         return False
 
     memory = _read_seen_tile_matrix(memory_tile_file, rows, cols)
-    seen = _read_seen_tile_matrix(seen_tile_file, rows, cols)
 
     sim_time = _read_time_seconds(TIME_FILE)
     current_second = int(sim_time if sim_time is not None else time.time())
@@ -3285,6 +3298,16 @@ def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
             flat_tiles.append((r, c, tx, ty))
 
     cur = _read_current_position(CURRENT_POSITION_FILE)
+    radar_hits = radar_sensor()
+    radar_front = RADAR_MAX_RANGE
+    # print(f"[update_ball_memory_v3] radar_hits={radar_hits}", file=sys.stderr)
+    if radar_hits:
+        for direction, dist in radar_hits:
+            if direction == "front":
+                radar_front = dist
+                break
+    radar_front = max(0.0, min(RADAR_MAX_RANGE, radar_front))
+    # print(f"[update_ball_memory_v3] radar front distance={radar_front}", file=sys.stderr)
     if cur is not None:
         cx, cy, bearing = cur
         theta = math.radians(bearing) if bearing is not None else 0.0
@@ -3324,7 +3347,7 @@ def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
                     break
                 
             distance = math.hypot(tx - cx, ty - cy)
-            if (memory[r][c] > 0.0) and (not has_ball_in_tile) and distance < 0.4:
+            if (memory[r][c] > 0.0) and (not has_ball_in_tile) and distance < radar_front:
                 # print(f"tile ({tx}, {ty}), no balls inside and seen for {seen[r][c]} second, zeroed.")
                 memory[r][c] = 0.0
 
@@ -3518,11 +3541,11 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
 
         non_memory_balls = [
             b for b in balls
-            if str(b[2]).strip().upper() != "MEMORY"
+            if str(b[2]).strip().upper() != "MEMORY" or _ball_key(b) in high_memory_keys
         ]
         high_memory_balls = [
             b for b in balls
-            if str(b[2]).strip().upper() == "MEMORY" and _ball_key(b) in high_memory_keys
+            if str(b[2]).strip().upper() == "MEMORY" and _ball_key(b) not in high_memory_keys
         ]
         other_balls = [
             b for b in balls
