@@ -1082,134 +1082,473 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
     # ==================== Add Your Logic Here ====================
     
     # TODO: 添加你的开发代码
+    """
+    Developing mode with:
+      - 60% forward speed (capped at MAX_SPEED)
+      - initial 180deg sweep to find high-density sector
+      - density-aware nearest-in-vision collection
+      - logs visited coords to real_time_data/visited_coords.txt
+      - immediate clockwise rotation when no visible balls
+      - if rotates 360° without seeing a traceable ball -> pick least-visited of 9 grid squares and goto its center
+      - if any visible balls appear while moving -> switch to collect_loop immediately
+      - after 60s, bias fallback to unvisited areas
+    Note: internal obstacle avoidance removed; use collision_avoiding_v3() externally.
+    """
+    import json
 
-    import os
-    import math
-    import sys
+    # Tunables
+    NUM_SECTORS = 6
+    NUM_STEPS = 4
+    SWEEP_STEP_DEG = 180.0 / NUM_STEPS
+    SECTOR_WIDTH = 180.0 / NUM_SECTORS
+    SCAN_DISTANCE = 0.7
+    COLLECT_DURATION = 10.0
+    STATE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "develop_state.json")
+    SWEEP_COUNTS_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "develop_sweep_counts.json")
+    ROTATE_IDX_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "develop_rotate_idx.txt")
+    VISITED_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "visited_coords.txt")
 
-    # ---------- Helper Functions ----------
-    def read_text(path):
+    # rotation steps (scan + when no balls)
+    ROT_STEP_SCAN = 45.0     # degrees per step during fast sweep
+    ROT_STEP_NO_BALL = 90.0  # degrees added each rotation attempt when no balls seen
+
+    # selection tie tolerances for "similar distance"
+    REL_TOL = 0.15        # relative tolerance (15%)
+    ABS_TOL = 0.05        # absolute tolerance (meters)
+
+    # density radius for local density counting
+    DENSITY_RADIUS = 0.25  # meters
+
+    # speed: reduce forward speed to 60% of NORMAL_SPEED (cap at MAX_SPEED)
+    try:
+        set_velocity(min(MAX_SPEED, NORMAL_SPEED * 0.6))
+    except Exception:
+        pass
+
+    # helpers
+    def _normalize_deg(a):
+        return (a + 180.0) % 360.0 - 180.0
+
+    def _rel_angle_deg_to_robot(ball_x, ball_y, cx, cy, bearing):
+        ang = math.degrees(math.atan2(ball_y - cy, ball_x - cx))
+        rel = _normalize_deg(ang - bearing)
+        return rel
+
+    def _read_json(path):
         try:
             with open(path, "r") as f:
-                return f.read().strip()
+                return json.load(f)
         except Exception:
             return None
 
-    def write_text(path, txt):
+    def _write_json(path, obj):
         try:
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                f.write(str(txt))
+                json.dump(obj, f)
             os.replace(tmp, path)
             return True
-        except Exception as e:
-            print("write_text failed:", e)
+        except Exception:
             return False
 
-    def read_int(path):
+    def _append_visit(path, x, y):
+        try:
+            existing = ""
+            try:
+                with open(path, "r") as f:
+                    existing = f.read()
+            except Exception:
+                existing = ""
+            new = existing + f"({x:.6f}, {y:.6f})\n"
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(new)
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            return False
+
+    def _read_visits(path):
+        out = []
         try:
             with open(path, "r") as f:
-                return int(f.read().strip())
+                for raw in f:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    if line.startswith("(") and line.endswith(")"):
+                        line = line[1:-1]
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 2:
+                        try:
+                            vx = float(parts[0]); vy = float(parts[1])
+                            out.append((vx, vy))
+                        except Exception:
+                            continue
         except Exception:
-            return 0
+            pass
+        return out
 
-    def write_int(path, value):
+    def _near_wall(x, y, margin=0.88):
+        return abs(x) >= margin or abs(y) >= margin
+
+    # choose nearest ball with density tie-breaker
+    def _choose_ball_by_density(visible, cx, cy):
+        if not visible:
+            return None
+        dist_list = []
+        for bx, by, typ in visible:
+            try:
+                d = math.hypot(bx - cx, by - cy)
+            except Exception:
+                d = float("inf")
+            dist_list.append(d)
+        if not dist_list:
+            return None
+        dmin = min(dist_list)
+        candidates = []
+        for i, d in enumerate(dist_list):
+            if d <= dmin * (1.0 + REL_TOL) or d <= dmin + ABS_TOL:
+                candidates.append(i)
+        best_idx = None
+        best_score = None
+        for idx in candidates:
+            bx, by, typ = visible[idx]
+            count = 0
+            for jx, jy, _ in visible:
+                if math.hypot(jx - bx, jy - by) <= DENSITY_RADIUS:
+                    count += 1
+            score = (count, -dist_list[idx], -idx)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_idx = idx
+        if best_idx is None:
+            return None
+        bx, by, _ = visible[best_idx]
+        return (bx, by)
+
+    # ----- NEW: choose least-visited square from 3x3 grid -----
+    def _choose_least_visited_square_center(cx, cy, visits):
+        """
+        Divide arena into 3x3 equal squares using X_MIN..X_MAX and Y_MIN..Y_MAX.
+        Count how many visit points fall into each square and return center of
+        the square with the fewest visits. Tie-break by distance from robot.
+        """
+        # Prepare grid
+        nx = 3; ny = 3
+        xmin, xmax = X_MIN, X_MAX
+        ymin, ymax = Y_MIN, Y_MAX
+        cell_w = (xmax - xmin) / nx
+        cell_h = (ymax - ymin) / ny
+
+        # initialize counts
+        counts = [[0 for _ in range(nx)] for _ in range(ny)]
+        for (vx, vy) in visits:
+            # clamp to grid range
+            if vx < xmin or vx > xmax or vy < ymin or vy > ymax:
+                continue
+            ix = int((vx - xmin) / cell_w)
+            iy = int((vy - ymin) / cell_h)
+            # handle edge-case on upper boundary
+            if ix >= nx:
+                ix = nx - 1
+            if iy >= ny:
+                iy = ny - 1
+            counts[iy][ix] += 1
+
+        # find least-visited cells
+        best_cells = []
+        best_count = None
+        for iy in range(ny):
+            for ix in range(nx):
+                c = counts[iy][ix]
+                if best_count is None or c < best_count:
+                    best_count = c
+                    best_cells = [(ix, iy)]
+                elif c == best_count:
+                    best_cells.append((ix, iy))
+
+        # if multiple ties, pick the one whose center is closest (so robot doesn't go extremely far) or optionally furthest — choose closest here
+        best_pt = None
+        best_dist = None
+        for (ix, iy) in best_cells:
+            center_x = xmin + (ix + 0.5) * cell_w
+            center_y = ymin + (iy + 0.5) * cell_h
+            d = math.hypot(center_x - cx, center_y - cy)
+            if best_dist is None or d < best_dist:
+                best_dist = d
+                best_pt = (center_x, center_y, counts[iy][ix])
+
+        return best_pt  # (tx, ty, count) or None
+
+    # choose unvisited target from coarse grid (used elsewhere too)
+    def _choose_unvisited_target(cx, cy, visits, bias_factor=2.0):
+        # keep previous fallback (fine-grain) if needed, but for 360° event we use 3x3 grid
+        return _choose_least_visited_square_center(cx, cy, visits)
+
+    # ---------- main ----------
+    if _read_status(status_file) != "reached":
+        return 0
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is None:
+        return 0
+    cur = _read_current_position(current_file)
+    if cur is None:
+        return 0
+    cx, cy, bearing = cur
+    bearing = 0.0 if bearing is None else float(bearing)
+
+    raw_state = _read_status(STATE_FILE)
+    if raw_state:
         try:
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(str(value))
-            os.replace(tmp, path)
-            return True
-        except Exception as e:
-            print("write_int failed:", e)
-            return False
-
-    # ---------- Hardcoded Snake Waypoints ----------
-
-    waypoints_q3 = [
-        (-0.8,  0.0), (-0.8, -0.2), (-0.8, -0.4), (-0.8, -0.6), (-0.8, -0.8),
-        (-0.6, -0.8), (-0.6, -0.6), (-0.6, -0.4), (-0.6, -0.2), (-0.6,  0.0),
-        (-0.4,  0.0), (-0.4, -0.2), (-0.4, -0.4), (-0.4, -0.6), (-0.4, -0.8),
-        (-0.2, -0.8), (-0.2, -0.6), (-0.2, -0.4), (-0.2, -0.2), (-0.2,  0.0),
-        ( 0.0,  0.0), ( 0.0, -0.2), ( 0.0, -0.4), ( 0.0, -0.6), ( 0.0, -0.8),
-    ]
-
-    waypoints_q1 = [
-        (0.0,  0.8), (0.0,  0.6), (0.0,  0.4), (0.0,  0.2), (0.0,  0.0),
-        (0.2,  0.0), (0.2,  0.2), (0.2,  0.4), (0.2,  0.6), (0.2,  0.8),
-        (0.4,  0.8), (0.4,  0.6), (0.4,  0.4), (0.4,  0.2), (0.4,  0.0),
-        (0.6,  0.0), (0.6,  0.2), (0.6,  0.4), (0.6,  0.6), (0.6,  0.8),
-        (0.8,  0.8), (0.8,  0.6), (0.8,  0.4), (0.8,  0.2), (0.8,  0.0),
-    ]
-
-    waypoints_q2 = [
-        (-0.8,  0.8), (-0.8,  0.6), (-0.8,  0.4), (-0.8,  0.2), (-0.8,  0.0),
-        (-0.6,  0.0), (-0.6,  0.2), (-0.6,  0.4), (-0.6,  0.6), (-0.6,  0.8),
-        (-0.4,  0.8), (-0.4,  0.6), (-0.4,  0.4), (-0.4,  0.2), (-0.4,  0.0),
-        (-0.2,  0.0), (-0.2,  0.2), (-0.2,  0.4), (-0.2,  0.6), (-0.2,  0.8),
-        ( 0.0,  0.8), ( 0.0,  0.6), ( 0.0,  0.4), ( 0.0,  0.2), ( 0.0,  0.0),
-    ]
-
-    waypoints_q4 = [
-        (0.0,  0.0), (0.0, -0.2), (0.0, -0.4), (0.0, -0.6), (0.0, -0.8),
-        (0.2, -0.8), (0.2, -0.6), (0.2, -0.4), (0.2, -0.2), (0.2,  0.0),
-        (0.4,  0.0), (0.4, -0.2), (0.4, -0.4), (0.4, -0.6), (0.4, -0.8),
-        (0.6, -0.8), (0.6, -0.6), (0.6, -0.4), (0.6, -0.2), (0.6,  0.0),
-        (0.8,  0.0), (0.8, -0.2), (0.8, -0.4), (0.8, -0.6), (0.8, -0.8),
-    ]
-
-    waypoints_map = {1: waypoints_q1, 2: waypoints_q2, 3: waypoints_q3, 4: waypoints_q4}
-
-    # ---------- Determine Quadrant (only once) ----------
-
-    quadrant_file = os.path.join(BASE_DIR, "sweep_active_quadrant.txt")
-    idx_file_template = os.path.join(BASE_DIR, "sweep_index_q{}.txt")
-
-    q_txt = read_text(quadrant_file)
-
-    if q_txt is None:
-        # first time: determine quadrant
-        cur = _read_current_position(current_file)
-        if cur is None:
-            return 0
-        rx, ry, _ = cur
-
-        canonical = {"left": (-1.0, 0.0), "right": (1.0, 0.0), "top": (0.0, 1.0), "bottom": (0.0, -1.0)}
-        def dist(a,b,c,d): return math.hypot(a-c, b-d)
-        nearest_key = min(canonical.keys(), key=lambda k: dist(rx, ry, canonical[k][0], canonical[k][1]))
-        mapping = {"left": 3, "right": 1, "top": 2, "bottom": 4}
-        chosen_q = mapping[nearest_key]
-
-        write_text(quadrant_file, chosen_q)
-        write_int(idx_file_template.format(chosen_q), 0)
-
+            state = json.loads(raw_state)
+        except Exception:
+            state = None
     else:
-        chosen_q = int(q_txt)
+        state = None
 
-    waypoints = waypoints_map[chosen_q]
-    idx_file = idx_file_template.format(chosen_q)
+    counts = _read_json(SWEEP_COUNTS_FILE) or [0] * NUM_SECTORS
+    try:
+        with open(ROTATE_IDX_FILE, "r") as f:
+            rotate_idx = int(f.read().strip() or "0")
+    except Exception:
+        rotate_idx = 0
 
-    # ---------- Only advance when status == reached ----------
-    status = _read_status(status_file)
-    if status != "reached":
+    if state is None:
+        state = {
+            "phase": "scan",                # scan -> goto_area -> collect_loop -> move_to_unvisited -> global_fallback
+            "scan_started_time": sim_time,
+            "chosen_sector": None,
+            "collect_started_time": None,
+            "rotation_unseen_deg": 0.0
+        }
+        _write_json(SWEEP_COUNTS_FILE, counts)
+        _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+
+    phase = state.get("phase", "scan")
+    rotation_unseen_deg = float(state.get("rotation_unseen_deg", 0.0))
+
+    visible = _read_visible_ball_positions(VISIBLE_BALLS_FILE)
+
+    # Reset rotation counter when any balls are visible
+    if visible:
+        rotation_unseen_deg = 0.0
+        state["rotation_unseen_deg"] = rotation_unseen_deg
+        _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+
+    # No visible balls => rotate & increment counter
+    if not visible:
+        rotation_unseen_deg += ROT_STEP_NO_BALL
+        state["rotation_unseen_deg"] = rotation_unseen_deg
+        _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+
+        if rotation_unseen_deg >= 360.0:
+            # pick the least-visited square center (3x3), goto it and reset rotation counter
+            visits = _read_visits(VISITED_FILE)
+            # bias factor increases over time (keeps compatibility with previous logic)
+            bias_factor = 1.0
+            if sim_time >= 60.0:
+                bias_factor += min(5.0, (sim_time - 60.0) / 60.0 * 4.0)
+
+            target = _choose_least_visited_square_center(cx, cy, visits)
+            if target is not None:
+                tx, ty, count = target
+                _append_visit(VISITED_FILE, tx, ty)
+                state["phase"] = "move_to_unvisited"
+                state["rotation_unseen_deg"] = 0.0
+                _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+                goto(tx, ty, None)
+                return 0
+            else:
+                # fallback to a rotation if no target
+                state["rotation_unseen_deg"] = 0.0
+                _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+                new_heading = (bearing - ROT_STEP_SCAN) % 360.0
+                goto(cx, cy, new_heading)
+                return 0
+        else:
+            new_heading = (bearing - ROT_STEP_NO_BALL) % 360.0
+            goto(cx, cy, new_heading)
+            return 0
+
+    # -------------------- SCAN --------------------
+    if phase == "scan":
+        step_heading = (bearing - 90.0) + rotate_idx * SWEEP_STEP_DEG
+        step_heading = (step_heading + 360.0) % 360.0
+        goto(cx, cy, step_heading)
+
+        for (bx, by, typ) in visible:
+            rel = _rel_angle_deg_to_robot(bx, by, cx, cy, bearing)
+            if abs(rel) <= 90.0:
+                rel_shifted = rel + 90.0
+                idx = int(rel_shifted // SECTOR_WIDTH)
+                idx = max(0, min(NUM_SECTORS - 1, idx))
+                counts[idx] += 1
+
+        _write_json(SWEEP_COUNTS_FILE, counts)
+
+        rotate_idx = (rotate_idx + 1) % NUM_STEPS
+        try:
+            tmp = ROTATE_IDX_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(str(rotate_idx) + "\n")
+            os.replace(tmp, ROTATE_IDX_FILE)
+        except Exception:
+            pass
+
+        elapsed = sim_time - float(state.get("scan_started_time", sim_time))
+        if rotate_idx == 0 or elapsed >= max(0.5, NUM_STEPS * 0.03):
+            last_visible = visible
+            dist_sums = [0.0] * NUM_SECTORS
+            dist_counts = [0] * NUM_SECTORS
+            for (bx, by, typ) in last_visible:
+                rel = _rel_angle_deg_to_robot(bx, by, cx, cy, bearing)
+                if abs(rel) <= 90.0:
+                    rel_shifted = rel + 90.0
+                    idx = int(rel_shifted // SECTOR_WIDTH)
+                    idx = max(0, min(NUM_SECTORS - 1, idx))
+                    d = math.hypot(bx - cx, by - cy)
+                    dist_sums[idx] += d
+                    dist_counts[idx] += 1
+
+            best_idx = None
+            best_count = None
+            best_mean = None
+            for i in range(NUM_SECTORS):
+                c = counts[i]
+                mean_d = (dist_sums[i] / dist_counts[i]) if dist_counts[i] > 0 else float("inf")
+                if best_count is None or c > best_count or (c == best_count and mean_d < best_mean):
+                    best_idx = i
+                    best_count = c
+                    best_mean = mean_d
+
+            if best_idx is None:
+                best_idx = NUM_SECTORS // 2
+
+            sector_center_rel = -90.0 + (best_idx + 0.5) * SECTOR_WIDTH
+            global_angle = (bearing + sector_center_rel) % 360.0
+            rad = math.radians(global_angle)
+            tx = cx + SCAN_DISTANCE * math.cos(rad)
+            ty = cy + SCAN_DISTANCE * math.sin(rad)
+
+            tx = max(-0.9, min(0.9, tx))
+            ty = max(-0.9, min(0.9, ty))
+
+            state["phase"] = "goto_area"
+            state["chosen_sector"] = int(best_idx)
+            state["sector_center_angle"] = float(sector_center_rel)
+            state["collect_started_time"] = sim_time
+            state["rotation_unseen_deg"] = 0.0
+            _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+
+            _write_json(SWEEP_COUNTS_FILE, [0] * NUM_SECTORS)
+            try:
+                tmp = ROTATE_IDX_FILE + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write("0\n")
+                os.replace(tmp, ROTATE_IDX_FILE)
+            except Exception:
+                pass
+
+            _append_visit(VISITED_FILE, tx, ty)
+            goto(tx, ty, math.degrees(math.atan2(ty - cy, tx - cx)))
+            return 0
+
         return 0
 
-    idx = read_int(idx_file)
-
-    if idx >= len(waypoints):
+    # -------------------- GOTO_AREA --------------------
+    if phase == "goto_area":
+        state["phase"] = "collect_loop"
+        state["rotation_unseen_deg"] = 0.0
+        _atomic_write(STATE_FILE, json.dumps(state) + "\n")
         return 0
 
-    tx, ty = waypoints[idx]
+    # -------------------- MOVE_TO_UNVISITED --------------------
+    if phase == "move_to_unvisited":
+        # if visible balls appear while moving, switch to collect_loop
+        if visible:
+            state["phase"] = "collect_loop"
+            state["rotation_unseen_deg"] = 0.0
+            _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+            return 0
+        # otherwise let the goto to the unvisited area proceed (we commanded it earlier)
+        return 0
 
-    print(f"[mode_developing] quadrant={chosen_q} idx={idx} -> ({tx}, {ty})")
+    # -------------------- COLLECT_LOOP --------------------
+    if phase == "collect_loop":
+        if visible:
+            # density-aware nearest selection
+            dist_list = []
+            for bx, by, typ in visible:
+                try:
+                    d = math.hypot(bx - cx, by - cy)
+                except Exception:
+                    d = float("inf")
+                dist_list.append(d)
+            # choose by density tie-breaker helper
+            choice = _choose_ball_by_density(visible, cx, cy)
+            if choice is not None:
+                tx, ty = choice
+                _append_visit(VISITED_FILE, tx, ty)
+                heading_deg = math.degrees(math.atan2(ty - cy, tx - cx))
+                ok = goto(tx, ty, heading_deg)
+                state["rotation_unseen_deg"] = 0.0
+                _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+                return 0 if ok else 1
+        # no visible: rotate and increment rotation counter
+        rotation_unseen_deg += ROT_STEP_NO_BALL
+        state["rotation_unseen_deg"] = rotation_unseen_deg
+        _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+        if rotation_unseen_deg >= 360.0:
+            visits = _read_visits(VISITED_FILE)
+            bias_factor = 1.0
+            if sim_time >= 60.0:
+                bias_factor += min(5.0, (sim_time - 60.0) / 60.0 * 4.0)
+            target = _choose_least_visited_square_center(cx, cy, visits)
+            if target is not None:
+                tx, ty, cnt = target
+                _append_visit(VISITED_FILE, tx, ty)
+                state["phase"] = "move_to_unvisited"
+                state["rotation_unseen_deg"] = 0.0
+                _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+                goto(tx, ty, None)
+                return 0
+        new_heading = (bearing - ROT_STEP_NO_BALL) % 360.0
+        goto(cx, cy, new_heading)
+        return 0
 
-    ok = goto(tx, ty)
-    if not ok:
-        return 1
+    # -------------------- GLOBAL_FALLBACK --------------------
+    if phase == "global_fallback":
+        if visible:
+            state["phase"] = "collect_loop"
+            state["rotation_unseen_deg"] = 0.0
+            _atomic_write(STATE_FILE, json.dumps(state) + "\n")
+            return 0
+        # use least-visited square as fallback target
+        visits = _read_visits(VISITED_FILE)
+        target = _choose_least_visited_square_center(cx, cy, visits)
+        if target is None:
+            new_heading = (bearing - ROT_STEP_NO_BALL) % 360.0
+            goto(cx, cy, new_heading)
+            return 0
+        tx, ty, cnt = target
+        _append_visit(VISITED_FILE, tx, ty)
+        goto(tx, ty, None)
+        return 0
 
-    write_int(idx_file, idx + 1)
-
+    # unknown phase -> reset
+    try:
+        state["rotation_unseen_deg"] = 0.0
+        _atomic_write(STATE_FILE, "")
+    except Exception:
+        pass
+    try:
+        _write_json(SWEEP_COUNTS_FILE, [0] * NUM_SECTORS)
+    except Exception:
+        pass
     return 0
+
 
 
 
