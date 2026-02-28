@@ -39,7 +39,12 @@ MAIN_ROBOT_NAME = "MY_ROBOT"
 # determine whether we are running on the supervisor node or a robot
 node_name = supervisor.getName()
 if node_name != "supervisor":
-    # running as the Cube-Robot itself; only enable its camera and exit
+    # if this is an obstacle robot we don't need any camera logic at all
+    if node_name != MAIN_ROBOT_NAME:
+        # simply exit; the controller isn't used on obstacles
+        sys.exit(0)
+
+    # running as the main Cube-Robot; only enable its camera and exit afterwards
     robot = supervisor  # object is usable as Robot as well
     try:
         camera = robot.getDevice('front_camera')
@@ -47,18 +52,16 @@ if node_name != "supervisor":
         if camera:
             camera.enable(TIME_STEP)
             print(f"[Camera] enabled on {node_name} {camera.getWidth()}x{camera.getHeight()}" )
-            # only main robot has a display device
-            if node_name == MAIN_ROBOT_NAME:
-                try:
-                    display = robot.getDevice('camera_display')
-                except Exception:
-                    display = None
+            try:
+                display = robot.getDevice('camera_display')
+            except Exception:
+                display = None
         else:
             print(f"[Camera] front_camera device not found on {node_name}")
     except Exception as e:
         print(f"[Camera] error enabling camera: {e}")
     # optionally prepare an OpenCV window on main robot
-    if cv2 and node_name == MAIN_ROBOT_NAME and camera:
+    if cv2 and camera:
         cv2.namedWindow('front_camera', cv2.WINDOW_NORMAL)
 
     # simple step loop to keep the controller alive so the camera stays active
@@ -70,7 +73,7 @@ if node_name != "supervisor":
                 if not img:
                     print(f"[Camera] warning: getImage returned empty on {node_name}")
                 else:
-                    display.imagePaste(img, 0, 0)
+                    display.imagePaste(img, 0, 0, False)
             except Exception as e:
                 print(f"[Camera] display paste failed: {e}")
         # external OpenCV window

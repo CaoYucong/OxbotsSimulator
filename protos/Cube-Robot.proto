@@ -172,7 +172,8 @@ PROTO Cube-Robot [
           # Camera device - looking forward (positive X direction)
           Camera {
             translation 0 0 0
-            rotation 0 1 0 -1.5708  # Rotate -90 degrees around Y-axis to look forward
+            # no rotation: default orientation already points along +X (front)
+            rotation 0 1 0 0
             name "front_camera"
             fieldOfView 2.5829  # 148 degrees in radians
             width 1920          # ~2 million pixels (1920x1080)
