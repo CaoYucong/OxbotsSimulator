@@ -25,6 +25,8 @@ UnibotsArena {
 AprilTagWall {
 }
 DEF MY_ROBOT Cube-Robot {
+  name "MY_ROBOT"
+  controller "supervisor_controller"
   rotation 0 0 1 -0.01200000000000001
 }
 Robot {
@@ -235,6 +237,7 @@ DEF BALL_39 SteelBall {
 DEF OBSTACLE_ROBOT_1 Cube-Robot {
   translation 0.9 0 0.1
   rotation 0 0 1 3.14159
+  name "obstacle_robot_1"
   topTextureUrl [
     "../textures/robot_texture/warning_sign.jpeg"
   ]
@@ -251,12 +254,13 @@ DEF OBSTACLE_ROBOT_1 Cube-Robot {
     "../textures/robot_texture/warning_sign.jpeg"
   ]
   rightTextureUrl [
-    "../textures/robot_texture/warning_sign.jpegs"
+    "../textures/robot_texture/warning_sign.jpeg"
   ]
 }
 DEF OBSTACLE_ROBOT_2 Cube-Robot {
   translation 0 0.9 0.1
   rotation 0 0 1 -1.5707953071795862
+  name "obstacle_robot_2"
   topTextureUrl [
     "../textures/robot_texture/warning_sign.jpeg"
   ]
@@ -273,12 +277,13 @@ DEF OBSTACLE_ROBOT_2 Cube-Robot {
     "../textures/robot_texture/warning_sign.jpeg"
   ]
   rightTextureUrl [
-    "../textures/robot_texture/warning_sign.jpegs"
+    "../textures/robot_texture/warning_sign.jpeg"
   ]
 }
 DEF OBSTACLE_ROBOT_3 Cube-Robot {
   translation 0 -0.9 0.1
   rotation 0 0 1 1.5708
+  name "obstacle_robot_3"
   topTextureUrl [
     "../textures/robot_texture/warning_sign.jpeg"
   ]
@@ -295,6 +300,6 @@ DEF OBSTACLE_ROBOT_3 Cube-Robot {
     "../textures/robot_texture/warning_sign.jpeg"
   ]
   rightTextureUrl [
-    "../textures/robot_texture/warning_sign.jpegs"
+    "../textures/robot_texture/warning_sign.jpeg"
   ]
 }

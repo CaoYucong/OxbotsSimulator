@@ -3,6 +3,8 @@
 PROTO Cube-Robot [
   field SFVec3f    translation    -0.9 0 0.1
   field SFRotation rotation       0 0 1 0
+  field SFString   name           "cube_robot"
+  field SFString   controller     "supervisor_controller"
   field MFString   topTextureUrl     "../textures/robot_texture/top.png"
   field MFString   bottomTextureUrl  "../textures/robot_texture/bottom.png"
   field MFString   backTextureUrl    "../textures/robot_texture/back.png"
@@ -14,6 +16,8 @@ PROTO Cube-Robot [
   Robot {
     translation IS translation
     rotation    IS rotation
+    name IS name
+    controller IS controller
     children [
 
       # Top
@@ -146,6 +150,48 @@ PROTO Cube-Robot [
           coordIndex [ 0, 1, 2, 3, -1 ]
           texCoordIndex [ 0, 1, 2, 3, -1 ]
         }
+      }
+
+      # Camera at upper front edge
+      Transform {
+        translation 0.105 0 0.08
+        children [
+          # Camera visual representation (small cylinder)
+          Shape {
+            appearance Appearance {
+              material Material {
+                diffuseColor 0.2 0.2 0.2
+                emissiveColor 0.1 0.1 0.1
+              }
+            }
+            geometry Cylinder {
+              radius 0.012
+              height 0.02
+            }
+          }
+          # Camera device - looking forward (positive X direction)
+          Camera {
+            translation 0 0 0
+            rotation 0 1 0 -1.5708  # Rotate -90 degrees around Y-axis to look forward
+            name "front_camera"
+            fieldOfView 2.5829  # 148 degrees in radians
+            width 1920          # ~2 million pixels (1920x1080)
+            height 1080
+            near 0.01
+            far 5.0
+          }
+        ]
+      }
+      # additional display transform so device is top-level
+      Transform {
+        translation 0.105 0 0.08
+        children [
+          Display {
+            name "camera_display"
+            width 320
+            height 180
+          }
+        ]
       }
 
     ]

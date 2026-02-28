@@ -1,2 +1,1 @@
-count=1
-time=16.156
+count=0
