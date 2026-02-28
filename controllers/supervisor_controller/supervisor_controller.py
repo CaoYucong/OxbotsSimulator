@@ -34,29 +34,30 @@ dt = TIME_STEP / 1000.0  # seconds
 # early constant needed by camera branch before full globals are defined
 # main robot name (also redefined later with full constant block)
 MAIN_ROBOT_NAME = "MY_ROBOT"
+CAMERA_ON = True
 
+if CAMERA_ON:
+    # determine whether we are running on the supervisor node or a robot
+    node_name = supervisor.getName()
+    if node_name != "supervisor":
+        # if this is an obstacle robot we don't need any camera logic at all
+        if node_name != MAIN_ROBOT_NAME:
+            # simply exit; the controller isn't used on obstacles
+            sys.exit(0)
 
-# determine whether we are running on the supervisor node or a robot
-node_name = supervisor.getName()
-if node_name != "supervisor":
-    # if this is an obstacle robot we don't need any camera logic at all
-    if node_name != MAIN_ROBOT_NAME:
-        # simply exit; the controller isn't used on obstacles
+        # running as the main Cube-Robot; only enable its camera and exit afterwards
+        robot = supervisor  # object is usable as Robot as well
+        try:
+            camera = robot.getDevice('front_camera')
+            if camera:
+                camera.enable(TIME_STEP)
+                print(f"[Camera] enabled on {node_name} {camera.getWidth()}x{camera.getHeight()}" )
+            else:
+                print(f"[Camera] front_camera device not found on {node_name}")
+        except Exception as e:
+            print(f"[Camera] error enabling camera: {e}")
+
         sys.exit(0)
-
-    # running as the main Cube-Robot; only enable its camera and exit afterwards
-    robot = supervisor  # object is usable as Robot as well
-    try:
-        camera = robot.getDevice('front_camera')
-        if camera:
-            camera.enable(TIME_STEP)
-            print(f"[Camera] enabled on {node_name} {camera.getWidth()}x{camera.getHeight()}" )
-        else:
-            print(f"[Camera] front_camera device not found on {node_name}")
-    except Exception as e:
-        print(f"[Camera] error enabling camera: {e}")
-
-    sys.exit(0)
 
 # if we reach here, we are the supervisor controller and will proceed with full logic
 
