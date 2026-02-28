@@ -251,32 +251,34 @@ def _get_radar_history():
     return out
 
 
-def _get_tile_seen_time():
-    """Return tile seen-time entries mapped to world coordinates.
-
-    Matrix corners are mapped as:
-    - top-left     => (-0.95,  0.95)
-    - bottom-right => ( 0.95, -0.95)
-
-    Works for any matrix size (e.g. 10x10 or 20x20).
-    """
-    lines = _read_lines(TILE_SEEN_TIME_FILE)
+def _read_numeric_matrix(path: str) -> list[list[float]]:
+    lines = _read_lines(path)
     if not lines:
         return []
 
-    matrix = []
+    matrix: list[list[float]] = []
     for line in lines:
-        nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
+        nums = re.findall(r"[-+]?\d*\.?\d+", line)
         if not nums:
             continue
-        row = []
+        row: list[float] = []
         for n in nums:
             try:
                 row.append(float(n))
             except Exception:
                 row.append(0.0)
         matrix.append(row)
+    return matrix
 
+
+def _matrix_to_world_tiles(matrix: list[list[float]]) -> list[dict[str, float]]:
+    """Map matrix cells to tile-center world coordinates over [-1, 1] x [-1, 1].
+
+    For an N-column matrix, x centers are at:
+    -1 + (1/N), -1 + 3*(1/N), ..., 1 - (1/N)
+    Equivalent to x = -1 + tile_half + c * tile_size where tile_size = 2/N.
+    Same for y (top to bottom).
+    """
     if not matrix:
         return []
 
@@ -285,170 +287,42 @@ def _get_tile_seen_time():
     if rows <= 0 or cols <= 0:
         return []
 
-    x_step = 1.9 / (cols - 1) if cols > 1 else 0.0
-    y_step = 1.9 / (rows - 1) if rows > 1 else 0.0
+    tile_w = 2.0 / cols
+    tile_h = 2.0 / rows
+    x0 = -1.0 + tile_w * 0.5
+    y0 = 1.0 - tile_h * 0.5
 
-    out = []
+    out: list[dict[str, float]] = []
     for r in range(rows):
         for c in range(cols):
             try:
                 v = float(matrix[r][c])
             except Exception:
                 v = 0.0
-            x = -0.95 + c * x_step
-            y = 0.95 - r * y_step
+            x = x0 + c * tile_w
+            y = y0 - r * tile_h
             out.append({"x": x, "y": y, "value": v})
     return out
+
+
+def _get_tile_seen_time():
+    matrix = _read_numeric_matrix(TILE_SEEN_TIME_FILE)
+    return _matrix_to_world_tiles(matrix)
 
 
 def _get_ball_tile_memory():
-    """Return ball tile-memory entries mapped to world coordinates.
-
-    Matrix corners are mapped as:
-    - top-left     => (-0.95,  0.95)
-    - bottom-right => ( 0.95, -0.95)
-
-    Works for any matrix size (e.g. 10x10 or 20x20).
-    """
-    lines = _read_lines(BALL_TILE_MEMORY_FILE)
-    if not lines:
-        return []
-
-    matrix = []
-    for line in lines:
-        nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
-        if not nums:
-            continue
-        row = []
-        for n in nums:
-            try:
-                row.append(float(n))
-            except Exception:
-                row.append(0.0)
-        matrix.append(row)
-
-    if not matrix:
-        return []
-
-    rows = len(matrix)
-    cols = min(len(r) for r in matrix if r) if any(matrix) else 0
-    if rows <= 0 or cols <= 0:
-        return []
-
-    x_step = 1.9 / (cols - 1) if cols > 1 else 0.0
-    y_step = 1.9 / (rows - 1) if rows > 1 else 0.0
-
-    out = []
-    for r in range(rows):
-        for c in range(cols):
-            try:
-                v = float(matrix[r][c])
-            except Exception:
-                v = 0.0
-            x = -0.95 + c * x_step
-            y = 0.95 - r * y_step
-            out.append({"x": x, "y": y, "value": v})
-    return out
+    matrix = _read_numeric_matrix(BALL_TILE_MEMORY_FILE)
+    return _matrix_to_world_tiles(matrix)
 
 
 def _get_unseen_tile_memory():
-    """Return unseen tile-memory entries mapped to world coordinates.
-
-    Matrix corners are mapped as:
-    - top-left     => (-0.95,  0.95)
-    - bottom-right => ( 0.95, -0.95)
-
-    Works for any matrix size (e.g. 10x10 or 20x20).
-    """
-    lines = _read_lines(UNSEEN_TILE_MEMORY_FILE)
-    if not lines:
-        return []
-
-    matrix = []
-    for line in lines:
-        nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
-        if not nums:
-            continue
-        row = []
-        for n in nums:
-            try:
-                row.append(float(n))
-            except Exception:
-                row.append(0.0)
-        matrix.append(row)
-
-    if not matrix:
-        return []
-
-    rows = len(matrix)
-    cols = min(len(r) for r in matrix if r) if any(matrix) else 0
-    if rows <= 0 or cols <= 0:
-        return []
-
-    x_step = 1.9 / (cols - 1) if cols > 1 else 0.0
-    y_step = 1.9 / (rows - 1) if rows > 1 else 0.0
-
-    out = []
-    for r in range(rows):
-        for c in range(cols):
-            try:
-                v = float(matrix[r][c])
-            except Exception:
-                v = 0.0
-            x = -0.95 + c * x_step
-            y = 0.95 - r * y_step
-            out.append({"x": x, "y": y, "value": v})
-    return out
+    matrix = _read_numeric_matrix(UNSEEN_TILE_MEMORY_FILE)
+    return _matrix_to_world_tiles(matrix)
 
 
 def _get_unseen_regions():
-    """Return unseen-regions entries mapped to world coordinates.
-
-    Matrix corners are mapped as:
-    - top-left     => (-0.95,  0.95)
-    - bottom-right => ( 0.95, -0.95)
-
-    Works for any matrix size (e.g. 10x10 or 20x20).
-    """
-    lines = _read_lines(UNSEEN_REGIONS_FILE)
-    if not lines:
-        return []
-
-    matrix = []
-    for line in lines:
-        nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
-        if not nums:
-            continue
-        row = []
-        for n in nums:
-            try:
-                row.append(float(n))
-            except Exception:
-                row.append(0.0)
-        matrix.append(row)
-
-    if not matrix:
-        return []
-
-    rows = len(matrix)
-    cols = min(len(r) for r in matrix if r) if any(matrix) else 0
-    if rows <= 0 or cols <= 0:
-        return []
-
-    x_step = 1.9 / (cols - 1) if cols > 1 else 0.0
-    y_step = 1.9 / (rows - 1) if rows > 1 else 0.0
-
-    out = []
-    for r in range(rows):
-        for c in range(cols):
-            try:
-                v = float(matrix[r][c])
-            except Exception:
-                v = 0.0
-            x = -0.95 + c * x_step
-            y = 0.95 - r * y_step
-            out.append({"x": x, "y": y, "value": v})
-    return out
+    matrix = _read_numeric_matrix(UNSEEN_REGIONS_FILE)
+    return _matrix_to_world_tiles(matrix)
 
 
 def _get_text_status():

@@ -247,6 +247,8 @@
       const RADAR_WINDOW_SEC = 2.0;
       const RADAR_MIN = -0.1;
       const RADAR_MAX = 0.9;
+      const TILE_SIZE = 0.05;
+      const TILE_HALF = TILE_SIZE / 2;
 
       function worldToCanvas(x, y) {
         const size = canvas.width;
@@ -368,15 +370,17 @@
       function drawTileSeenOverlay(tiles) {
         if (!tiles || tiles.length === 0) return;
 
+        const visibleTileHalf = TILE_HALF*0.25;
+
         for (const t of tiles) {
           if (!t || typeof t.value !== "number" || Math.abs(t.value) < 1e-12) {
             continue;
           }
 
-          const x1 = t.x - 0.0125;
-          const x2 = t.x + 0.0125;
-          const y1 = t.y - 0.0125;
-          const y2 = t.y + 0.0125;
+          const x1 = t.x - visibleTileHalf;
+          const x2 = t.x + visibleTileHalf;
+          const y1 = t.y - visibleTileHalf;
+          const y2 = t.y + visibleTileHalf;
 
           const [px1, py1] = worldToCanvas(x1, y2);
           const [px2, py2] = worldToCanvas(x2, y1);
@@ -425,8 +429,8 @@
           }
         };
 
-        drawSquares(unseenRegionTiles, 0.05);
-        // drawSquares(unseenTiles, 0.025);
+        drawSquares(unseenRegionTiles, TILE_HALF);
+        // drawSquares(unseenTiles, TILE_HALF);
       }
 
       function drawBallTileMemoryOverlay(tiles) {
@@ -437,7 +441,7 @@
             continue;
           }
 
-          const [px, py] = worldToCanvas(t.x - 0.025, t.y + 0.025);
+          const [px, py] = worldToCanvas(t.x - TILE_HALF, t.y + TILE_HALF);
           const valueText = Math.abs(t.value - Math.round(t.value)) < 1e-9
             ? String(Math.round(t.value))
             : t.value.toFixed(2);

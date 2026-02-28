@@ -132,14 +132,20 @@ SEARCHING_SEQUENCE = [
     (-0.5, 0, -90),
 ]
 
-# Build 0.1m point grid over [-1, 1] x [-1, 1].
-# Top-left is (-0.95, 0.95), bottom-right is (0.95, -0.95).
+# Build 0.05m point grid over [-1, 1] x [-1, 1].
+# Top-left is (-0.975, 0.975), bottom-right is (0.975, -0.975).
+TILE_SIZE = 0.05
+TILE_HALF = TILE_SIZE / 2.0
+GRID_COUNT = int(round(2.0 / TILE_SIZE))
 FIELD_TILES = [
     [
-        (round(-0.95 + col * 0.1, 2), round(0.95 - row * 0.1, 2))
-        for col in range(20)
+        (
+            round(-1.0 + TILE_HALF + col * TILE_SIZE, 3),
+            round(1.0 - TILE_HALF - row * TILE_SIZE, 3),
+        )
+        for col in range(GRID_COUNT)
     ]
-    for row in range(20)
+    for row in range(GRID_COUNT)
 ]
 
 
@@ -1721,8 +1727,7 @@ def next_point_time_cost(
             f"next_in_prev=({next_x_in_prev}, {next_y_in_prev}), angle_from_x={angle_from_x_deg:.1f}, turning_angle={turning_angle:.1f}, \n"
             f"distance={distance:.3f}, linear move time={move_time:.3f}, turning_angle={turning_angle:.1f}, turn_time={turn_time:.3f},\n"
             f"threashold = {time_threashold:.3f}s, total_cost={total_time:.3f}\n",
-            f"------[next_point_time_cost]------\n",
-            file=sys.stderr,
+            f"\n",
         )
     return total_time
 
@@ -2218,7 +2223,7 @@ def update_unseen_regions(unseen_tile_file: str = UNSEEN_TILE_MEMORY_FILE,
     unseen = _read_seen_tile_matrix(unseen_tile_file, rows, cols)
     regions = [[0.0 for _ in range(cols)] for _ in range(rows)]
 
-    radius = 2  # 0.2m / 0.1m
+    radius = int(round(0.2 / TILE_SIZE))
     for r in range(rows):
         for c in range(cols):
             total = 0.0
@@ -2392,10 +2397,10 @@ def mode_improved_nearest_v1(status_file: str = WAYPOINT_STATUS_FILE,
 def tile_completely_seen(tx, ty, FOV=60.0, Range=RADAR_MAX_RANGE) -> bool:
     """Check if tile center is completely seen by current radar."""
     corners = [
-        (tx - 0.05, ty - 0.05),
-        (tx - 0.05, ty + 0.05),
-        (tx + 0.05, ty - 0.05),
-        (tx + 0.05, ty + 0.05),
+        (tx - TILE_HALF, ty - TILE_HALF),
+        (tx - TILE_HALF, ty + TILE_HALF),
+        (tx + TILE_HALF, ty - TILE_HALF),
+        (tx + TILE_HALF, ty + TILE_HALF),
     ]
     return all(in_view(corner, FOV=FOV, Range=Range) for corner in corners)
 
@@ -2462,7 +2467,7 @@ def update_ball_memory_v2(memory_tile_file: str = BALL_MEMORY_FILE,
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
         half = 0.2  # robot half-size (actually 0.2m square)
-        tile_half = 0.05  # tile half-size (0.1m square)
+        tile_half = TILE_HALF
 
         for r, c, tx, ty in flat_tiles:
             # Four corners of the tile
@@ -2563,7 +2568,7 @@ def mode_improved_nearest_v2(status_file: str = WAYPOINT_STATUS_FILE,
               for r in range(rows):
                   for c in range(cols):
                       tx, ty = FIELD_TILES[r][c]
-                      if abs(tx - dx) <= 0.05 and abs(ty - dy) <= 0.05:
+                      if abs(tx - dx) <= TILE_HALF and abs(ty - dy) <= TILE_HALF:
                           if memory_ball[r][c] > 0.0:
                               return 0
 
@@ -2798,7 +2803,7 @@ def mode_improved_nearest_v3(status_file: str = WAYPOINT_STATUS_FILE,
               for r in range(rows):
                   for c in range(cols):
                       tx, ty = FIELD_TILES[r][c]
-                      if abs(tx - dx) <= 0.05 and abs(ty - dy) <= 0.05:
+                      if abs(tx - dx) <= TILE_HALF and abs(ty - dy) <= TILE_HALF:
                           if memory_ball[r][c] > 0.0:
                               return 0
 
@@ -2928,7 +2933,7 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
               for r in range(rows):
                   for c in range(cols):
                       tx, ty = FIELD_TILES[r][c]
-                      if abs(tx - dx) <= 0.05 and abs(ty - dy) <= 0.05:
+                      if abs(tx - dx) <= TILE_HALF and abs(ty - dy) <= TILE_HALF:
                           if memory_ball[r][c] > 0.0:
                               return 0
 
@@ -3314,7 +3319,7 @@ def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
         half = 0.15  # robot half-size (actually 0.2m square)
-        tile_half = 0.05  # tile half-size (0.1m square)
+        tile_half = TILE_HALF
 
         for r, c, tx, ty in flat_tiles:
             # Four corners of the tile
@@ -3488,8 +3493,12 @@ def mode_seen_ball_path_planned(status_file: str = WAYPOINT_STATUS_FILE,
                 seq.append(next_idx)
                 unvisited.remove(next_idx)
                 next_x, next_y, _ = subset[next_idx]
+                if len(seq) == 1:
+                    next_point_time_cost((cur_x, cur_y), cur_heading, (next_x, next_y), math.degrees(math.atan2(next_y - cur_y, next_x - cur_x)), debug=True)
+                    pass
                 cur_heading = _angle_to_deg((cur_x, cur_y), (next_x, next_y))
                 cur_x, cur_y = next_x, next_y
+            print(f"Initial nearest neighbor sequence: {seq} with total cost {_total_cost(seq, subset, start_position, start_heading_deg_local):.3f}", file=sys.stderr)
             return seq
 
         def _two_opt(

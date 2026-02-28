@@ -21,7 +21,7 @@ TEMPLATE_ROOT="$ROOT_BASE"
 SCRIPT_REL="tools/testing/webots_auto_loop_crossplatform.py"
 
 MODES=(
-  "nearest"
+  "seen_ball_path_planned"
 )
 
 AVOIDANCE=(
