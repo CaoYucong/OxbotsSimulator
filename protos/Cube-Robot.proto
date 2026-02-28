@@ -173,24 +173,13 @@ PROTO Cube-Robot [
           Camera {
             translation 0 0 0
             # no rotation: default orientation already points along +X (front)
-            rotation 0 1 0 0
+            rotation 0 1 0 0.6
             name "front_camera"
             fieldOfView 2.5829  # 148 degrees in radians
             width 1920          # ~2 million pixels (1920x1080)
             height 1080
             near 0.01
             far 5.0
-          }
-        ]
-      }
-      # additional display transform so device is top-level
-      Transform {
-        translation 0.105 0 0.08
-        children [
-          Display {
-            name "camera_display"
-            width 320
-            height 180
           }
         ]
       }

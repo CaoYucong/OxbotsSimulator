@@ -48,56 +48,14 @@ if node_name != "supervisor":
     robot = supervisor  # object is usable as Robot as well
     try:
         camera = robot.getDevice('front_camera')
-        display = None
         if camera:
             camera.enable(TIME_STEP)
             print(f"[Camera] enabled on {node_name} {camera.getWidth()}x{camera.getHeight()}" )
-            try:
-                display = robot.getDevice('camera_display')
-            except Exception:
-                display = None
         else:
             print(f"[Camera] front_camera device not found on {node_name}")
     except Exception as e:
         print(f"[Camera] error enabling camera: {e}")
-    # optionally prepare an OpenCV window on main robot
-    if cv2 and camera:
-        cv2.namedWindow('front_camera', cv2.WINDOW_NORMAL)
 
-    # simple step loop to keep the controller alive so the camera stays active
-    while robot.step(TIME_STEP) != -1:
-        # camera display on robot body
-        if node_name == MAIN_ROBOT_NAME and camera and display:
-            try:
-                img = camera.getImage()
-                if not img:
-                    print(f"[Camera] warning: getImage returned empty on {node_name}")
-                else:
-                    display.imagePaste(img, 0, 0, False)
-            except Exception as e:
-                print(f"[Camera] display paste failed: {e}")
-        # external OpenCV window
-        if cv2 and node_name == MAIN_ROBOT_NAME and camera:
-            try:
-                img = camera.getImage()
-                if not img:
-                    print(f"[Camera] warning: getImage returned empty for OpenCV on {node_name}")
-                else:
-                    w = camera.getWidth()
-                    h = camera.getHeight()
-                    # convert BGRA (Webots) to BGR for OpenCV
-                    arr = np.frombuffer(img, np.uint8)
-                    arr = arr.reshape((h, w, 4))
-                    bgr = arr[:, :, :3]
-                    cv2.imshow('front_camera', bgr)
-                    cv2.waitKey(1)
-            except Exception as e:
-                print(f"[Camera] OpenCV update failed: {e}")
-        # continue stepping
-        pass
-    # clean up cv2
-    if cv2:
-        cv2.destroyWindow('front_camera')
     sys.exit(0)
 
 # if we reach here, we are the supervisor controller and will proceed with full logic
