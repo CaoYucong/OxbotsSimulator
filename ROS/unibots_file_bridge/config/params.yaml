@@ -1,0 +1,11 @@
+file_bridge_node:
+  ros__parameters:
+    sim_dir: /mnt/OxbotsSimulator/controllers/supervisor_controller/real_time_data
+    poll_hz: 10.0
+    frame_id: map
+
+decision_node:
+  ros__parameters:
+    tick_hz: 10.0
+    mode: mode_improved_nearest_v3_5
+    default_speed: 0.3
