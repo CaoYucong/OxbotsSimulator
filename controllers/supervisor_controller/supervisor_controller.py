@@ -4,6 +4,7 @@
 # - simplified absorption logic
 # - dynamic waypoint handling
 from controller import Supervisor, Robot, Camera
+import json
 import math
 import numpy as np
 import os
@@ -13,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.request
 
 # optionally use OpenCV for external window
 try:
@@ -133,6 +135,10 @@ FIELD_VIEWER_PATH = os.path.abspath(
 )
 HTML_PORT_FILE = os.path.join(THIS_DIR, "html_port.txt")
 FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
+SIM_DATA_ENDPOINT = f"http://localhost:{FIELD_VIEWER_PORT}/data/simulation_data"
+DECISIONS_ENDPOINT = f"http://localhost:{FIELD_VIEWER_PORT}/data/decisions"
+DECISIONS_CACHE = {}
+DECISIONS_SEQ = 0
 
 def _load_random_seed(path, default_seed=DEFAULT_RANDOM_SEED):
     """Load random seed from file, fallback to default on any error."""
@@ -165,17 +171,8 @@ DECISION_MAKING_DIR = _resolve_decision_making_dir()
 DECISION_REAL_TIME_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data")
 RANDOM_SEED = _load_random_seed(RANDOM_SEED_FILE)
 
-DYNAMIC_WAYPOINTS_FILE = os.path.join(REAL_TIME_DATA_DIR, "dynamic_waypoints.txt")
 WAYPOINTS_HISTORY_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoints_history.txt")
-WAYPOINT_STATUS_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoint_status.txt")
-BALL_POS_FILE = os.path.join(REAL_TIME_DATA_DIR, "ball_position.txt")
-CURRENT_POSITION_FILE = os.path.join(REAL_TIME_DATA_DIR, "current_position.txt")
-OBSTACLE_ROBOT_FILE = os.path.join(REAL_TIME_DATA_DIR, "obstacle_robot.txt")
-TIME_FILE = os.path.join(REAL_TIME_DATA_DIR, "time.txt")
 OBSTACLE_PLAN_FILE = os.path.join(REAL_TIME_DATA_DIR, "obstacle_plan.txt")
-SPEED_FILE = os.path.join(REAL_TIME_DATA_DIR, "speed.txt")
-VISIBLE_BALLS_FILE = os.path.join(REAL_TIME_DATA_DIR, "visible_balls.txt")
-BALL_TAKEN_FILE = os.path.join(REAL_TIME_DATA_DIR, "ball_taken_number.txt")
 BALL_TAKEN_HISTORY_FILE = os.path.join(REAL_TIME_DATA_DIR, "ball_taken_history.txt")
 CRUISE_SCRIPT_PATH = os.path.join(DECISION_MAKING_DIR, "waypoints_cruise.py")
 SUPERVISOR_STATUS_FILE = os.path.join(REAL_TIME_DATA_DIR, "supervisor_controller_status.txt")
@@ -671,35 +668,7 @@ for _dir in (
         except Exception:
             pass
 
-# Reset dynamic waypoint input file at startup.
-try:
-    with open(DYNAMIC_WAYPOINTS_FILE, "w") as f:
-        f.write("")
-except Exception as e:
-    try:
-        print(f"[startup] failed to clear dynamic_waypoints.txt: {e}")
-    except Exception:
-        pass
-
-# Initialize speed file with default cruise speed.
-try:
-    with open(SPEED_FILE, "w") as f:
-        f.write(f"{DEFAULT_VELOCITY}\n")
-except Exception as e:
-    try:
-        print(f"[startup] failed to set speed.txt: {e}")
-    except Exception:
-        pass
-
-# Initialize main robot taken-ball file.
-try:
-    with open(BALL_TAKEN_FILE, "w") as f:
-        f.write("0\n")
-except Exception as e:
-    try:
-        print(f"[startup] failed to set ball_taken_number.txt: {e}")
-    except Exception:
-        pass
+# Reset dynamic waypoint/speed/taken-ball files at startup (disabled; web-only now).
 
 # Initialize main robot ball-taken history file.
 try:
@@ -711,7 +680,7 @@ except Exception as e:
     except Exception:
         pass
 
-def _load_dynamic_waypoint(path):
+def _load_dynamic_waypoint():
     # -------------------------------------------------------------------------
     # WAYPOINT PARSING HELPERS
     # Parse dynamic waypoint input from shared txt file.
@@ -720,41 +689,44 @@ def _load_dynamic_waypoint(path):
     Returns a single (x, y, orientation) tuple or None if file is empty/invalid.
     """
     namespace = {"North": 90.0, "East": 0.0, "South": -90.0, "West": 180.0, "None": None}
-    try:
-        with open(path, 'r') as f:
-            for raw in f:
-                line = raw.split('#', 1)[0].strip()
-                if not line:
-                    continue
-                # remove trailing comma
-                if line.endswith(','):
-                    line = line[:-1].strip()
-                try:
-                    # evaluate in a restricted namespace
-                    wp = eval(line, {"__builtins__": None}, namespace)
-                except Exception:
-                    # fallback: extract numbers
-                    nums = re.findall(r'[-+]?[0-9]*\.?[0-9]+', line)
-                    if len(nums) >= 2:
-                        x = float(nums[0]); y = float(nums[1])
-                        ang = float(nums[2]) if len(nums) >= 3 else None
-                        wp = (x, y, ang)
-                    else:
-                        continue
-                # normalize
-                if isinstance(wp, tuple) and len(wp) >= 2:
-                    if len(wp) == 2:
-                        wp = (float(wp[0]), float(wp[1]), None)
-                    else:
-                        ang = wp[2]
-                        if ang is None:
-                            ang = None
-                        else:
-                            ang = math.radians(float(ang))
-                        wp = (float(wp[0]), float(wp[1]), ang)
-                    return wp
-    except Exception:
-        pass
+    raw_payload = _get_decision_value("dynamic_waypoints")
+    if not raw_payload:
+        pos = main_robot.getField("translation").getSFVec3f()
+        x, y = float(pos[0]), float(pos[1])
+        rot = main_robot.getField("rotation").getSFRotation()
+        ang = float(rot[3])
+        return (x, y, ang)
+    for raw in raw_payload.splitlines():
+        line = raw.split('#', 1)[0].strip()
+        if not line:
+            continue
+        # remove trailing comma
+        if line.endswith(','):
+            line = line[:-1].strip()
+        try:
+            # evaluate in a restricted namespace
+            wp = eval(line, {"__builtins__": None}, namespace)
+        except Exception:
+            # fallback: extract numbers
+            nums = re.findall(r'[-+]?[0-9]*\.?[0-9]+', line)
+            if len(nums) >= 2:
+                x = float(nums[0]); y = float(nums[1])
+                ang = float(nums[2]) if len(nums) >= 3 else None
+                wp = (x, y, ang)
+            else:
+                continue
+        # normalize
+        if isinstance(wp, tuple) and len(wp) >= 2:
+            if len(wp) == 2:
+                wp = (float(wp[0]), float(wp[1]), None)
+            else:
+                ang = wp[2]
+                if ang is None:
+                    ang = None
+                else:
+                    ang = math.radians(float(ang))
+                wp = (float(wp[0]), float(wp[1]), ang)
+            return wp
     return None
 
 def _append_to_history(path, waypoint, status, timestamp=None):
@@ -821,141 +793,112 @@ def _append_history_header(path):
     with open(path, 'a') as f:
         f.write(header)
 
-def _update_status_file(path, motion_active, has_waypoint):
-    """Update real-time status file with current robot state.
-    status: 'going' if motion is active, 'reached' otherwise
-    """
-    status = "going" if motion_active else "reached"
-    with open(path, 'w') as f:
-        f.write(status)
-
-
-def _write_ball_positions(path):
-    # -------------------------------------------------------------------------
-    # REAL-TIME FILE WRITERS
-    # Export simulator state to txt files consumed by decision-making scripts.
-    # -------------------------------------------------------------------------
-    """Write current positions of all balls into `path`.
-    Format: one line per ball: (x, y, ping/metal) — overwrite atomically.
-    Only records balls with x >= -1.0
-    Returns number of written ball records, or None on failure.
-    """
-    try:
-        tmp = path + '.tmp'
-        written_count = 0
-        with open(tmp, 'w') as f:
-            for i in range(BALL_COUNT):
-                name = f"{BALL_PREFIX}{i}"
-                node = supervisor.getFromDef(name)
-                if node is None:
-                    continue
-                try:
-                    pos = node.getField("translation").getSFVec3f()
-                    x, y = float(pos[0]), float(pos[1])
-                except Exception:
-                    continue
-                # Skip balls with x < -1.0
-                if x < -1.0 or x > 1.0 or y < -1.0 or y > 1.0:
-                    continue
-                # Determine type: map 'steel' -> 'metal', else 'ping'
-                typ = 'ping'
-                try:
-                    name_field = node.getField("robotName").getSFString()
-                    if name_field is not None:
-                        if 'steel' in name_field.lower():
-                            typ = 'metal'
-                except Exception:
-                    pass
-                f.write(f"({x:.6f}, {y:.6f}, {typ.upper()})\n")
-                written_count += 1
-        os.replace(tmp, path)
-        return written_count
-    except Exception as e:
-        # non-fatal: print to stdout for debugging
+def _format_ball_positions():
+    lines = []
+    written_count = 0
+    for i in range(BALL_COUNT):
+        name = f"{BALL_PREFIX}{i}"
+        node = supervisor.getFromDef(name)
+        if node is None:
+            continue
         try:
-            print(f"[ball_positions] failed to write positions: {e}")
+            pos = node.getField("translation").getSFVec3f()
+            x, y = float(pos[0]), float(pos[1])
+        except Exception:
+            continue
+        if x < -1.0 or x > 1.0 or y < -1.0 or y > 1.0:
+            continue
+        typ = "ping"
+        try:
+            name_field = node.getField("robotName").getSFString()
+            if name_field is not None and "steel" in name_field.lower():
+                typ = "metal"
         except Exception:
             pass
-        return None
+        lines.append(f"({x:.6f}, {y:.6f}, {typ.upper()})")
+        written_count += 1
+    return "\n".join(lines), written_count
 
 
-def _write_current_position(path):
-    """Write main robot's current position (x, y, bearing_deg) to file — overwrite atomically."""
-    try:
-        tmp = path + '.tmp'
-        pos = main_robot.getField("translation").getSFVec3f()
+def _format_current_position():
+    pos = main_robot.getField("translation").getSFVec3f()
+    x, y = float(pos[0]), float(pos[1])
+    rot = main_robot.getField("rotation").getSFRotation()
+    bearing_rad = float(rot[3])
+    bearing_deg = math.degrees(bearing_rad)
+    return f"({x:.6f}, {y:.6f}, {bearing_deg:.2f})"
+
+def _format_obstacle_positions():
+    lines = []
+    for robot in obstacle_robots:
+        pos = robot.getField("translation").getSFVec3f()
         x, y = float(pos[0]), float(pos[1])
-        rot = main_robot.getField("rotation").getSFRotation()
-        bearing_rad = float(rot[3])
-        bearing_deg = math.degrees(bearing_rad)
-        with open(tmp, 'w') as f:
-            f.write(f"({x:.6f}, {y:.6f}, {bearing_deg:.2f})\n")
-        os.replace(tmp, path)
-    except Exception as e:
-        # non-fatal
-        try:
-            print(f"[current_position] failed to write: {e}")
-        except Exception:
-            pass
+        rot = robot.getField("rotation").getSFRotation()
+        bearing_deg = math.degrees(float(rot[3]))
+        lines.append(f"({x:.6f}, {y:.6f}, {bearing_deg:.2f})")
+    return "\n".join(lines)
 
-def _write_obstacle_positions(path):
-    """Write all obstacle robots' positions (x, y) to file — overwrite atomically."""
-    try:
-        tmp = path + '.tmp'
-        with open(tmp, 'w') as f:
-            for robot in obstacle_robots:
-                pos = robot.getField("translation").getSFVec3f()
-                x, y = float(pos[0]), float(pos[1])
-                rot = robot.getField("rotation").getSFRotation()
-                bearing_deg = math.degrees(float(rot[3]))
-                f.write(f"({x:.6f}, {y:.6f}, {bearing_deg:.2f})\n")
-        os.replace(tmp, path)
-    except Exception as e:
-        # non-fatal
-        try:
-            print(f"[obstacle_positions] failed to write: {e}")
-        except Exception:
-            pass
+def _format_webots_time():
+    return f"{supervisor.getTime():.6f}"
 
-def _write_webots_time(path):
-    """Write current Webots simulator time to file — overwrite atomically."""
+def _read_speed_mps(default_value):
+    """Read cruise speed in m/s from decisions data (web-only)."""
+    raw = _get_decision_value("speed")
+    if raw is None:
+        return default_value
     try:
-        webots_time = supervisor.getTime()
-        tmp = path + '.tmp'
-        with open(tmp, 'w') as f:
-            f.write(f"{webots_time:.6f}\n")
-        os.replace(tmp, path)
-    except Exception as e:
-        # non-fatal
-        try:
-            print(f"[webots_time] failed to write: {e}")
-        except Exception:
-            pass
-
-def _read_speed_mps(path, default_value):
-    """Read cruise speed in m/s from speed.txt, or return default_value."""
-    try:
-        with open(path, 'r') as f:
-            raw = f.read().strip()
-            if not raw:
-                return default_value
-            value = float(raw)
-            return value if value > 0 else default_value
+        value = float(raw)
     except Exception:
         return default_value
+    if value <= 0:
+        return default_value
+    return value
 
-def _write_ball_taken(path, count):
-    """Write main robot total taken balls to file — overwrite atomically."""
+
+
+
+def _post_sim_data(payload):
     try:
-        tmp = path + '.tmp'
-        with open(tmp, 'w') as f:
-            f.write(f"{int(count)}\n")
-        os.replace(tmp, path)
-    except Exception as e:
-        try:
-            print(f"[ball_taken] failed to write: {e}")
-        except Exception:
-            pass
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            SIM_DATA_ENDPOINT,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+        )
+        with urllib.request.urlopen(req, timeout=0.3) as res:
+            res.read()
+    except Exception:
+        pass
+
+def _refresh_decisions_data():
+    global DECISIONS_CACHE, DECISIONS_SEQ
+    try:
+        with urllib.request.urlopen(DECISIONS_ENDPOINT, timeout=0.3) as res:
+            payload = json.loads(res.read().decode("utf-8"))
+        if isinstance(payload, dict):
+            DECISIONS_CACHE = payload
+            DECISIONS_SEQ += 1
+            return True
+    except Exception:
+        pass
+    return False
+
+def _require_decision_value(key, allow_empty=False, retries=1, sleep_s=0.02):
+    for attempt in range(retries + 1):
+        _refresh_decisions_data()
+        value = DECISIONS_CACHE.get(key)
+        if value is not None:
+            raw = str(value).strip()
+            if allow_empty or raw:
+                return raw
+        if attempt < retries:
+            time.sleep(sleep_s)
+    raise RuntimeError(f"Missing decisions data for '{key}' from {DECISIONS_ENDPOINT}.")
+
+def _get_decision_value(key):
+    _refresh_decisions_data()
+    return DECISIONS_CACHE.get(key)
 
 def _append_ball_taken_history(path, taken_time_s, taken_count):
     """Append main-robot ball taken history as: <time_seconds>,<cumulative_count>."""
@@ -983,112 +926,98 @@ def _write_supervisor_status(path, status):
         except Exception:
             pass
 
-def _write_visible_balls(path, viewfield_deg=FIELD_OF_VIEW_DEGREES, visible_range_m=0.8):
-    """Write visible balls within viewfield and range to file — overwrite atomically."""
-    try:
-        tmp = path + '.tmp'
-        pos = main_robot.getField("translation").getSFVec3f()
-        rx, ry = float(pos[0]), float(pos[1])
-        rot = main_robot.getField("rotation").getSFRotation()
-        rangle = float(rot[3])
-        half_fov = math.radians(viewfield_deg) / 2.0
-        range_sq = visible_range_m * visible_range_m
+def _format_visible_balls(viewfield_deg=FIELD_OF_VIEW_DEGREES, visible_range_m=0.8):
+    lines = []
+    pos = main_robot.getField("translation").getSFVec3f()
+    rx, ry = float(pos[0]), float(pos[1])
+    rot = main_robot.getField("rotation").getSFRotation()
+    rangle = float(rot[3])
+    half_fov = math.radians(viewfield_deg) / 2.0
+    range_sq = visible_range_m * visible_range_m
 
-        def _segment_intersects_aabb(p0, p1, half):
-            """2D segment vs axis-aligned square centered at origin."""
-            x0, y0 = p0
-            x1, y1 = p1
-            dx = x1 - x0
-            dy = y1 - y0
-            t0, t1 = 0.0, 1.0
-            for p, q in ((-dx, x0 + half), (dx, half - x0), (-dy, y0 + half), (dy, half - y0)):
-                if abs(p) < 1e-12:
-                    if q < 0:
+    def _segment_intersects_aabb(p0, p1, half):
+        x0, y0 = p0
+        x1, y1 = p1
+        dx = x1 - x0
+        dy = y1 - y0
+        t0, t1 = 0.0, 1.0
+        for p, q in ((-dx, x0 + half), (dx, half - x0), (-dy, y0 + half), (dy, half - y0)):
+            if abs(p) < 1e-12:
+                if q < 0:
+                    return False
+            else:
+                t = q / p
+                if p < 0:
+                    if t > t1:
                         return False
+                    if t > t0:
+                        t0 = t
                 else:
-                    t = q / p
-                    if p < 0:
-                        if t > t1:
-                            return False
-                        if t > t0:
-                            t0 = t
-                    else:
-                        if t < t0:
-                            return False
-                        if t < t1:
-                            t1 = t
-            return True
+                    if t < t0:
+                        return False
+                    if t < t1:
+                        t1 = t
+        return True
 
-        def _is_occluded_by_obstacles(ball_x, ball_y):
-            # Check line-of-sight segment from robot to ball against each obstacle square.
-            for robot in obstacle_robots:
-                opos = robot.getField("translation").getSFVec3f()
-                ox, oy = float(opos[0]), float(opos[1])
-                orot = robot.getField("rotation").getSFRotation()
-                oangle = float(orot[3])
+    def _is_occluded_by_obstacles(ball_x, ball_y):
+        for robot in obstacle_robots:
+            opos = robot.getField("translation").getSFVec3f()
+            ox, oy = float(opos[0]), float(opos[1])
+            orot = robot.getField("rotation").getSFRotation()
+            oangle = float(orot[3])
 
-                # Transform segment endpoints into obstacle-local frame.
-                def to_local(px, py):
-                    dx = px - ox
-                    dy = py - oy
-                    lx = dx * math.cos(-oangle) - dy * math.sin(-oangle)
-                    ly = dx * math.sin(-oangle) + dy * math.cos(-oangle)
-                    return lx, ly
+            def to_local(px, py):
+                dx = px - ox
+                dy = py - oy
+                lx = dx * math.cos(-oangle) - dy * math.sin(-oangle)
+                ly = dx * math.sin(-oangle) + dy * math.cos(-oangle)
+                return lx, ly
 
-                p0 = to_local(rx, ry)
-                p1 = to_local(ball_x, ball_y)
-                if _segment_intersects_aabb(p0, p1, 0.1):
-                    return True
-            return False
+            p0 = to_local(rx, ry)
+            p1 = to_local(ball_x, ball_y)
+            if _segment_intersects_aabb(p0, p1, 0.1):
+                return True
+        return False
 
-        with open(tmp, 'w') as f:
-            for i in range(BALL_COUNT):
-                name = f"{BALL_PREFIX}{i}"
-                node = supervisor.getFromDef(name)
-                if node is None:
-                    continue
-                try:
-                    bpos = node.getField("translation").getSFVec3f()
-                    bx, by = float(bpos[0]), float(bpos[1])
-                except Exception:
-                    continue
-                if bx < -1.0 or bx > 1.0 or by < -1.0 or by > 1.0:
-                    continue
-
-                x_rel = bx - rx
-                y_rel = by - ry
-                x_robot = x_rel * math.cos(-rangle) - y_rel * math.sin(-rangle)
-                y_robot = x_rel * math.sin(-rangle) + y_rel * math.cos(-rangle)
-                dist_sq = x_robot * x_robot + y_robot * y_robot
-                if dist_sq > range_sq:
-                    continue
-                
-                # if dist_sq < 0.15*0.15:
-                #     continue
-
-                angle = math.atan2(y_robot, x_robot)
-                if abs(angle) > half_fov:
-                    continue
-
-                if _is_occluded_by_obstacles(bx, by):
-                    continue
-
-                typ = "PING"
-                try:
-                    name_field = node.getField("robotName").getSFString()
-                    if name_field is not None and "steel" in name_field.lower():
-                        typ = "METAL"
-                except Exception:
-                    pass
-
-                f.write(f"({bx:.6f}, {by:.6f}, {typ})\n")
-
-        os.replace(tmp, path)
-    except Exception as e:
+    for i in range(BALL_COUNT):
+        name = f"{BALL_PREFIX}{i}"
+        node = supervisor.getFromDef(name)
+        if node is None:
+            continue
         try:
-            print(f"[visible_balls] failed to write: {e}")
+            bpos = node.getField("translation").getSFVec3f()
+            bx, by = float(bpos[0]), float(bpos[1])
+        except Exception:
+            continue
+        if bx < -1.0 or bx > 1.0 or by < -1.0 or by > 1.0:
+            continue
+
+        x_rel = bx - rx
+        y_rel = by - ry
+        x_robot = x_rel * math.cos(-rangle) - y_rel * math.sin(-rangle)
+        y_robot = x_rel * math.sin(-rangle) + y_rel * math.cos(-rangle)
+        dist_sq = x_robot * x_robot + y_robot * y_robot
+        if dist_sq > range_sq:
+            continue
+
+        angle = math.atan2(y_robot, x_robot)
+        if abs(angle) > half_fov:
+            continue
+
+        if _is_occluded_by_obstacles(bx, by):
+            continue
+
+        typ = "PING"
+        try:
+            name_field = node.getField("robotName").getSFString()
+            if name_field is not None and "steel" in name_field.lower():
+                typ = "METAL"
         except Exception:
             pass
+
+        lines.append(f"({bx:.6f}, {by:.6f}, {typ})")
+
+    return "\n".join(lines)
 
 # =============================================================================
 # MOTION CONTROLLER INITIALIZATION
@@ -1122,13 +1051,9 @@ else:
 _append_history_header(WAYPOINTS_HISTORY_FILE)
 
 # Load initial dynamic waypoint for main robot
-current_waypoint = _load_dynamic_waypoint(DYNAMIC_WAYPOINTS_FILE)
+current_waypoint = _load_dynamic_waypoint()
 last_dynamic_waypoint = current_waypoint
-last_waypoint_mtime = None
-try:
-    last_waypoint_mtime = os.path.getmtime(DYNAMIC_WAYPOINTS_FILE)
-except Exception:
-    last_waypoint_mtime = None
+last_dynamic_waypoint_raw = _get_decision_value("dynamic_waypoints") or ""
 
 if current_waypoint is not None:
     x, y, ang = current_waypoint
@@ -1160,26 +1085,22 @@ while supervisor.step(TIME_STEP) != -1:
         break
 
     # ==== Update main robot (single waypoint navigation) ====
-    # Check if dynamic_waypoints.txt has changed
-    try:
-        mtime = os.path.getmtime(DYNAMIC_WAYPOINTS_FILE)
-    except Exception:
-        mtime = None
-    
-    if mtime is not None and mtime != last_waypoint_mtime:
-        new_waypoint = _load_dynamic_waypoint(DYNAMIC_WAYPOINTS_FILE)
+    # Check if dynamic_waypoints has changed (web-only)
+    raw_dynamic_waypoint = _get_decision_value("dynamic_waypoints") or ""
+    if raw_dynamic_waypoint != last_dynamic_waypoint_raw:
+        new_waypoint = _load_dynamic_waypoint()
         if new_waypoint is not None and new_waypoint != last_dynamic_waypoint:
             # Waypoint changed: record the old one as 'cut' and start new one
             if last_dynamic_waypoint is not None and current_waypoint is not None:
                 _append_to_history(WAYPOINTS_HISTORY_FILE, last_dynamic_waypoint, "cut")
             current_waypoint = new_waypoint
-            last_dynamic_waypoint = new_waypoint    
+            last_dynamic_waypoint = new_waypoint
             x, y, ang = current_waypoint
             main_motion.start(x, y, velocity=None, angle=ang)
-        last_waypoint_mtime = mtime
+        last_dynamic_waypoint_raw = raw_dynamic_waypoint
 
     # 0.5) Update main robot cruise speed from speed.txt
-    main_motion.velocity = _read_speed_mps(SPEED_FILE, DEFAULT_VELOCITY)
+    main_motion.velocity = _read_speed_mps(DEFAULT_VELOCITY)
     
     # 1) Advance main robot motion (non-blocking)
     main_motion.update()
@@ -1188,8 +1109,8 @@ while supervisor.step(TIME_STEP) != -1:
     for obs_motion in obstacle_motions:
         obs_motion.update()
     
-    # 1.5) Update real-time status file
-    _update_status_file(WAYPOINT_STATUS_FILE, main_motion.active, current_waypoint is not None)
+    # 1.5) Update real-time status (in-memory only for sim data)
+    waypoint_status = "going" if main_motion.active else "reached"
     
     # 1.6) Execute cruise script at intervals
     frame_counter += 1
@@ -1208,27 +1129,31 @@ while supervisor.step(TIME_STEP) != -1:
         absorb_x = 1.1 + i * 0.1
         _monitor_absorption_for_robot(obs_robot, ball_prefix=BALL_PREFIX, ball_count=BALL_COUNT, half_x=ABSORB_BOX_HALF_X, half_y=ABSORB_BOX_HALF_Y, absorb_location=(absorb_x, 0.0, 0.1))
 
-    # 2.5) Write per-frame ball positions to file
-    written_ball_count = _write_ball_positions(BALL_POS_FILE)
+    # 2.5) Collect per-frame ball positions (in-memory only for sim data)
+    ball_positions_text, written_ball_count = _format_ball_positions()
     if written_ball_count == 0:
         # print("[Supervisor] ball_position.txt is empty. Stopping simulation.")
         _write_supervisor_status(SUPERVISOR_STATUS_FILE, "exited")
         # break
     
-    # 2.6) Write robot current position to file
-    _write_current_position(CURRENT_POSITION_FILE)
-    # 2.65) Write obstacle robots positions to file
-    _write_obstacle_positions(OBSTACLE_ROBOT_FILE)
-    
-    
-    # 2.7) Write Webots simulator time to file
-    _write_webots_time(TIME_FILE)
+    # 2.6) Collect sim data values (in-memory only for sim data)
+    current_position_text = _format_current_position()
+    obstacle_positions_text = _format_obstacle_positions()
+    webots_time_text = _format_webots_time()
+    visible_balls_text = _format_visible_balls()
+    ball_taken_text = f"{int(MAIN_BALL_TAKEN)}"
 
-    # 2.8) Write visible balls for main robot
-    _write_visible_balls(VISIBLE_BALLS_FILE)
-
-    # 2.9) Write main robot taken-ball count
-    _write_ball_taken(BALL_TAKEN_FILE, MAIN_BALL_TAKEN)
+    # 2.95) Push simulation data to field viewer server
+    payload = {
+        "ball_position": ball_positions_text,
+        "current_position": current_position_text,
+        "obstacle_robot": obstacle_positions_text,
+        "time": webots_time_text,
+        "visible_balls": visible_balls_text,
+        "ball_taken_number": ball_taken_text,
+        "waypoint_status": waypoint_status,
+    }
+    _post_sim_data(payload)
 
     # 3) If main robot motion completed, record as 'reached' and wait for next dynamic waypoint
     if not main_motion.active and current_waypoint is not None:

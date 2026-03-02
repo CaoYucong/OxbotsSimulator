@@ -6,66 +6,31 @@ from __future__ import annotations
 import json
 import os
 import re
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(ROOT_DIR, "..", ".."))
-WHO_IS_DEV_FILE = os.path.join(PROJECT_ROOT, "who_is_developing.txt")
-
-def _resolve_decision_making_dir() -> str:
-    """Select decision_making folder based on who_is_developing.txt (cyc/wly/xjj)."""
-    default_dir = os.path.join(PROJECT_ROOT, "decision_making")
-    try:
-        with open(WHO_IS_DEV_FILE, "r") as f:
-            dev = f.read().strip().lower()
-        if dev == "cyc":
-            return os.path.join(PROJECT_ROOT, "decision_making_cyc")
-        if dev == "wly":
-            return os.path.join(PROJECT_ROOT, "decision_making_wly")
-        if dev == "xjj":
-            return os.path.join(PROJECT_ROOT, "decision_making_xjj")
-    except Exception:
-        pass
-    return default_dir
-
-DECISION_MAKING_DIR = _resolve_decision_making_dir()
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data")
 
 INDEX_FILE = os.path.join(ROOT_DIR, "index.html")
 SIM_DATA_FILE = os.path.join(ROOT_DIR, "simulation_data.html")
-CURRENT_FILE = os.path.join(DATA_DIR, "current_position.txt")
-BALLS_FILE = os.path.join(DATA_DIR, "ball_position.txt")
-VISIBLE_FILE = os.path.join(DATA_DIR, "visible_balls.txt")
-OBSTACLES_FILE = os.path.join(DATA_DIR, "obstacle_robot.txt")
-DYNAMIC_FILE = os.path.join(DATA_DIR, "dynamic_waypoints.txt")
-WAYPOINT_STATUS_FILE = os.path.join(DATA_DIR, "waypoint_status.txt")
-TIME_FILE = os.path.join(DATA_DIR, "time.txt")
+DECISIONS_FILE = os.path.join(ROOT_DIR, "decisions.html")
+DECISION_MAKING_DATA_FILE = os.path.join(ROOT_DIR, "decision_making_data.html")
 RANDOM_SEED_FILE = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "random_seed.txt")
 BALL_TAKEN_HISTORY_FILE = os.path.join(DATA_DIR, "ball_taken_history.txt")
 
-STACK_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "waypoints_stack.txt")
-ROBOT_AROUND_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "robot_around.txt")
-RADAR_HISTORY_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "radar_memory.txt")
-TILE_SEEN_TIME_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "tile_seen_time.txt")
-BALL_TILE_MEMORY_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "ball_tile_memory.txt")
-UNSEEN_TILE_MEMORY_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "unseen_tile_memory.txt")
-UNSEEN_REGIONS_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "unseen_regions.txt")
-MODE_FILE = os.path.join(DECISION_MAKING_DIR, "mode.txt")
-COLLISION_AVOIDING_FILE = os.path.join(DECISION_MAKING_DIR, "collision_avoiding.txt")
-COLLISION_COUNTER_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "collision_counter.txt")
-PLANNED_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "planned_waypoints.txt")
 
 SIM_DATA_DIR = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data")
 
-
-def _read_lines(path: str) -> list[str]:
-    try:
-        with open(path, "r") as f:
-            return [line.strip() for line in f if line.strip()]
-    except Exception:
-        return []
+SIM_DATA_CACHE = {}
+SIM_DATA_SEQ = 0
+DECISIONS_CACHE = {}
+DECISIONS_SEQ = 0
+DECISION_MAKING_DATA_CACHE = {}
+DECISION_MAKING_DATA_SEQ = 0
 
 
 def _read_text(path: str) -> str:
@@ -97,6 +62,58 @@ def _read_last_line(path: str) -> str:
     if not lines:
         return ""
     return lines[-1]
+
+
+def _read_lines_from_text(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _read_first_line_number_from_text(text: str) -> str:
+    lines = _read_lines_from_text(text)
+    if not lines:
+        return ""
+    m = re.search(r"[-+]?\d*\.?\d+", lines[0])
+    return m.group(0) if m else ""
+
+
+def _read_last_line_from_text(text: str) -> str:
+    lines = _read_lines_from_text(text)
+    if not lines:
+        return ""
+    return lines[-1]
+
+
+def _get_decision_text(key: str) -> str:
+    if not DECISION_MAKING_DATA_CACHE:
+        return ""
+    value = DECISION_MAKING_DATA_CACHE.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _get_decision_lines(key: str) -> list[str]:
+    return _read_lines_from_text(_get_decision_text(key))
+
+
+def _get_sim_text(key: str) -> str:
+    if not SIM_DATA_CACHE:
+        return ""
+    value = SIM_DATA_CACHE.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _get_sim_lines(key: str) -> list[str]:
+    return _read_lines_from_text(_get_sim_text(key))
+
+
+def _get_decisions_text(key: str) -> str:
+    if not DECISIONS_CACHE:
+        return ""
+    value = DECISIONS_CACHE.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _get_decisions_lines(key: str) -> list[str]:
+    return _read_lines_from_text(_get_decisions_text(key))
 
 
 def _parse_tuple(line: str) -> list[str]:
@@ -170,15 +187,15 @@ def _parse_current(line: str):
 
 
 def _get_current():
-    lines = _read_lines(CURRENT_FILE)
+    lines = _get_sim_lines("current_position")
     if not lines:
         return None
     return _parse_current(lines[0])
 
 
-def _get_balls(path: str):
+def _get_balls_from_lines(lines: list[str]):
     out = []
-    for line in _read_lines(path):
+    for line in lines:
         item = _parse_xy_type(line)
         if item is None:
             continue
@@ -189,7 +206,7 @@ def _get_balls(path: str):
 
 def _get_obstacles():
     out = []
-    for line in _read_lines(OBSTACLES_FILE):
+    for line in _get_sim_lines("obstacle_robot"):
         item = _parse_xy_bearing(line)
         if item is None:
             continue
@@ -199,7 +216,7 @@ def _get_obstacles():
 
 
 def _get_dynamic_waypoint():
-    for line in _read_lines(DYNAMIC_FILE):
+    for line in _get_decisions_lines("dynamic_waypoints"):
         item = _extract_xy_from_line(line)
         if item is None:
             continue
@@ -209,7 +226,7 @@ def _get_dynamic_waypoint():
 
 
 def _get_stack_waypoint():
-    lines = _read_lines(STACK_FILE)
+    lines = _get_decision_lines("waypoints_stack")
     for line in reversed(lines):
         item = _extract_xy_from_line(line)
         if item is None:
@@ -221,7 +238,7 @@ def _get_stack_waypoint():
 
 def _get_robot_around():
     out = []
-    for line in _read_lines(ROBOT_AROUND_FILE):
+    for line in _get_decision_lines("robot_around"):
         item = _extract_xy_from_line(line)
         if item is None:
             continue
@@ -232,7 +249,7 @@ def _get_robot_around():
 
 def _get_radar_history():
     out = []
-    for line in _read_lines(RADAR_HISTORY_FILE):
+    for line in _get_decision_lines("radar_memory"):
         parts = [p.strip() for p in line.split(",")]
         if len(parts) < 5:
             continue
@@ -254,8 +271,10 @@ def _get_radar_history():
     return out
 
 
-def _read_numeric_matrix(path: str) -> list[list[float]]:
-    lines = _read_lines(path)
+
+
+def _read_numeric_matrix_from_text(text: str) -> list[list[float]]:
+    lines = _read_lines_from_text(text)
     if not lines:
         return []
 
@@ -309,40 +328,42 @@ def _matrix_to_world_tiles(matrix: list[list[float]]) -> list[dict[str, float]]:
 
 
 def _get_tile_seen_time():
-    matrix = _read_numeric_matrix(TILE_SEEN_TIME_FILE)
+    matrix = _read_numeric_matrix_from_text(_get_decision_text("tile_seen_time"))
     return _matrix_to_world_tiles(matrix)
 
 
 def _get_ball_tile_memory():
-    matrix = _read_numeric_matrix(BALL_TILE_MEMORY_FILE)
+    matrix = _read_numeric_matrix_from_text(_get_decision_text("ball_tile_memory"))
     return _matrix_to_world_tiles(matrix)
 
 
 def _get_unseen_tile_memory():
-    matrix = _read_numeric_matrix(UNSEEN_TILE_MEMORY_FILE)
+    matrix = _read_numeric_matrix_from_text(_get_decision_text("unseen_tile_memory"))
     return _matrix_to_world_tiles(matrix)
 
 
 def _get_unseen_regions():
-    matrix = _read_numeric_matrix(UNSEEN_REGIONS_FILE)
+    matrix = _read_numeric_matrix_from_text(_get_decision_text("unseen_regions"))
     return _matrix_to_world_tiles(matrix)
 
 
 def _get_text_status():
     return {
-        "waypoint_status": _read_text(WAYPOINT_STATUS_FILE),
-        "mode": _read_text(MODE_FILE),
-        "collision_avoiding": _read_text(COLLISION_AVOIDING_FILE),
-        "simulation_time": _read_first_line_number(TIME_FILE),
+        "waypoint_status": _get_sim_text("waypoint_status"),
+        "mode": _get_decision_text("mode"),
+        "collision_avoiding": _get_decision_text("collision_avoiding"),
+        "simulation_time": _read_first_line_number_from_text(_get_sim_text("time")),
         "random_seed": _read_text(RANDOM_SEED_FILE),
-        "collision_counter": _read_first_line_number(COLLISION_COUNTER_FILE),
+        "collision_counter": _read_first_line_number_from_text(
+            _get_decision_text("collision_counter")
+        ),
         "last_ball_taken": _read_last_line(BALL_TAKEN_HISTORY_FILE),
     }
 
 
 def _get_all_ball_path():
     path = []
-    for line in _read_lines(PLANNED_FILE):
+    for line in _get_decision_lines("planned_waypoints"):
         item = _extract_xy_from_line(line)
         if item is None:
             continue
@@ -383,6 +404,38 @@ def _get_simulation_data():
     return sim_data
 
 
+def _get_simulation_data_cached():
+    return SIM_DATA_CACHE if SIM_DATA_CACHE else {}
+
+
+def _set_simulation_cache(payload: dict):
+    global SIM_DATA_CACHE, SIM_DATA_SEQ
+    SIM_DATA_CACHE = payload
+    SIM_DATA_SEQ += 1
+
+
+def _get_decisions_data_cached():
+    return DECISIONS_CACHE if DECISIONS_CACHE else {}
+
+
+def _set_decisions_cache(payload: dict):
+    global DECISIONS_CACHE, DECISIONS_SEQ
+    DECISIONS_CACHE = payload
+    DECISIONS_SEQ += 1
+
+
+def _get_decision_making_data_cached():
+    if DECISION_MAKING_DATA_CACHE:
+        return DECISION_MAKING_DATA_CACHE
+    return {}
+
+
+def _set_decision_making_data_cache(payload: dict):
+    global DECISION_MAKING_DATA_CACHE, DECISION_MAKING_DATA_SEQ
+    DECISION_MAKING_DATA_CACHE = payload
+    DECISION_MAKING_DATA_SEQ += 1
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
@@ -420,14 +473,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_text("simulation_data.html not found", 404, "text/plain")
             return
 
+        if path == "/decisions":
+            try:
+                with open(DECISIONS_FILE, "r") as f:
+                    self._send_text(f.read(), 200, "text/html")
+            except Exception:
+                self._send_text("decisions.html not found", 404, "text/plain")
+            return
+
+        if path == "/decision_making_data":
+            try:
+                with open(DECISION_MAKING_DATA_FILE, "r") as f:
+                    self._send_text(f.read(), 200, "text/html")
+            except Exception:
+                self._send_text("decision_making_data.html not found", 404, "text/plain")
+            return
+
         if path == "/data/current":
             self._send_json({"current": _get_current()})
             return
         if path == "/data/balls":
-            self._send_json({"balls": _get_balls(BALLS_FILE)})
+            self._send_json({"balls": _get_balls_from_lines(_get_sim_lines("ball_position"))})
             return
         if path == "/data/visible":
-            self._send_json({"visible": _get_balls(VISIBLE_FILE)})
+            self._send_json({"visible": _get_balls_from_lines(_get_sim_lines("visible_balls"))})
             return
         if path == "/data/obstacles":
             self._send_json({"obstacles": _get_obstacles()})
@@ -459,11 +528,136 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/data/all-ball-path":
             self._send_json(_get_all_ball_path())
             return
-        if path == "/data/simulation-data":
-            self._send_json(_get_simulation_data())
+        if path == "/data/simulation_data":
+            self._send_json(_get_simulation_data_cached())
+            return
+        if path == "/data/decisions":
+            self._send_json(_get_decisions_data_cached())
+            return
+        if path == "/data/decision_making_data":
+            self._send_json(_get_decision_making_data_cached())
+            return
+        if path == "/data/simulation-stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            last_seq = -1
+            last_payload_text = ""
+            while True:
+                try:
+                    if SIM_DATA_CACHE:
+                        seq = SIM_DATA_SEQ
+                        if seq != last_seq:
+                            payload_text = json.dumps(SIM_DATA_CACHE)
+                            self.wfile.write(f"data: {payload_text}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                            last_seq = seq
+                    time.sleep(0.1)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                except Exception:
+                    break
+            return
+
+        if path == "/data/decisions-stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            last_seq = -1
+            last_payload_text = ""
+            while True:
+                try:
+                    if DECISIONS_CACHE:
+                        seq = DECISIONS_SEQ
+                        if seq != last_seq:
+                            payload_text = json.dumps(DECISIONS_CACHE)
+                            self.wfile.write(f"data: {payload_text}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                            last_seq = seq
+                    else:
+                        payload = _get_decisions_data()
+                        payload_text = json.dumps(payload)
+                        if payload_text != last_payload_text:
+                            self.wfile.write(f"data: {payload_text}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                            last_payload_text = payload_text
+                    time.sleep(0.1)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                except Exception:
+                    break
+            return
+
+        if path == "/data/decision_making_data-stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            last_seq = -1
+            last_payload_text = ""
+            while True:
+                try:
+                    if DECISION_MAKING_DATA_CACHE:
+                        seq = DECISION_MAKING_DATA_SEQ
+                        if seq != last_seq:
+                            payload_text = json.dumps(DECISION_MAKING_DATA_CACHE)
+                            self.wfile.write(f"data: {payload_text}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                            last_seq = seq
+                    else:
+                        payload = _get_decision_making_data_cached()
+                        payload_text = json.dumps(payload)
+                        if payload_text != last_payload_text:
+                            self.wfile.write(f"data: {payload_text}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                            last_payload_text = payload_text
+                    time.sleep(0.1)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                except Exception:
+                    break
             return
 
         self._send_text("not found", 404, "text/plain")
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path not in ("/data/simulation_data", "/data/decisions", "/data/decision_making_data"):
+            self._send_text("not found", 404, "text/plain")
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except Exception:
+            length = 0
+        if length <= 0:
+            self._send_text("empty payload", 400, "text/plain")
+            return
+
+        try:
+            raw = self.rfile.read(length)
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be object")
+        except Exception:
+            self._send_text("invalid json", 400, "text/plain")
+            return
+
+        if path == "/data/decisions":
+            _set_decisions_cache(payload)
+        elif path == "/data/decision_making_data":
+            _set_decision_making_data_cache(payload)
+        else:
+            _set_simulation_cache(payload)
+        self._send_text("ok", 200, "text/plain")
 
     def log_message(self, format, *args):
         return
@@ -471,9 +665,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get("PORT", "5001"))
-    HTTPServer.allow_reuse_address = True
+    ThreadingHTTPServer.allow_reuse_address = True
     try:
-        server = HTTPServer(("0.0.0.0", port), Handler)
+        server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     except OSError as e:
         if getattr(e, "errno", None) == 48:
             print(f"Field viewer already running on http://localhost:{port}")

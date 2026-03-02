@@ -7,7 +7,7 @@ centralWidgetVisible: 1
 orthographicViewHeight: 1
 textFiles: -1
 consoles: Console:All:All
-renderingDevicePerspectives: MY_ROBOT:front_camera;1;0.178646;0;0
+renderingDevicePerspectives: MY_ROBOT:front_camera;1;0.242188;0;0
 renderingDevicePerspectives: obstacle_robot_1:front_camera;0;0.178646;0;0
 renderingDevicePerspectives: obstacle_robot_2:front_camera;0;0.150596;0.156103;0
 renderingDevicePerspectives: obstacle_robot_3:front_camera;0;0.178646;0;0

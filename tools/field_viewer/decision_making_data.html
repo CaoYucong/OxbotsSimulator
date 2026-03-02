@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Simulation Data</title>
+    <title>Decision Making Data</title>
     <style>
       * {
         box-sizing: border-box;
@@ -29,7 +29,7 @@
     <script>
       const pre = document.getElementById("json");
 
-      const source = new EventSource("/data/simulation-stream");
+      const source = new EventSource("/data/decision_making_data-stream");
       source.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);

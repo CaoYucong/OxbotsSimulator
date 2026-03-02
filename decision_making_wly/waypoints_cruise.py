@@ -18,25 +18,27 @@ Add new modes by adding a function and registering it in _MODE_HANDLERS.
 from __future__ import annotations
 
 import argparse
+import json
+import io
 import os
 import random
 import time
 import sys
 import math
 import re
+import urllib.request
 from typing import Optional
-import math
 
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "controllers", "supervisor_controller", "real_time_data"))
+SUPERVISOR_DIR = os.path.dirname(BASE_DIR)
+HTML_PORT_FILE = os.path.join(SUPERVISOR_DIR, "html_port.txt")
 WAYPOINT_STATUS_FILE = os.path.join(BASE_DIR, "waypoint_status.txt")
-DYNAMIC_WAYPOINTS_FILE = os.path.join(BASE_DIR, "dynamic_waypoints.txt")
 BALL_POS_FILE = os.path.join(BASE_DIR, "ball_position.txt")
 CURRENT_POSITION_FILE = os.path.join(BASE_DIR, "current_position.txt")
 OBSTACLE_ROBOT_FILE = os.path.join(BASE_DIR, "obstacle_robot.txt")
 TIME_FILE = os.path.join(BASE_DIR, "time.txt")
 SPEED_FILE = os.path.join(BASE_DIR, "speed.txt")
-VISIBLE_BALLS_FILE = os.path.join(BASE_DIR, "visible_balls.txt")
 
 PLANNED_WAYPOINTS_FILE = os.path.join(os.path.dirname(__file__), "planned_waypoints.txt")
 
@@ -48,6 +50,44 @@ COLLISION_STATUS_FILE = os.path.join(os.path.dirname(__file__), "real_time_data"
 DYNAMIC_WAYPOINTS_TYPE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "dynamic_waypoints_type.txt")
 ROBOT_AROUND_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "robot_around.txt")
 LAST_BEST_VECTOR_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "last_best_vector.txt")
+
+def _load_html_port(path, default_port=5001):
+    try:
+        with open(path, "r") as f:
+            raw = f.read().strip()
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return port
+    except Exception:
+        pass
+    return default_port
+
+FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
+SIM_DATA_URL = f"http://localhost:{FIELD_VIEWER_PORT}/simulation_data"
+SIM_DATA_URL_FALLBACK = f"http://localhost:{FIELD_VIEWER_PORT}/data/simulation_data"
+SIM_DATA_TIMEOUT = 0.2
+SIM_DATA_CACHE = {}
+DECISIONS_URL = f"http://localhost:{FIELD_VIEWER_PORT}/decisions"
+DECISIONS_URL_FALLBACK = f"http://localhost:{FIELD_VIEWER_PORT}/data/decisions"
+DECISIONS_TIMEOUT = 0.2
+DECISIONS_CACHE = {}
+DECISIONS_LOCAL_CACHE = {
+    "dynamic_waypoints": "",
+    "speed": "",
+}
+DECISION_MAKING_DATA_URL = f"http://localhost:{FIELD_VIEWER_PORT}/decision_making_data"
+DECISION_MAKING_DATA_URL_FALLBACK = f"http://localhost:{FIELD_VIEWER_PORT}/data/decision_making_data"
+DECISION_MAKING_DATA_TIMEOUT = 0.2
+DECISION_MAKING_DATA_CACHE = {}
+DECISION_MAKING_DATA_LOCAL_CACHE = {}
+WEB_ONLY_FILES = {
+    WAYPOINT_STATUS_FILE,
+    BALL_POS_FILE,
+    CURRENT_POSITION_FILE,
+    OBSTACLE_ROBOT_FILE,
+    TIME_FILE,
+    VISIBLE_BALLS_FILE,
+}
 
 # Set the default mode here for convenience. Edit this file and set
 # `DEFAULT_MODE` to the mode you want the script to use when no CLI arg
@@ -71,24 +111,188 @@ MIN_SAMPLES_FOR_KF = 2
 MAX_REASONABLE_DISTANCE = 10.0  # m, values exceeding this are considered anomalous (tunable)
 
 
-def _read_status(path: str) -> Optional[str]:
+def _parse_sim_data_from_html(text: str) -> dict:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end < 0 or end <= start:
+        return {}
     try:
-        with open(path, "r") as f:
-            return f.read().strip()
+        return json.loads(text[start:end + 1])
     except Exception:
+        return {}
+
+
+def _refresh_sim_data() -> None:
+    global SIM_DATA_CACHE
+    for url in (SIM_DATA_URL_FALLBACK, SIM_DATA_URL):
+        try:
+            with urllib.request.urlopen(url, timeout=SIM_DATA_TIMEOUT) as res:
+                raw = res.read().decode("utf-8", errors="ignore")
+            if url.endswith("/simulation_data"):
+                data = _parse_sim_data_from_html(raw)
+            else:
+                data = json.loads(raw)
+            if isinstance(data, dict):
+                if url.endswith("/simulation_data") and not data:
+                    continue
+                SIM_DATA_CACHE = data
+                return
+        except Exception:
+            continue
+
+
+def _get_sim_value(key: str):
+    if not SIM_DATA_CACHE:
         return None
+    return SIM_DATA_CACHE.get(key)
+
+
+def _refresh_decisions_data() -> None:
+    global DECISIONS_CACHE
+    for url in (DECISIONS_URL_FALLBACK, DECISIONS_URL):
+        try:
+            with urllib.request.urlopen(url, timeout=DECISIONS_TIMEOUT) as res:
+                raw = res.read().decode("utf-8", errors="ignore")
+            if url.endswith("/decisions"):
+                data = _parse_sim_data_from_html(raw)
+            else:
+                data = json.loads(raw)
+            if isinstance(data, dict):
+                if url.endswith("/decisions") and not data:
+                    continue
+                DECISIONS_CACHE = data
+                return
+        except Exception:
+            continue
+
+
+def _get_decision_value(key: str):
+    if not DECISIONS_CACHE:
+        return None
+    return DECISIONS_CACHE.get(key)
+
+
+def _require_decision_value(key: str, source_path: str):
+    value = _get_decision_value(key)
+    if value is None:
+        _refresh_decisions_data()
+        value = _get_decision_value(key)
+    if value is None:
+        raise RuntimeError(
+            f"Missing decisions data for '{key}' (required for {source_path})."
+        )
+    return value
+
+
+def _post_decisions_data(payload: dict) -> bool:
+    global DECISIONS_CACHE
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            DECISIONS_URL_FALLBACK,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+        )
+        with urllib.request.urlopen(req, timeout=0.3) as res:
+            res.read()
+        DECISIONS_CACHE = payload
+        return True
+    except Exception:
+        return False
+
+
+def _refresh_decision_making_data() -> bool:
+    global DECISION_MAKING_DATA_CACHE
+    try:
+        with urllib.request.urlopen(
+            DECISION_MAKING_DATA_URL_FALLBACK,
+            timeout=DECISION_MAKING_DATA_TIMEOUT,
+        ) as res:
+            data = json.loads(res.read().decode("utf-8"))
+        if isinstance(data, dict):
+            DECISION_MAKING_DATA_CACHE = data
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _get_decision_making_value(key: str):
+    if DECISION_MAKING_DATA_CACHE:
+        return DECISION_MAKING_DATA_CACHE.get(key)
+    _refresh_decision_making_data()
+    return DECISION_MAKING_DATA_CACHE.get(key)
+
+
+def _post_decision_making_data(payload: dict) -> bool:
+    global DECISION_MAKING_DATA_CACHE
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            DECISION_MAKING_DATA_URL_FALLBACK,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+        )
+        with urllib.request.urlopen(req, timeout=0.3) as res:
+            res.read()
+        DECISION_MAKING_DATA_CACHE = payload
+        return True
+    except Exception:
+        return False
+
+
+def _update_decision_making_local(key: str, value: str) -> bool:
+    DECISION_MAKING_DATA_LOCAL_CACHE[key] = value
+    return _post_decision_making_data(dict(DECISION_MAKING_DATA_LOCAL_CACHE))
+
+
+def _decision_key(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0].lower()
+
+
+def _read_decision_text(path: str) -> str:
+    key = _decision_key(path)
+    value = _get_decision_making_value(key)
+    return "" if value is None else str(value)
+
+
+def _write_decision_text(path: str, content: str) -> bool:
+    key = _decision_key(path)
+    return _update_decision_making_local(key, content)
+
+
+def _update_decisions_local(key: str, value: str) -> bool:
+    DECISIONS_LOCAL_CACHE[key] = value
+    return _post_decisions_data(dict(DECISIONS_LOCAL_CACHE))
+
+
+def _require_sim_value(key: str, source_path: str):
+    value = _get_sim_value(key)
+    if value is None:
+        _refresh_sim_data()
+        value = _get_sim_value(key)
+    if value is None:
+        raise RuntimeError(
+            f"Missing web sim data for '{key}' (required for {source_path})."
+        )
+    return value
+
+
+def _read_status(path: str) -> Optional[str]:
+    base = os.path.splitext(os.path.basename(path))[0].lower()
+    if path in WEB_ONLY_FILES:
+        return str(_require_sim_value(base, path)).strip()
+    cached = _get_sim_value(base)
+    if cached is not None:
+        return str(cached).strip()
+    text = _read_decision_text(path).strip()
+    return text if text else None
 
 
 def _atomic_write(path: str, content: str) -> bool:
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            f.write(content)
-        os.replace(tmp, path)
-        return True
-    except Exception as e:
-        # print(f"[waypoints_cruise] write failed: {e}", file=sys.stderr)
-        return False
+    return _write_decision_text(path, content)
 
 
 def _stack_current_waypoint(stack_file: str = WAYPOINTS_STACK_FILE,
@@ -101,11 +305,12 @@ def _stack_current_waypoint(stack_file: str = WAYPOINTS_STACK_FILE,
     """
     if _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE) != "task":
         return
-    try:
-        with open(current_file, "r") as f:
-            current = f.read().strip()
-    except Exception:
-        return
+    if current_file == DYNAMIC_WAYPOINTS_FILE:
+        current = str(_require_decision_value("dynamic_waypoints", current_file)).strip()
+    else:
+        current = _read_decision_text(current_file).strip()
+        if not current:
+            return
 
     if not current:
         return
@@ -124,34 +329,35 @@ def _write_collision_status(active: bool) -> None:
 
 def _read_ball_positions(path: str):
     """Return list of (x,y,typ) from ball_position.txt. Ignores invalid lines."""
+    cached = _require_sim_value("ball_position", path)
+    return _parse_ball_lines(str(cached))
+
+
+def _parse_ball_lines(text: str):
     out = []
-    try:
-        with open(path, "r") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                # strip parentheses
-                if line.startswith("(") and line.endswith(")"):
-                    line = line[1:-1]
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 2:
-                    continue
-                try:
-                    x = float(parts[0])
-                    y = float(parts[1])
-                except Exception:
-                    continue
-                typ = parts[2] if len(parts) >= 3 else "ping"
-                out.append((x, y, typ))
-    except Exception:
-        pass
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("(") and line.endswith(")"):
+            line = line[1:-1]
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            x = float(parts[0])
+            y = float(parts[1])
+        except Exception:
+            continue
+        typ = parts[2] if len(parts) >= 3 else "ping"
+        out.append((x, y, typ))
     return out
 
 
 def _read_visible_ball_positions(path: str):
     """Return list of (x,y,typ) from visible_balls.txt. Ignores invalid lines."""
-    return _read_ball_positions(path)
+    cached = _require_sim_value("visible_balls", path)
+    return _parse_ball_lines(str(cached))
 
 
 def _read_current_position(path: str):
@@ -160,79 +366,74 @@ def _read_current_position(path: str):
     Returns tuple of (x, y, bearing_deg) if bearing is present,
     or (x, y, None) if only coordinates are available.
     """
+    cached = _require_sim_value("current_position", path)
+    raw = str(cached).strip()
+    if not raw:
+        return None
+    line = raw
+    if line.startswith("(") and line.endswith(")"):
+        line = line[1:-1]
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) < 2:
+        return None
     try:
-        with open(path, "r") as f:
-            raw = f.read().strip()
-            if not raw:
-                return None
-            line = raw
-            if line.startswith("(") and line.endswith(")"):
-                line = line[1:-1]
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 2:
-                return None
-            x = float(parts[0])
-            y = float(parts[1])
-            bearing = float(parts[2]) if len(parts) >= 3 else None
-            return (x, y, bearing)
+        x = float(parts[0])
+        y = float(parts[1])
+        bearing = float(parts[2]) if len(parts) >= 3 else None
+        return (x, y, bearing)
     except Exception:
         return None
 
 
 def _read_obstacle_positions(path: str):
     """Return list of (x, y, bearing_deg_or_none) from obstacle_robot.txt. Ignores invalid lines."""
+    cached = _require_sim_value("obstacle_robot", path)
+    return _parse_obstacle_lines(str(cached))
+
+
+def _parse_obstacle_lines(text: str):
     out = []
-    try:
-        with open(path, "r") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                if line.startswith("(") and line.endswith(")"):
-                    line = line[1:-1]
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 2:
-                    continue
-                try:
-                    x = float(parts[0])
-                    y = float(parts[1])
-                    bearing = float(parts[2]) if len(parts) >= 3 else None
-                    out.append((x, y, bearing))
-                except Exception:
-                    continue
-    except Exception:
-        pass
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("(") and line.endswith(")"):
+            line = line[1:-1]
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            x = float(parts[0])
+            y = float(parts[1])
+            bearing = float(parts[2]) if len(parts) >= 3 else None
+            out.append((x, y, bearing))
+        except Exception:
+            continue
     return out
 
 
 def _read_time_seconds(path: str) -> Optional[float]:
     """Return current simulation time in seconds from time.txt, or None."""
+    cached = _require_sim_value("time", path)
     try:
-        with open(path, "r") as f:
-            raw = f.read().strip()
-            if not raw:
-                return None
-            return float(raw)
+        return float(str(cached).strip())
     except Exception:
         return None
 
 
 def _read_state_pair(path: str) -> Optional[tuple[float, float]]:
-    try:
-        with open(path, "r") as f:
-            raw = f.read().strip()
-            if not raw:
-                raise FileNotFoundError
-            line = raw
-            if line.startswith("(") and line.endswith(")"):
-                line = line[1:-1]
-            nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
-            if len(nums) < 2:
-                return None
-            return (float(nums[0]), float(nums[1]))
-    except FileNotFoundError:
+    raw = _read_decision_text(path).strip()
+    if not raw:
         _atomic_write(path, "(0, 0)\n")
         return (0.0, 0.0)
+    line = raw
+    if line.startswith("(") and line.endswith(")"):
+        line = line[1:-1]
+    nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
+    if len(nums) < 2:
+        return None
+    try:
+        return (float(nums[0]), float(nums[1]))
     except Exception:
         return None
 
@@ -245,38 +446,39 @@ def _read_stack_waypoint(path: str) -> Optional[tuple[float, float, Optional[flo
     Line 2: timestamp (seconds) - ignored by this function
     """
     try:
-        with open(path, "r") as f:
-            lines = f.readlines()
+        if path == DYNAMIC_WAYPOINTS_FILE:
+            line = str(_require_decision_value("dynamic_waypoints", path)).strip()
+        else:
+            lines = _read_decision_text(path).splitlines()
             if not lines:
                 return None
             # Read first line only (waypoint data)
             line = lines[0].strip()
-            if not line:
-                return None
-            if line.startswith("(") and line.endswith(")"):
-                line = line[1:-1]
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 2:
-                return None
-            x = float(parts[0])
-            y = float(parts[1])
-            orientation = None
-            if len(parts) >= 3 and parts[2] and parts[2].lower() != "none":
-                orientation = float(parts[2])
-            return (x, y, orientation)
+        if not line:
+            return None
+        if line.startswith("(") and line.endswith(")"):
+            line = line[1:-1]
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            return None
+        x = float(parts[0])
+        y = float(parts[1])
+        orientation = None
+        if len(parts) >= 3 and parts[2] and parts[2].lower() != "none":
+            orientation = float(parts[2])
+        return (x, y, orientation)
     except Exception:
         return None
 
 
 def _read_stack_timestamp(path: str) -> Optional[float]:
     """Return timestamp from line 2 of waypoints_stack.txt, or None."""
-    try:
-        with open(path, "r") as f:
-            lines = f.readlines()
-        if len(lines) >= 2:
+    lines = _read_decision_text(path).splitlines()
+    if len(lines) >= 2:
+        try:
             return float(lines[1].strip())
-    except Exception:
-        return None
+        except Exception:
+            return None
     return None
 
 
@@ -402,23 +604,19 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
     if sim_time is not None:
         history_lines = []
         cutoff_time = sim_time - 2
-        try:
-            with open(RADAR_HISTORY_FILE, "r") as f:
-                for raw in f:
-                    line = raw.strip()
-                    if not line:
-                        continue
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) < 5:
-                        continue
-                    try:
-                        t = float(parts[0])
-                    except Exception:
-                        continue
-                    if cutoff_time <= t <= sim_time:
-                        history_lines.append(line)
-        except Exception:
-            pass
+        for raw in _read_decision_text(RADAR_HISTORY_FILE).splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 5:
+                continue
+            try:
+                t = float(parts[0])
+            except Exception:
+                continue
+            if cutoff_time <= t <= sim_time:
+                history_lines.append(line)
 
         record = (
             f"{sim_time:.3f},{memory_values['front']:.6f},{memory_values['right']:.6f},"
@@ -525,8 +723,11 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         #     destination_vector = (dynamic_wp[0] - cx, dynamic_wp[1] - cy)
 
 
-        dest_mag = math.hypot(destination_vector[0], destination_vector[1])
-        destination_vector = (destination_vector[0] / dest_mag, destination_vector[1] / dest_mag) if dest_mag > 0 else (0.0, 0.0)
+        if destination_vector is None:
+            destination_vector = (0.0, 0.0)
+        else:
+            dest_mag = math.hypot(destination_vector[0], destination_vector[1])
+            destination_vector = (destination_vector[0] / dest_mag, destination_vector[1] / dest_mag) if dest_mag > 0 else (0.0, 0.0)
 
         if bearing is not None:
             theta = math.radians(bearing)
@@ -670,44 +871,39 @@ def _read_planned_waypoints(path: str):
     """Return list of (x, y, angle_or_none) from planned_waypoints.txt."""
     namespace = {"North": math.pi / 2, "East": 0.0, "South": -math.pi / 2, "West": math.pi, "None": None}
     out = []
-    try:
-        with open(path, "r") as f:
-            for raw in f:
-                line = raw.split("#", 1)[0].strip()
-                if not line:
-                    continue
-                if line.endswith(","):
-                    line = line[:-1].strip()
-                try:
-                    wp = eval(line, {"__builtins__": None}, namespace)
-                except Exception:
-                    nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
-                    if len(nums) >= 2:
-                        x = float(nums[0])
-                        y = float(nums[1])
-                        ang = float(nums[2]) if len(nums) >= 3 else None
-                        wp = (x, y, ang)
-                    else:
-                        continue
-                if isinstance(wp, tuple) and len(wp) >= 2:
-                    if len(wp) == 2:
-                        out.append((float(wp[0]), float(wp[1]), None))
-                    else:
-                        ang = wp[2]
-                        ang = float(ang) if ang is not None else None
-                        out.append((float(wp[0]), float(wp[1]), ang))
-    except Exception:
-        return []
+    for raw in _read_decision_text(path).splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.endswith(","):
+            line = line[:-1].strip()
+        try:
+            wp = eval(line, {"__builtins__": None}, namespace)
+        except Exception:
+            nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", line)
+            if len(nums) >= 2:
+                x = float(nums[0])
+                y = float(nums[1])
+                ang = float(nums[2]) if len(nums) >= 3 else None
+                wp = (x, y, ang)
+            else:
+                continue
+        if isinstance(wp, tuple) and len(wp) >= 2:
+            if len(wp) == 2:
+                out.append((float(wp[0]), float(wp[1]), None))
+            else:
+                ang = wp[2]
+                ang = float(ang) if ang is not None else None
+                out.append((float(wp[0]), float(wp[1]), ang))
     return out
 
 
 def _read_planned_index(path: str) -> Optional[int]:
+    raw = _read_decision_text(path).strip()
+    if not raw:
+        return None
     try:
-        with open(path, "r") as f:
-            raw = f.read().strip()
-            if not raw:
-                return None
-            return int(raw)
+        return int(raw)
     except Exception:
         return None
 
@@ -760,7 +956,7 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task") -> b
     # if critical_alpha is not None:
     #     pass
     
-    return _atomic_write(DYNAMIC_WAYPOINTS_FILE, coord_line)
+    return _update_decisions_local("dynamic_waypoints", coord_line.strip())
 
 
 def stop(waypoint_type: str = "task") -> bool:
@@ -775,17 +971,14 @@ def stop(waypoint_type: str = "task") -> bool:
 
 
 def set_velocity(velocity: float) -> bool:
-    """Set cruise speed (m/s) by writing to speed.txt.
-
-    Returns True on success, False on failure.
-    """
+    """Set cruise speed (m/s) via decisions web data."""
     try:
         speed_value = float(velocity)
     except Exception:
         return False
     if speed_value <= 0:
         return False
-    return _atomic_write(SPEED_FILE, f"{speed_value:.6f}\n")
+    return _update_decisions_local("speed", f"{speed_value:.6f}")
 
 
 def mode_random(status_file: str = WAYPOINT_STATUS_FILE, waypoint_file: str = DYNAMIC_WAYPOINTS_FILE) -> int:
@@ -1135,58 +1328,43 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
         return rel
 
     def _read_json(path):
+        raw = _read_decision_text(path).strip()
+        if not raw:
+            return None
         try:
-            with open(path, "r") as f:
-                return json.load(f)
+            return json.loads(raw)
         except Exception:
             return None
 
     def _write_json(path, obj):
         try:
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(obj, f)
-            os.replace(tmp, path)
-            return True
+            return _atomic_write(path, json.dumps(obj) + "\n")
         except Exception:
             return False
 
     def _append_visit(path, x, y):
         try:
-            existing = ""
-            try:
-                with open(path, "r") as f:
-                    existing = f.read()
-            except Exception:
-                existing = ""
+            existing = _read_decision_text(path)
             new = existing + f"({x:.6f}, {y:.6f})\n"
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(new)
-            os.replace(tmp, path)
-            return True
+            return _atomic_write(path, new)
         except Exception:
             return False
 
     def _read_visits(path):
         out = []
-        try:
-            with open(path, "r") as f:
-                for raw in f:
-                    line = raw.strip()
-                    if not line:
-                        continue
-                    if line.startswith("(") and line.endswith(")"):
-                        line = line[1:-1]
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) >= 2:
-                        try:
-                            vx = float(parts[0]); vy = float(parts[1])
-                            out.append((vx, vy))
-                        except Exception:
-                            continue
-        except Exception:
-            pass
+        for raw in _read_decision_text(path).splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("(") and line.endswith(")"):
+                line = line[1:-1]
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2:
+                try:
+                    vx = float(parts[0]); vy = float(parts[1])
+                    out.append((vx, vy))
+                except Exception:
+                    continue
         return out
 
     def _near_wall(x, y, margin=0.88):
@@ -1310,8 +1488,7 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
 
     counts = _read_json(SWEEP_COUNTS_FILE) or [0] * NUM_SECTORS
     try:
-        with open(ROTATE_IDX_FILE, "r") as f:
-            rotate_idx = int(f.read().strip() or "0")
+        rotate_idx = int(_read_decision_text(ROTATE_IDX_FILE).strip() or "0")
     except Exception:
         rotate_idx = 0
 
@@ -1389,13 +1566,7 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
         _write_json(SWEEP_COUNTS_FILE, counts)
 
         rotate_idx = (rotate_idx + 1) % NUM_STEPS
-        try:
-            tmp = ROTATE_IDX_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(str(rotate_idx) + "\n")
-            os.replace(tmp, ROTATE_IDX_FILE)
-        except Exception:
-            pass
+        _atomic_write(ROTATE_IDX_FILE, f"{rotate_idx}\n")
 
         elapsed = sim_time - float(state.get("scan_started_time", sim_time))
         if rotate_idx == 0 or elapsed >= max(0.5, NUM_STEPS * 0.03):
@@ -1443,13 +1614,7 @@ def mode_developing(status_file: str = WAYPOINT_STATUS_FILE,
             _atomic_write(STATE_FILE, json.dumps(state) + "\n")
 
             _write_json(SWEEP_COUNTS_FILE, [0] * NUM_SECTORS)
-            try:
-                tmp = ROTATE_IDX_FILE + ".tmp"
-                with open(tmp, "w") as f:
-                    f.write("0\n")
-                os.replace(tmp, ROTATE_IDX_FILE)
-            except Exception:
-                pass
+            _atomic_write(ROTATE_IDX_FILE, "0\n")
 
             _append_visit(VISITED_FILE, tx, ty)
             goto(tx, ty, math.degrees(math.atan2(ty - cy, tx - cx)))
@@ -1570,6 +1735,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    _refresh_sim_data()
     args = parse_args()
     # precedence: CLI arg -> MODE env var -> DEFAULT_MODE
     mode = args.mode or os.environ.get("MODE") or DEFAULT_MODE

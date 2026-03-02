@@ -1,1 +1,1 @@
-{"phase": "move_to_unvisited", "scan_started_time": 0.256, "chosen_sector": 3, "collect_started_time": 1.276, "rotation_unseen_deg": 0.0, "sector_center_angle": 15.0}
+{"phase": "collect_loop", "scan_started_time": 0.256, "chosen_sector": 3, "collect_started_time": 1.276, "rotation_unseen_deg": 0.0, "sector_center_angle": 15.0}

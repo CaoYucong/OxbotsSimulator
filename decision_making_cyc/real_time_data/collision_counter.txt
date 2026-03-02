@@ -1,6 +1,0 @@
-count=5
-time=4.516
-time=4.636
-time=4.756
-time=7.036
-time=7.816
