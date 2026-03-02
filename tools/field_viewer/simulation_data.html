@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Simulation Data</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        background: #ffffff;
+        color: #111111;
+      }
+      pre {
+        margin: 0;
+        padding: 16px;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <pre id="json">Loading...</pre>
+    <script>
+      const pre = document.getElementById("json");
+
+      async function fetchData() {
+        try {
+          const res = await fetch("/data/simulation-data", { cache: "no-store" });
+          if (!res.ok) return;
+          const payload = await res.json();
+          pre.textContent = JSON.stringify(payload, null, 2);
+        } catch (e) {
+          pre.textContent = "Failed to load data.";
+        }
+      }
+
+      setInterval(fetchData, 300);
+      fetchData();
+    </script>
+  </body>
+</html>

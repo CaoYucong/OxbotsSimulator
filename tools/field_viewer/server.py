@@ -34,6 +34,7 @@ DECISION_MAKING_DIR = _resolve_decision_making_dir()
 DATA_DIR = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data")
 
 INDEX_FILE = os.path.join(ROOT_DIR, "index.html")
+SIM_DATA_FILE = os.path.join(ROOT_DIR, "simulation_data.html")
 CURRENT_FILE = os.path.join(DATA_DIR, "current_position.txt")
 BALLS_FILE = os.path.join(DATA_DIR, "ball_position.txt")
 VISIBLE_FILE = os.path.join(DATA_DIR, "visible_balls.txt")
@@ -55,6 +56,8 @@ MODE_FILE = os.path.join(DECISION_MAKING_DIR, "mode.txt")
 COLLISION_AVOIDING_FILE = os.path.join(DECISION_MAKING_DIR, "collision_avoiding.txt")
 COLLISION_COUNTER_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "collision_counter.txt")
 PLANNED_FILE = os.path.join(DECISION_MAKING_DIR, "real_time_data", "planned_waypoints.txt")
+
+SIM_DATA_DIR = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data")
 
 
 def _read_lines(path: str) -> list[str]:
@@ -348,6 +351,38 @@ def _get_all_ball_path():
     return {"enabled": len(path) > 0, "path": path}
 
 
+def _get_simulation_data():
+    blocked = {
+        ".ds_store",
+        "ball_position",
+        "ball_taken_history",
+        "obstacle_plan",
+        "obstacle_robot",
+        "sweep_active_quadrant",
+        "supervisor_controller_status",
+        "sweep_index_q3",
+        "waypoints_history",
+        "ball_taken_number"
+    }
+    sim_data = {}
+    try:
+        for name in sorted(os.listdir(SIM_DATA_DIR)):
+            full_path = os.path.join(SIM_DATA_DIR, name)
+            if not os.path.isfile(full_path):
+                continue
+            base = os.path.splitext(name)[0].lower()
+            if base in blocked:
+                continue
+            if base == "time":
+                value = _read_first_line_number(full_path)
+            else:
+                value = _read_text(full_path)
+            sim_data[base] = value
+    except Exception:
+        sim_data = {}
+    return sim_data
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
@@ -375,6 +410,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_text(f.read(), 200, "text/html")
             except Exception:
                 self._send_text("index.html not found", 404, "text/plain")
+            return
+
+        if path == "/simulation_data":
+            try:
+                with open(SIM_DATA_FILE, "r") as f:
+                    self._send_text(f.read(), 200, "text/html")
+            except Exception:
+                self._send_text("simulation_data.html not found", 404, "text/plain")
             return
 
         if path == "/data/current":
@@ -415,6 +458,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/data/all-ball-path":
             self._send_json(_get_all_ball_path())
+            return
+        if path == "/data/simulation-data":
+            self._send_json(_get_simulation_data())
             return
 
         self._send_text("not found", 404, "text/plain")
