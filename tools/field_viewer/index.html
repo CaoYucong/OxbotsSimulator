@@ -247,7 +247,7 @@
       const RADAR_WINDOW_SEC = 2.0;
       const RADAR_MIN = -0.1;
       const RADAR_MAX = 0.9;
-      const TILE_SIZE = 0.05;
+      const TILE_SIZE = 0.1;
       const TILE_HALF = TILE_SIZE / 2;
 
       function worldToCanvas(x, y) {
@@ -268,11 +268,12 @@
 
       function drawGridOverlay() {
         const size = canvas.width;
-        const step = size / 10;
+        const gridCount = Math.round(2 / TILE_SIZE);
+        const step = size / gridCount;
         ctx.save();
         ctx.strokeStyle = "rgba(0,0,0,0.10)";
         ctx.lineWidth = 1;
-        for (let i = 1; i < 10; i += 1) {
+        for (let i = 1; i < gridCount; i += 1) {
           const p = i * step;
           ctx.beginPath();
           ctx.moveTo(p, 0);
@@ -441,7 +442,7 @@
             continue;
           }
 
-          const [px, py] = worldToCanvas(t.x - TILE_HALF, t.y + TILE_HALF);
+          const [px, py] = worldToCanvas(t.x - TILE_HALF + 0.05, t.y + TILE_HALF - 0.05);
           const valueText = Math.abs(t.value - Math.round(t.value)) < 1e-9
             ? String(Math.round(t.value))
             : t.value.toFixed(2);

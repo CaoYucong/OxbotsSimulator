@@ -30,6 +30,7 @@ except ImportError:
 supervisor = Supervisor()
 TIME_STEP = int(supervisor.getBasicTimeStep())
 dt = TIME_STEP / 1000.0  # seconds
+FIELD_OF_VIEW_DEGREES = 120.0  # degrees, for camera visibility checks (also used by cruise script)
 
 # early constant needed by camera branch before full globals are defined
 # main robot name (also redefined later with full constant block)
@@ -982,7 +983,7 @@ def _write_supervisor_status(path, status):
         except Exception:
             pass
 
-def _write_visible_balls(path, viewfield_deg=60.0, visible_range_m=0.8):
+def _write_visible_balls(path, viewfield_deg=FIELD_OF_VIEW_DEGREES, visible_range_m=0.8):
     """Write visible balls within viewfield and range to file — overwrite atomically."""
     try:
         tmp = path + '.tmp'

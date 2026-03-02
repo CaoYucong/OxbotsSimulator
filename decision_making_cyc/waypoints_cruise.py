@@ -92,6 +92,7 @@ DEFAULT_LINEAR_VELOCITY = 0.3
 DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
 VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball (meters)
+FIELD_OF_VIEW_DEGREES = 120.0
 
 SEARCHING_SEQUENCE = [
     (0, 0, 0),
@@ -132,9 +133,9 @@ SEARCHING_SEQUENCE = [
     (-0.5, 0, -90),
 ]
 
-# Build 0.05m point grid over [-1, 1] x [-1, 1].
-# Top-left is (-0.975, 0.975), bottom-right is (0.975, -0.975).
-TILE_SIZE = 0.05
+# Build 0.1m point grid over [-1, 1] x [-1, 1].
+# Top-left is (-0.95, 0.95), bottom-right is (0.95, -0.95).
+TILE_SIZE = 0.1
 TILE_HALF = TILE_SIZE / 2.0
 GRID_COUNT = int(round(2.0 / TILE_SIZE))
 FIELD_TILES = [
@@ -736,7 +737,7 @@ def _read_stack_timestamp(path: str) -> Optional[float]:
 # Visibility checks in world/robot frames and line-of-sight occlusion.
 # =============================================================================
 def in_view(point,
-            FOV: float = 60.0,
+            FOV: float = FIELD_OF_VIEW_DEGREES,
             Range: float = 0.8,
             current_file: str = CURRENT_POSITION_FILE,
             obstacle_file: str = OBSTACLE_ROBOT_FILE) -> bool:
@@ -2007,7 +2008,7 @@ def _write_seen_tile_matrix(path: str, matrix: list[list[float]]) -> bool:
 
 
 def update_seen_tiles(seen_tile_file: str = SEEN_TILE_FILE,
-                      fov: float = 60.0,
+                      fov: float = FIELD_OF_VIEW_DEGREES,
                       view_range: float = 0.8) -> bool:
     """Update seen_tile.txt based on FIELD_TILES and current visibility.
 
@@ -2394,7 +2395,7 @@ def mode_improved_nearest_v1(status_file: str = WAYPOINT_STATUS_FILE,
     ok = goto(target_x, target_y, heading_deg)
     return 0 if ok else 1
 
-def tile_completely_seen(tx, ty, FOV=60.0, Range=RADAR_MAX_RANGE) -> bool:
+def tile_completely_seen(tx, ty, FOV=FIELD_OF_VIEW_DEGREES, Range=RADAR_MAX_RANGE) -> bool:
     """Check if tile center is completely seen by current radar."""
     corners = [
         (tx - TILE_HALF, ty - TILE_HALF),
@@ -3342,7 +3343,7 @@ def update_ball_memory_v3(memory_tile_file: str = BALL_MEMORY_FILE,
                 memory[r][c] = 0.0
 
         for r, c, tx, ty in flat_tiles:
-            if not tile_completely_seen(tx, ty, FOV=60.0, Range=RADAR_MAX_RANGE):
+            if not tile_completely_seen(tx, ty, FOV=FIELD_OF_VIEW_DEGREES, Range=RADAR_MAX_RANGE):
                 continue
 
             has_ball_in_tile = False
