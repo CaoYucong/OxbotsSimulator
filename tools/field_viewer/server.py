@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+from typing import Optional
 import os
 import re
 import time
@@ -34,6 +36,10 @@ DECISION_MAKING_DATA_SEQ = 0
 DECISION_MAKING_DEFAULTS = {
     "waypoints_stack": "",
 }
+
+FRONT_CAMERA_IMAGE = b""
+FRONT_CAMERA_MIME = "image/png"
+FRONT_CAMERA_UPDATED = 0.0
 
 
 def _read_text(path: str) -> str:
@@ -443,6 +449,15 @@ def _set_decision_making_data_cache(payload: dict):
     DECISION_MAKING_DATA_SEQ += 1
 
 
+def _set_front_camera_image(image_bytes: bytes, mime: Optional[str] = None):
+    global FRONT_CAMERA_IMAGE, FRONT_CAMERA_MIME, FRONT_CAMERA_UPDATED
+    if image_bytes:
+        FRONT_CAMERA_IMAGE = image_bytes
+        if mime:
+            FRONT_CAMERA_MIME = mime
+        FRONT_CAMERA_UPDATED = time.time()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
@@ -455,6 +470,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_text(self, text: str, status=200, content_type="text/html"):
         body = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_bytes(self, body: bytes, status=200, content_type="application/octet-stream"):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
@@ -494,6 +517,42 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_text(f.read(), 200, "text/html")
             except Exception:
                 self._send_text("decision_making_data.html not found", 404, "text/plain")
+            return
+
+        if path == "/front_camera":
+            page = """<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>Front Camera</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #0f1115; color: #f3f4f6; margin: 0; }
+        .wrap { padding: 16px; }
+        img { max-width: 100%; height: auto; border: 1px solid #23262d; background: #151a21; }
+        .meta { font-size: 12px; color: #9ca3af; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <div class=\"wrap\">
+        <h2>Front Camera</h2>
+        <img id=\"cam\" alt=\"front camera\" />
+        <div class=\"meta\" id=\"meta\"></div>
+    </div>
+    <script>
+        const img = document.getElementById('cam');
+        const meta = document.getElementById('meta');
+        function refresh() {
+            const ts = Date.now();
+            img.src = `/data/front_camera?t=${ts}`;
+            meta.textContent = `Updated ${new Date(ts).toLocaleTimeString()}`;
+        }
+        refresh();
+        setInterval(refresh, 200);
+    </script>
+</body>
+</html>"""
+            self._send_text(page, 200, "text/html")
             return
 
         if path == "/data/current":
@@ -543,6 +602,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/data/decision_making_data":
             self._send_json(_get_decision_making_data_cached())
+            return
+        if path == "/data/front_camera":
+            if FRONT_CAMERA_IMAGE:
+                self._send_bytes(FRONT_CAMERA_IMAGE, 200, FRONT_CAMERA_MIME)
+            else:
+                self._send_text("no image", 404, "text/plain")
             return
         if path == "/data/simulation-stream":
             self.send_response(200)
@@ -637,7 +702,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ("/data/simulation_data", "/data/decisions", "/data/decision_making_data"):
+        if path not in (
+            "/data/simulation_data",
+            "/data/decisions",
+            "/data/decision_making_data",
+            "/front_camera",
+        ):
             self._send_text("not found", 404, "text/plain")
             return
 
@@ -651,6 +721,43 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             raw = self.rfile.read(length)
+        except Exception:
+            self._send_text("invalid payload", 400, "text/plain")
+            return
+
+        if path == "/front_camera":
+            content_type = self.headers.get("Content-Type", "application/octet-stream")
+            if content_type.startswith("application/json"):
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                    if not isinstance(payload, dict):
+                        raise ValueError("payload must be object")
+                    data_uri = payload.get("image")
+                    image_base64 = payload.get("image_base64")
+                    mime = payload.get("mime")
+                    if isinstance(data_uri, str) and data_uri.startswith("data:"):
+                        header, b64 = data_uri.split(",", 1)
+                        mime = header.split(";", 1)[0].split(":", 1)[1]
+                        image_bytes = base64.b64decode(b64)
+                        _set_front_camera_image(image_bytes, mime)
+                    elif isinstance(image_base64, str):
+                        image_bytes = base64.b64decode(image_base64)
+                        _set_front_camera_image(image_bytes, mime)
+                    else:
+                        self._send_text("invalid image payload", 400, "text/plain")
+                        return
+                except Exception:
+                    self._send_text("invalid json", 400, "text/plain")
+                    return
+            else:
+                if not raw:
+                    self._send_text("empty payload", 400, "text/plain")
+                    return
+                _set_front_camera_image(raw, content_type)
+            self._send_text("ok", 200, "text/plain")
+            return
+
+        try:
             payload = json.loads(raw.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("payload must be object")

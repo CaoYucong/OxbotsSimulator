@@ -23,6 +23,21 @@ except ImportError:
     cv2 = None
 
 
+def _post_binary(url, data, content_type):
+    try:
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method="POST",
+            headers={"Content-Type": content_type, "Content-Length": str(len(data))},
+        )
+        with urllib.request.urlopen(req, timeout=0.3) as res:
+            res.read()
+        return True
+    except Exception:
+        return False
+
+
 # =============================================================================
 # RUNTIME INITIALIZATION
 # Instantiate controller for whichever node this script is attached to.
@@ -37,7 +52,7 @@ FIELD_OF_VIEW_DEGREES = 120.0  # degrees, for camera visibility checks (also use
 # early constant needed by camera branch before full globals are defined
 # main robot name (also redefined later with full constant block)
 MAIN_ROBOT_NAME = "MY_ROBOT"
-CAMERA_ON = True
+CAMERA_ON = False
 
 if CAMERA_ON:
     # determine whether we are running on the supervisor node or a robot
@@ -59,6 +74,49 @@ if CAMERA_ON:
                 print(f"[Camera] front_camera device not found on {node_name}")
         except Exception as e:
             print(f"[Camera] error enabling camera: {e}")
+        if camera is None:
+            sys.exit(0)
+
+        port = 5001
+        try:
+            html_port_path = os.path.join(os.path.dirname(__file__), "html_port.txt")
+            with open(html_port_path, "r") as f:
+                raw = f.read().strip()
+            candidate = int(raw)
+            if 1 <= candidate <= 65535:
+                port = candidate
+        except Exception:
+            pass
+
+        front_camera_endpoint = f"http://localhost:{port}/front_camera"
+        tmp_dir = os.path.join(os.path.dirname(__file__), "real_time_data")
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_image_path = os.path.join(tmp_dir, "front_camera.png")
+
+        frame_counter = 0
+        post_interval_frames = 1
+        while robot.step(TIME_STEP) != -1:
+            frame_counter += 1
+            if frame_counter % post_interval_frames != 0:
+                continue
+            try:
+                camera.saveImage(tmp_image_path, 90)
+                with open(tmp_image_path, "rb") as f:
+                    img_bytes = f.read()
+                _post_binary(front_camera_endpoint, img_bytes, "image/png")
+                continue
+            except Exception:
+                pass
+            try:
+                if cv2 is not None:
+                    img = np.array(camera.getImageArray(), dtype=np.uint8)
+                    if img is not None and img.size > 0:
+                        bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+                        ok, encoded = cv2.imencode(".png", bgr)
+                        if ok:
+                            _post_binary(front_camera_endpoint, encoded.tobytes(), "image/png")
+            except Exception:
+                pass
 
         sys.exit(0)
 
@@ -231,6 +289,10 @@ def _start_field_viewer():
             stderr=subprocess.DEVNULL,
         )
         print(f"可视化已启动 / Field viewer running: http://localhost:{env['PORT']}")
+        print(f"Front Camera: http://localhost:{env['PORT']}/front_camera")
+        print(f"For Simulation Data: http://localhost:{env['PORT']}/simulation_data")
+        print(f"For Decisions Data: http://localhost:{env['PORT']}/decisions")
+        print(f"For Decision Making Data: http://localhost:{env['PORT']}/decision_making_data")
     except Exception as e:
         print(f"可视化启动失败 / Failed to start field viewer: {e}")
 
@@ -743,6 +805,19 @@ def _append_to_history(path, waypoint, status, timestamp=None):
     # Always append to file
     with open(path, 'a') as f:
         f.write(record)
+    _trim_history_file(path, max_lines=2000)
+
+def _trim_history_file(path, max_lines=2000):
+    """Keep only the last max_lines in the history file (rolling)."""
+    try:
+        with open(path, 'r') as f:
+            lines = f.readlines()
+        if len(lines) <= max_lines:
+            return
+        with open(path, 'w') as f:
+            f.writelines(lines[-max_lines:])
+    except Exception:
+        pass
 
 def _load_waypoint_list_from_file(path):
     """Load multiple waypoints from a file (for obstacle robot cycling).
@@ -792,6 +867,7 @@ def _append_history_header(path):
     header = f"\n# Waypoint History - Started at {timestamp} - Random Seed {RANDOM_SEED}\n"
     with open(path, 'a') as f:
         f.write(header)
+    _trim_history_file(path, max_lines=2000)
 
 def _format_ball_positions():
     lines = []
