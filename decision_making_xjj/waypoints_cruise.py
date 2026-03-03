@@ -343,7 +343,11 @@ def _post_decision_making_data(payload: dict) -> bool:
 
 def _update_decision_making_local(key: str, value: str) -> bool:
     DECISION_MAKING_DATA_LOCAL_CACHE[key] = value
-    return _post_decision_making_data(dict(DECISION_MAKING_DATA_LOCAL_CACHE))
+    if not DECISION_MAKING_DATA_CACHE:
+        _refresh_decision_making_data()
+    payload = dict(DECISION_MAKING_DATA_CACHE) if DECISION_MAKING_DATA_CACHE else {}
+    payload.update(DECISION_MAKING_DATA_LOCAL_CACHE)
+    return _post_decision_making_data(payload)
 
 
 def _decision_key(path: str) -> str:
