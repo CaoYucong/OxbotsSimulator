@@ -101,7 +101,7 @@ DECISION_MAKING_DATA_CACHE = {}
 DECISIONS_CACHE = {}
 DECISIONS_LOCAL_CACHE = {
     "dynamic_waypoints": "",
-    "speed": "",
+    "speed": "0.300000",
 }
 DECISION_MAKING_DATA_LOCAL_CACHE = {}
 WEB_ONLY_FILES = {

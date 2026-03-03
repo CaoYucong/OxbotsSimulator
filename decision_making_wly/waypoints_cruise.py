@@ -34,7 +34,9 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "contro
 SUPERVISOR_DIR = os.path.dirname(BASE_DIR)
 HTML_PORT_FILE = os.path.join(SUPERVISOR_DIR, "html_port.txt")
 WAYPOINT_STATUS_FILE = os.path.join(BASE_DIR, "waypoint_status.txt")
+DYNAMIC_WAYPOINTS_FILE = os.path.join(BASE_DIR, "dynamic_waypoints.txt")
 BALL_POS_FILE = os.path.join(BASE_DIR, "ball_position.txt")
+VISIBLE_BALLS_FILE = os.path.join(BASE_DIR, "visible_balls.txt")
 CURRENT_POSITION_FILE = os.path.join(BASE_DIR, "current_position.txt")
 OBSTACLE_ROBOT_FILE = os.path.join(BASE_DIR, "obstacle_robot.txt")
 TIME_FILE = os.path.join(BASE_DIR, "time.txt")
@@ -60,6 +62,7 @@ def _load_html_port(path, default_port=5001):
             return port
     except Exception:
         pass
+
     return default_port
 
 FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
@@ -73,7 +76,7 @@ DECISIONS_TIMEOUT = 0.2
 DECISIONS_CACHE = {}
 DECISIONS_LOCAL_CACHE = {
     "dynamic_waypoints": "",
-    "speed": "",
+    "speed": "0.300000",
 }
 DECISION_MAKING_DATA_URL = f"http://localhost:{FIELD_VIEWER_PORT}/decision_making_data"
 DECISION_MAKING_DATA_URL_FALLBACK = f"http://localhost:{FIELD_VIEWER_PORT}/data/decision_making_data"
@@ -263,6 +266,42 @@ def _write_decision_text(path: str, content: str) -> bool:
     return _update_decision_making_local(key, content)
 
 
+_REAL_OPEN = open
+
+
+class _DecisionTextIO(io.StringIO):
+    def __init__(self, path: str, mode: str, initial: str):
+        super().__init__(initial)
+        self._path = path
+        self._mode = mode
+        if "a" in mode:
+            self.seek(0, io.SEEK_END)
+
+    def close(self):
+        if not self.closed and any(m in self._mode for m in ("w", "a", "+")):
+            _write_decision_text(self._path, self.getvalue())
+        super().close()
+
+
+def _is_decision_path(path: str) -> bool:
+    if not isinstance(path, str):
+        return False
+    abs_path = os.path.abspath(path)
+    if abs_path.startswith(os.path.abspath(BASE_DIR)):
+        return False
+    return abs_path.startswith(os.path.abspath(os.path.dirname(__file__)))
+
+
+def open(path, mode="r", *args, **kwargs):
+    if "b" in mode or not _is_decision_path(path):
+        return _REAL_OPEN(path, mode, *args, **kwargs)
+    if "r" in mode and "w" not in mode and "a" not in mode and "+" not in mode:
+        return _DecisionTextIO(path, mode, _read_decision_text(path))
+    if "a" in mode:
+        return _DecisionTextIO(path, mode, _read_decision_text(path))
+    return _DecisionTextIO(path, mode, "")
+
+
 def _update_decisions_local(key: str, value: str) -> bool:
     DECISIONS_LOCAL_CACHE[key] = value
     return _post_decisions_data(dict(DECISIONS_LOCAL_CACHE))
@@ -282,6 +321,7 @@ def _require_sim_value(key: str, source_path: str):
 
 def _read_status(path: str) -> Optional[str]:
     base = os.path.splitext(os.path.basename(path))[0].lower()
+
     if path in WEB_ONLY_FILES:
         return str(_require_sim_value(base, path)).strip()
     cached = _get_sim_value(base)
