@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import io
 import os
 import random
 import time
@@ -40,7 +39,6 @@ VISIBLE_BALLS_FILE = os.path.join(BASE_DIR, "visible_balls.txt")
 CURRENT_POSITION_FILE = os.path.join(BASE_DIR, "current_position.txt")
 OBSTACLE_ROBOT_FILE = os.path.join(BASE_DIR, "obstacle_robot.txt")
 TIME_FILE = os.path.join(BASE_DIR, "time.txt")
-SPEED_FILE = os.path.join(BASE_DIR, "speed.txt")
 
 PLANNED_WAYPOINTS_FILE = os.path.join(os.path.dirname(__file__), "planned_waypoints.txt")
 
@@ -48,10 +46,16 @@ PLANNED_INDEX_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "
 TEMP_STATE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "search_state.txt")
 WAYPOINTS_STACK_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "waypoints_stack.txt")
 RADAR_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "radar_memory.txt")
+WALL_ONLY_RADAR_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "wall_only_radar_memory.txt")
+ROBOT_ONLY_RADAR_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "robot_only_radar_memory.txt")
 COLLISION_STATUS_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "collision_avoiding_status.txt")
+COLLISION_COUNTER_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "collision_counter.txt")
+COLLISION_COUNTER_STATE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "collision_counter_state.txt")
+TOTAL_CONTACT_TIME_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "total_contact_time.txt")
 DYNAMIC_WAYPOINTS_TYPE_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "dynamic_waypoints_type.txt")
 ROBOT_AROUND_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "robot_around.txt")
 LAST_BEST_VECTOR_FILE = os.path.join(os.path.dirname(__file__), "real_time_data", "last_best_vector.txt")
+COLLISION_AVOIDING_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "collision_avoiding.txt")
 
 def _load_html_port(path, default_port=5001):
     try:
@@ -90,6 +94,12 @@ WEB_ONLY_FILES = {
     OBSTACLE_ROBOT_FILE,
     TIME_FILE,
     VISIBLE_BALLS_FILE,
+}
+DEVELOPING_SEED_DEFAULTS = {
+    "develop_state": "",
+    "develop_sweep_counts": "",
+    "develop_rotate_idx": "0",
+    "visited_coords": "",
 }
 
 # Set the default mode here for convenience. Edit this file and set
@@ -266,45 +276,36 @@ def _write_decision_text(path: str, content: str) -> bool:
     return _update_decision_making_local(key, content)
 
 
-_REAL_OPEN = open
-
-
-class _DecisionTextIO(io.StringIO):
-    def __init__(self, path: str, mode: str, initial: str):
-        super().__init__(initial)
-        self._path = path
-        self._mode = mode
-        if "a" in mode:
-            self.seek(0, io.SEEK_END)
-
-    def close(self):
-        if not self.closed and any(m in self._mode for m in ("w", "a", "+")):
-            _write_decision_text(self._path, self.getvalue())
-        super().close()
-
-
-def _is_decision_path(path: str) -> bool:
-    if not isinstance(path, str):
-        return False
-    abs_path = os.path.abspath(path)
-    if abs_path.startswith(os.path.abspath(BASE_DIR)):
-        return False
-    return abs_path.startswith(os.path.abspath(os.path.dirname(__file__)))
-
-
-def open(path, mode="r", *args, **kwargs):
-    if "b" in mode or not _is_decision_path(path):
-        return _REAL_OPEN(path, mode, *args, **kwargs)
-    if "r" in mode and "w" not in mode and "a" not in mode and "+" not in mode:
-        return _DecisionTextIO(path, mode, _read_decision_text(path))
-    if "a" in mode:
-        return _DecisionTextIO(path, mode, _read_decision_text(path))
-    return _DecisionTextIO(path, mode, "")
-
-
 def _update_decisions_local(key: str, value: str) -> bool:
     DECISIONS_LOCAL_CACHE[key] = value
     return _post_decisions_data(dict(DECISIONS_LOCAL_CACHE))
+
+
+def _bootstrap_developing_data() -> None:
+    _refresh_decision_making_data()
+    payload = dict(DECISION_MAKING_DATA_CACHE) if DECISION_MAKING_DATA_CACHE else {}
+    changed = False
+    for key, default_value in DEVELOPING_SEED_DEFAULTS.items():
+        existing = payload.get(key)
+        if isinstance(existing, str) and existing.strip():
+            continue
+        if existing is not None and not isinstance(existing, str):
+            continue
+        payload[key] = default_value
+        changed = True
+    if changed:
+        DECISION_MAKING_DATA_LOCAL_CACHE.update(payload)
+        _post_decision_making_data(payload)
+
+
+def _bootstrap_stack_data() -> None:
+    _refresh_decision_making_data()
+    payload = dict(DECISION_MAKING_DATA_CACHE) if DECISION_MAKING_DATA_CACHE else {}
+    existing = payload.get("waypoints_stack")
+    if existing is None:
+        payload["waypoints_stack"] = ""
+        DECISION_MAKING_DATA_LOCAL_CACHE.update(payload)
+        _post_decision_making_data(payload)
 
 
 def _require_sim_value(key: str, source_path: str):
@@ -333,6 +334,145 @@ def _read_status(path: str) -> Optional[str]:
 
 def _atomic_write(path: str, content: str) -> bool:
     return _write_decision_text(path, content)
+
+
+def _read_collision_counter(path: str = COLLISION_COUNTER_FILE) -> tuple[int, list[float]]:
+    count = 0
+    times: list[float] = []
+    for raw in _read_decision_text(path).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("count="):
+            try:
+                count = int(line.split("=", 1)[1].strip())
+            except Exception:
+                pass
+        elif line.startswith("time="):
+            try:
+                times.append(float(line.split("=", 1)[1].strip()))
+            except Exception:
+                pass
+    return count, times
+
+
+def _write_collision_counter(
+    count: int,
+    times: list[float],
+    path: str = COLLISION_COUNTER_FILE,
+) -> bool:
+    content = f"count={int(count)}\n" + "".join(f"time={t:.3f}\n" for t in times)
+    return _atomic_write(path, content)
+
+
+def _read_collision_state(
+    path: str = COLLISION_COUNTER_STATE_FILE,
+) -> tuple[Optional[float], bool]:
+    last_time: Optional[float] = None
+    in_collision = False
+    for raw in _read_decision_text(path).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("last_time="):
+            try:
+                last_time = float(line.split("=", 1)[1].strip())
+            except Exception:
+                last_time = None
+        elif line.startswith("in_collision="):
+            val = line.split("=", 1)[1].strip().lower()
+            in_collision = val in ("1", "true", "yes", "on")
+    return last_time, in_collision
+
+
+def _write_collision_state(
+    last_time: Optional[float],
+    in_collision: bool,
+    path: str = COLLISION_COUNTER_STATE_FILE,
+) -> bool:
+    last_time_str = "" if last_time is None else f"{last_time:.6f}"
+    content = f"last_time={last_time_str}\nin_collision={1 if in_collision else 0}\n"
+    return _atomic_write(path, content)
+
+
+def _read_total_contact_time(path: str = TOTAL_CONTACT_TIME_FILE) -> float:
+    raw = _read_decision_text(path).strip()
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except Exception:
+        return 0.0
+
+
+def _write_total_contact_time(
+    total_seconds: float,
+    path: str = TOTAL_CONTACT_TIME_FILE,
+) -> bool:
+    safe_total = max(0.0, float(total_seconds))
+    return _atomic_write(path, f"{safe_total:.6f}\n")
+
+
+def _process_collision_counter_from_history(
+    history_file: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
+    counter_file: str = COLLISION_COUNTER_FILE,
+    state_file: str = COLLISION_COUNTER_STATE_FILE,
+    total_contact_time_file: str = TOTAL_CONTACT_TIME_FILE,
+    threshold: float = -0.01,
+) -> None:
+    """Count a collision only when distances recover above threshold after being below it."""
+    entries: list[tuple[float, list[float]]] = []
+    for raw in _read_decision_text(history_file).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            t = float(parts[0])
+            dists = [float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])]
+        except Exception:
+            continue
+        entries.append((t, dists))
+
+    if not entries:
+        return
+
+    entries.sort(key=lambda item: item[0])
+    last_time, in_collision = _read_collision_state(state_file)
+
+    # First-time initialization: set baseline state, do not backfill old collisions.
+    if last_time is None:
+        latest_t, latest_dists = entries[-1]
+        latest_in_collision = any(d < threshold for d in latest_dists)
+        _write_total_contact_time(0.0, total_contact_time_file)
+        _write_collision_state(latest_t, latest_in_collision, state_file)
+        return
+
+    new_entries = [(t, dists) for (t, dists) in entries if t > last_time + 1e-9]
+    if not new_entries:
+        return
+
+    count, times = _read_collision_counter(counter_file)
+    total_contact_time = _read_total_contact_time(total_contact_time_file)
+    prev_time = last_time
+    for t, dists in new_entries:
+        dt = t - prev_time
+        if in_collision and dt > 0.0:
+            total_contact_time += dt
+        now_in_collision = any(d < threshold for d in dists)
+        if now_in_collision:
+            in_collision = True
+        elif in_collision:
+            count += 1
+            times.append(t)
+            in_collision = False
+        prev_time = t
+
+    _write_collision_counter(count, times, counter_file)
+    _write_total_contact_time(total_contact_time, total_contact_time_file)
+    _write_collision_state(new_entries[-1][0], in_collision, state_file)
 
 
 def _stack_current_waypoint(stack_file: str = WAYPOINTS_STACK_FILE,
@@ -459,6 +599,158 @@ def _read_time_seconds(path: str) -> Optional[float]:
         return float(str(cached).strip())
     except Exception:
         return None
+
+
+def _read_wall_only_memory(
+    path: str = WALL_ONLY_RADAR_MEMORY_FILE,
+) -> list[tuple[float, dict[str, float]]]:
+    """Read wall-only radar memory records.
+
+    Format per line:
+    time,front,right,left,rear
+    Missing/invalid direction values are normalized to RADAR_MAX_RANGE.
+    """
+    entries: list[tuple[float, dict[str, float]]] = []
+    for raw in _read_decision_text(path).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            t = float(parts[0])
+        except Exception:
+            continue
+        values: dict[str, float] = {}
+        keys = ("front", "right", "left", "rear")
+        for i, key in enumerate(keys, start=1):
+            try:
+                value = float(parts[i])
+                if not math.isfinite(value):
+                    value = RADAR_MAX_RANGE
+                values[key] = value
+            except Exception:
+                values[key] = RADAR_MAX_RANGE
+        entries.append((t, values))
+    return entries
+
+
+def _write_wall_only_memory(
+    entries: list[tuple[float, dict[str, float]]],
+    path: str = WALL_ONLY_RADAR_MEMORY_FILE,
+) -> bool:
+    lines = []
+    for t, values in entries:
+        row = [f"{t:.3f}"]
+        for key in ("front", "right", "left", "rear"):
+            v = values.get(key, RADAR_MAX_RANGE)
+            if not math.isfinite(v):
+                v = RADAR_MAX_RANGE
+            row.append(f"{v:.6f}")
+        lines.append(",".join(row))
+    content = "\n".join(lines) + ("\n" if lines else "")
+    return _atomic_write(path, content)
+
+
+def _read_robot_only_memory(
+    path: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
+) -> list[tuple[float, dict[str, float]]]:
+    """Read robot-only radar memory records.
+
+    Format per line:
+    time,front,right,left,rear
+    Missing/invalid direction values are normalized to RADAR_MAX_RANGE.
+    """
+    entries: list[tuple[float, dict[str, float]]] = []
+    for raw in _read_decision_text(path).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            t = float(parts[0])
+        except Exception:
+            continue
+        values: dict[str, float] = {}
+        keys = ("front", "right", "left", "rear")
+        for i, key in enumerate(keys, start=1):
+            try:
+                value = float(parts[i])
+                if not math.isfinite(value):
+                    value = RADAR_MAX_RANGE
+                values[key] = value
+            except Exception:
+                values[key] = RADAR_MAX_RANGE
+        entries.append((t, values))
+    return entries
+
+
+def _write_robot_only_memory(
+    entries: list[tuple[float, dict[str, float]]],
+    path: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
+) -> bool:
+    lines = []
+    for t, values in entries:
+        row = [f"{t:.3f}"]
+        for key in ("front", "right", "left", "rear"):
+            v = values.get(key, RADAR_MAX_RANGE)
+            if not math.isfinite(v):
+                v = RADAR_MAX_RANGE
+            row.append(f"{v:.6f}")
+        lines.append(",".join(row))
+    content = "\n".join(lines) + ("\n" if lines else "")
+    return _atomic_write(path, content)
+
+
+def _read_collision_avoiding_config(
+    path: str = COLLISION_AVOIDING_CONFIG_FILE,
+) -> tuple[bool, Optional[float]]:
+    """Read collision avoiding runtime config.
+
+    Supported values in collision_avoiding.txt:
+    - "off": disable collision avoiding.
+    - "smart_factor = <number>": override smart_factor.
+
+    Returns:
+        (enabled, smart_factor_override)
+    """
+    text = _read_decision_text(path).strip()
+    if not text:
+        return True, None
+
+    if text.lower() == "off":
+        return False, None
+
+    m = re.search(r"smart_factor\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", text, re.IGNORECASE)
+    if m:
+        try:
+            return True, float(m.group(1))
+        except Exception:
+            return True, None
+
+    return True, None
+
+
+def _maybe_run_collision_avoiding(
+    current_file: str = CURRENT_POSITION_FILE,
+    default_smart_factor: float = 2.0,
+    stack_waypoint: bool = True,
+) -> bool:
+    """Run collision avoiding based on collision_avoiding.txt config."""
+    enabled, smart_factor_override = _read_collision_avoiding_config()
+    if not enabled:
+        radar_sensor()  # Still update radar memory for potential collision counting, even if avoiding is off.
+        return False
+
+    smart_factor = (
+        smart_factor_override
+        if smart_factor_override is not None
+        else default_smart_factor
+    )
+    return collision_avoiding_v3(current_file, smart_factor=smart_factor, stack_waypoint=stack_waypoint)
 
 
 def _read_state_pair(path: str) -> Optional[tuple[float, float]]:
@@ -665,11 +957,367 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
         history_lines.append(record)
         _atomic_write(RADAR_HISTORY_FILE, "\n".join(history_lines) + "\n")
 
+    wall_only_radar()
+    robot_only_radar()
+    _process_collision_counter_from_history()
+
     # print([(direction, dist) for direction, dist in hits.items()])
     return [(direction, dist) for direction, dist in hits.items()]
 
-def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
-                          smart_factor: float = 4.0) -> bool:
+
+def wall_only_radar(
+    current_file: str = CURRENT_POSITION_FILE,
+    memory_window_seconds: float = 2.0,
+    memory_file: str = WALL_ONLY_RADAR_MEMORY_FILE,
+) -> dict[str, float]:
+    """Predict wall-only radar distances using the same method as radar_sensor.
+
+    This function samples points on field walls and applies the same
+    projection/classification logic as radar_sensor, but without obstacle points.
+
+    Also keeps a short memory (default 2s) and fills missing directions from
+    recent wall-only predictions.
+    """
+    cur = _read_current_position(current_file)
+    if cur is None:
+        return {}
+
+    cx, cy, bearing = cur
+    if bearing is None:
+        return {}
+
+    max_range = RADAR_MAX_RANGE
+    corridor = 0.2
+    half_band = corridor / 2.0
+
+    theta = math.radians(bearing)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    robot_half = 0.1
+    predicted: dict[str, float] = {}
+
+    edge_samples = [i * 0.05 for i in range(-20, 21)]
+    wall_samples = (
+        [(x, 1.0) for x in edge_samples]
+        + [(x, -1.0) for x in edge_samples]
+        + [(1.0, y) for y in edge_samples]
+        + [(-1.0, y) for y in edge_samples]
+    )
+
+    for wx, wy in wall_samples:
+        dx = wx - cx
+        dy = wy - cy
+        x_robot = dx * cos_t + dy * sin_t
+        y_robot = -dx * sin_t + dy * cos_t
+
+        if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
+            dist = x_robot - robot_half
+            direction = "front"
+        elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
+            dist = -x_robot - robot_half
+            direction = "rear"
+        elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
+            dist = y_robot - robot_half
+            direction = "left"
+        elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
+            dist = -y_robot - robot_half
+            direction = "right"
+        else:
+            continue
+
+        if dist <= max_range:
+            prev = predicted.get(direction)
+            if prev is None or dist < prev:
+                predicted[direction] = dist
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is None:
+        return predicted
+
+    cutoff_time = sim_time - max(0.0, float(memory_window_seconds))
+    entries = _read_wall_only_memory(memory_file)
+    entries = [(t, vals) for (t, vals) in entries if cutoff_time <= t <= sim_time]
+
+    merged = dict(predicted)
+    for direction in ("front", "right", "left", "rear"):
+        if direction in merged:
+            continue
+        for _, vals in reversed(entries):
+            v = vals.get(direction, max_range)
+            if math.isfinite(v) and 0.0 <= v <= max_range:
+                merged[direction] = v
+                break
+
+    current_record = {
+        "front": predicted.get("front", max_range),
+        "right": predicted.get("right", max_range),
+        "left": predicted.get("left", max_range),
+        "rear": predicted.get("rear", max_range),
+    }
+    entries.append((sim_time, current_record))
+    _write_wall_only_memory(entries, memory_file)
+
+    return merged
+
+
+def robot_only_radar(
+    current_file: str = CURRENT_POSITION_FILE,
+    obstacle_file: str = OBSTACLE_ROBOT_FILE,
+    memory_window_seconds: float = 2.0,
+    memory_file: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
+) -> dict[str, float]:
+    """Predict robot-only radar distances using obstacle samples only.
+
+    Uses the same projection/classification logic as `radar_sensor` and
+    `wall_only_radar`, but excludes wall samples.
+
+    Also keeps a short memory (default 2s) and fills missing directions from
+    recent robot-only predictions.
+    """
+    cur = _read_current_position(current_file)
+    if cur is None:
+        return {}
+
+    cx, cy, bearing = cur
+    if bearing is None:
+        return {}
+
+    max_range = RADAR_MAX_RANGE
+    corridor = 0.2
+    half_band = corridor / 2.0
+
+    theta = math.radians(bearing)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    robot_half = 0.1
+    predicted: dict[str, float] = {}
+
+    obstacle_half = 0.1
+    sample_spacing = 0.1 * obstacle_half  # 0.01m
+    sample_points_world: list[tuple[float, float]] = []
+
+    obstacles = _read_obstacle_positions(obstacle_file)
+    if not obstacles:
+        return {}
+
+    obstacle_edge_samples_local: list[tuple[float, float]] = []
+    num_samples = int(2 * obstacle_half / sample_spacing) + 1
+    for i in range(num_samples):
+        offset = -obstacle_half + i * sample_spacing
+        obstacle_edge_samples_local.append((offset, obstacle_half))
+        obstacle_edge_samples_local.append((offset, -obstacle_half))
+        obstacle_edge_samples_local.append((-obstacle_half, offset))
+        obstacle_edge_samples_local.append((obstacle_half, offset))
+
+    for ox, oy, obearing in obstacles:
+        otheta = math.radians(obearing) if obearing is not None else 0.0
+        cos_o = math.cos(otheta)
+        sin_o = math.sin(otheta)
+        for lx, ly in obstacle_edge_samples_local:
+            wx = ox + lx * cos_o - ly * sin_o
+            wy = oy + lx * sin_o + ly * cos_o
+            sample_points_world.append((wx, wy))
+
+    for wx, wy in sample_points_world:
+        dx = wx - cx
+        dy = wy - cy
+        x_robot = dx * cos_t + dy * sin_t
+        y_robot = -dx * sin_t + dy * cos_t
+
+        if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
+            dist = x_robot - robot_half
+            direction = "front"
+        elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
+            dist = -x_robot - robot_half
+            direction = "rear"
+        elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
+            dist = y_robot - robot_half
+            direction = "left"
+        elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
+            dist = -y_robot - robot_half
+            direction = "right"
+        else:
+            continue
+
+        if dist <= max_range:
+            prev = predicted.get(direction)
+            if prev is None or dist < prev:
+                predicted[direction] = dist
+
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is None:
+        return predicted
+
+    cutoff_time = sim_time - max(0.0, float(memory_window_seconds))
+    entries = _read_robot_only_memory(memory_file)
+    entries = [(t, vals) for (t, vals) in entries if cutoff_time <= t <= sim_time]
+
+    merged = dict(predicted)
+    for direction in ("front", "right", "left", "rear"):
+        if direction in merged:
+            continue
+        for _, vals in reversed(entries):
+            v = vals.get(direction, max_range)
+            if math.isfinite(v) and 0.0 <= v <= max_range:
+                merged[direction] = v
+                break
+
+    current_record = {
+        "front": predicted.get("front", max_range),
+        "right": predicted.get("right", max_range),
+        "left": predicted.get("left", max_range),
+        "rear": predicted.get("rear", max_range),
+    }
+    entries.append((sim_time, current_record))
+    _write_robot_only_memory(entries, memory_file)
+
+    return merged
+
+def collision_avoiding_v1(current_file: str = CURRENT_POSITION_FILE) -> bool:
+    """Stop when radar detects a close obstacle inside the safe zone."""
+    cur = _read_current_position(current_file)
+    if cur is None:
+        return False
+    radar_hits = radar_sensor()
+    if not radar_hits:
+        return False
+    if any(dist < 0.1 for _, dist in radar_hits) and abs(cur[0]) < 0.7 and abs(cur[1]) < 0.7:
+        return stop("collision")
+    return False
+
+
+def collision_avoiding_v2(current_file: str = CURRENT_POSITION_FILE) -> bool:
+    cur = _read_current_position(current_file)
+    if cur is None:
+        _write_collision_status(False)
+        set_velocity(NORMAL_SPEED)
+        return False
+    cx, cy, bearing = cur
+
+    collision_status = _read_status(COLLISION_STATUS_FILE)
+    waypoint_status = _read_status(WAYPOINT_STATUS_FILE)
+    if collision_status == "activated":
+        if waypoint_status == "reached":
+            _write_collision_status(False)
+            set_velocity(NORMAL_SPEED)
+            stack_wp = _read_stack_waypoint(WAYPOINTS_STACK_FILE)
+            if stack_wp is not None:
+                _atomic_write(WAYPOINTS_STACK_FILE, "")
+                x, y, orientation = stack_wp
+                if orientation is None:
+                    goto(x, y)
+                else:
+                    goto(x, y, orientation)
+                return True
+
+    radar_hits = radar_sensor()
+
+    values = {"front": 0.8, "right": 0.8, "left": 0.8, "rear": 0.8}
+    for direction, dist in radar_hits:
+        if direction in values:
+            values[direction] = min(0.8, dist)
+
+    if any(dist < 0.05 for _, dist in radar_hits) and bearing is not None and abs(cx) <= 0.82 and abs(cy) <= 0.82:
+        weights = [
+            values["front"],
+            values["right"],
+            values["left"],
+            values["rear"],
+        ]
+
+        normals_robot = [
+            (1.0, 0.0),   # front
+            (0.0, -1.0),  # right
+            (0.0, 1.0),   # left
+            (-1.0, 0.0),  # rear
+        ]
+        theta = math.radians(bearing)
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+
+        total_w = sum(weights)
+        if total_w <= 0.0:
+            _write_collision_status(False)
+            set_velocity(NORMAL_SPEED)
+            return False
+
+        world_normals = []
+        for (nx, ny) in normals_robot:
+            wx = nx * cos_t - ny * sin_t
+            wy = nx * sin_t + ny * cos_t
+            world_normals.append((wx, wy))
+
+        # Pairwise sums: front+left, left+rear, rear+right, right+front.
+        pair_indices = [(0, 2), (2, 3), (3, 1), (1, 0)]
+        best_vec = None
+        best_mag = None
+        for i, j in pair_indices:
+            vx = weights[i] * world_normals[i][0] + weights[j] * world_normals[j][0]
+            vy = weights[i] * world_normals[i][1] + weights[j] * world_normals[j][1]
+            mag = math.hypot(vx, vy)
+            if best_mag is None or mag > best_mag:
+                best_mag = mag
+                best_vec = (vx, vy)
+
+        best_vec = (best_vec[0] / best_mag, best_vec[1] / best_mag)
+
+        step = 0.15
+        dx_world = step * best_vec[0]
+        dy_world = step * best_vec[1]
+        set_velocity(MAX_SPEED)
+        _write_collision_status(True)
+        _stack_current_waypoint()
+        goto(cx + dx_world, cy + dy_world, bearing, waypoint_type="collision")
+        return True
+
+    if collision_status == "activated":
+        if waypoint_status == "going":
+            return True
+
+    return False
+
+
+def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) -> bool:
+    cur = _read_current_position(current_file)
+    if cur is None:
+        return False
+
+    radar_hits = radar_sensor()
+    if not radar_hits:
+        return False
+
+    predicted_wall_hits = wall_only_radar(current_file)
+    collision_threshold = 0.05
+    tolerance_ratio = 0.10
+
+    filtered_hits: list[tuple[str, float]] = []
+    for direction, dist in radar_hits:
+        predicted = predicted_wall_hits.get(direction)
+
+        # No wall prediction for this direction => keep this radar hit.
+        if predicted is None or predicted > RADAR_MAX_RANGE:
+            filtered_hits.append((direction, dist))
+            continue
+
+        # If radar hit is within 10% of wall-only prediction, treat it as wall
+        # and exclude it from collision triggering.
+        baseline = max(abs(predicted), 1e-9)
+        if abs(dist - predicted) <= (tolerance_ratio * baseline):
+            continue
+
+        filtered_hits.append((direction, dist))
+
+    if any(dist < collision_threshold for _, dist in filtered_hits):
+        return True
+
+    return False
+
+
+def collision_avoiding_v3(
+    current_file: str = CURRENT_POSITION_FILE,
+    smart_factor: float = 4.0,
+    stack_waypoint: bool = True,
+) -> bool:
 
     trigger_distance = 0.05
     cur = _read_current_position(current_file)
@@ -681,7 +1329,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
 
     collision_status = _read_status(COLLISION_STATUS_FILE)
     waypoint_status = _read_status(WAYPOINT_STATUS_FILE)
-    abandon_time_threshold = 5.0  # seconds, if stacked waypoint is older than this, abandon it to avoid going to stale location
+    abandon_time_threshold = 2.0  # seconds, if stacked waypoint is older than this, abandon it to avoid going to stale location
     if collision_status == "activated":
         if waypoint_status == "reached":
             _write_collision_status(False)
@@ -691,15 +1339,13 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
                 # Check if stacked waypoint is too old
                 stack_timestamp = _read_stack_timestamp(WAYPOINTS_STACK_FILE)
                 current_time = _read_time_seconds(TIME_FILE)
-                
+
                 if stack_timestamp is not None and current_time is not None:
                     time_elapsed = current_time - stack_timestamp
                     if time_elapsed > abandon_time_threshold:
-                        # Waypoint is too old, abandon it
                         _atomic_write(WAYPOINTS_STACK_FILE, "")
                         return True  # Don't goto anywhere, just return
-                
-                # Waypoint is still valid, proceed as normal
+
                 _atomic_write(WAYPOINTS_STACK_FILE, "")
                 x, y, orientation = stack_wp
                 if orientation is None:
@@ -709,16 +1355,14 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
                 return True
     if collision_status == "inactive":
         _atomic_write(LAST_BEST_VECTOR_FILE, "")
-            
+
     radar_hits = radar_sensor()
-    # radar_hits = predict_next_radar(tau=0.01)
 
     values = {"front": 0.8, "right": 0.8, "left": 0.8, "rear": 0.8}
     for direction, dist in radar_hits:
         if direction in values:
             values[direction] = min(0.8, dist)
 
-    # Unit vectors every 30 degrees across 0-360.
     jump_step = 0.15
     unit_vectors_10deg = [
         (math.cos(math.radians(deg)), math.sin(math.radians(deg)))
@@ -744,8 +1388,8 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         "\n".join(f"({vx:.6f}, {vy:.6f})" for vx, vy in weighted_vectors) + "\n",
     )
 
-    if any(dist < trigger_distance for _, dist in radar_hits) and bearing is not None and abs(cx) <= 0.82 and abs(cy) <= 0.82:
-        
+    if collision_activating_condition(current_file):
+
         destination_vector = None
         dynamic_type = _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)
         if dynamic_type == "task":
@@ -757,17 +1401,10 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
             if stacked_wp is not None:
                 destination_vector = (stacked_wp[0] - cx, stacked_wp[1] - cy)
 
-
-        # dynamic_wp = _read_stack_waypoint(DYNAMIC_WAYPOINTS_FILE)
-        # if dynamic_wp is not None:
-        #     destination_vector = (dynamic_wp[0] - cx, dynamic_wp[1] - cy)
-
-
         if destination_vector is None:
             destination_vector = (0.0, 0.0)
-        else:
-            dest_mag = math.hypot(destination_vector[0], destination_vector[1])
-            destination_vector = (destination_vector[0] / dest_mag, destination_vector[1] / dest_mag) if dest_mag > 0 else (0.0, 0.0)
+        dest_mag = math.hypot(destination_vector[0], destination_vector[1])
+        destination_vector = (destination_vector[0] / dest_mag, destination_vector[1] / dest_mag) if dest_mag > 0 else (0.0, 0.0)
 
         if bearing is not None:
             theta = math.radians(bearing)
@@ -825,28 +1462,21 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
                 safest_mag = mag
                 safest_vec = (vx, vy)
 
-        # Invert direction after selecting the strongest pairwise vector.
-        safest_vec = (safest_vec[0]/safest_mag, safest_vec[1]/safest_mag)
+        safest_vec = (safest_vec[0] / safest_mag, safest_vec[1] / safest_mag)
 
-        # Score each vector by its projection onto the destination vector.
         last_best_vec = _read_stack_waypoint(LAST_BEST_VECTOR_FILE)
         best_vec = None
         best_score = None
-        
-        # Calculate minimum radar distance for scoring weight
+
         min_radar_distance = max(0, min(values.values()))
         safety_factor = 8 + (min_radar_distance / trigger_distance) * 20 if trigger_distance > 0 else 10.0
-        # safety_factor = 20
-        # print(f"Safety factor: {safety_factor}, min radar distance: {min_radar_distance}, trigger distance: {trigger_distance}", file=sys.stderr)
 
         for vec in filtered_vectors:
             score = 0.0
             score += (vec[0] * safest_vec[0] + vec[1] * safest_vec[1]) * safety_factor
-            # First time avoiding: only consider destination alignment to encourage moving towards the goal.
             if last_best_vec is None:
                 if destination_vector is not None:
                     score += (vec[0] * destination_vector[0] + vec[1] * destination_vector[1]) * smart_factor
-            #  Not the first time: consider last best direction to encourage stability, and also consider destination alignment but with lower weight to avoid oscillation.
             if last_best_vec is not None:
                 score += (vec[0] * last_best_vec[0] + vec[1] * last_best_vec[1]) * smart_factor
                 if destination_vector is not None:
@@ -854,14 +1484,12 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
             if best_score is None or score > best_score:
                 best_score = score
                 best_vec = vec
-                # print(f"[waypoints_cruise] best vector: ({vec[0]:.3f}, {vec[1]:.3f}), score: {score:.6f}", file=sys.stderr)
 
         _atomic_write(
             LAST_BEST_VECTOR_FILE,
             f"({best_vec[0]:.6f}, {best_vec[1]:.6f})\n",
         )
 
-        # Invert direction after selecting the strongest pairwise vector.
         best_mag = math.hypot(best_vec[0], best_vec[1])
         best_vec = (best_vec[0], best_vec[1])
 
@@ -869,30 +1497,32 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         dy_world = jump_step * (best_vec[1] / best_mag)
         set_velocity(MAX_SPEED)
         _write_collision_status(True)
-        _stack_current_waypoint()
-        # print(f"[waypoints_cruise] collision avoiding activated, radar values: {weights}, move vector: ({dx_world:.3f}, {dy_world:.3f})", file=sys.stderr)
+        if stack_waypoint:
+            _stack_current_waypoint()
 
         # Determine orientation based on waypoint hierarchy
         target_orientation = bearing  # Default to current bearing
         target_x = cx + dx_world
         target_y = cy + dy_world
-        
+
         if min_radar_distance / trigger_distance > 0.7:
             # If obstacle is not too close, try to orient towards the task waypoint to encourage progress
-          if dynamic_type == "task":
-              # If current waypoint is task, point towards dynamic waypoint
-              dynamic_waypoint = _read_stack_waypoint(DYNAMIC_WAYPOINTS_FILE)
-              if dynamic_waypoint is not None:
-                  dx_to_goal = dynamic_waypoint[0] - target_x
-                  dy_to_goal = dynamic_waypoint[1] - target_y
-                  target_orientation = math.degrees(math.atan2(dy_to_goal, dx_to_goal))
-          else:
-              # If not task, check if stack waypoint exists and point towards it
-              stack_waypoint = _read_stack_waypoint(WAYPOINTS_STACK_FILE)
-              if stack_waypoint is not None:
-                  dx_to_goal = stack_waypoint[0] - target_x
-                  dy_to_goal = stack_waypoint[1] - target_y
-                  target_orientation = math.degrees(math.atan2(dy_to_goal, dx_to_goal))
+            if dynamic_type == "task":
+                dynamic_waypoint = _read_stack_waypoint(DYNAMIC_WAYPOINTS_FILE)
+                if dynamic_waypoint is not None:
+                    dx_to_goal = dynamic_waypoint[0] - target_x
+                    dy_to_goal = dynamic_waypoint[1] - target_y
+                    target_orientation = math.degrees(math.atan2(dy_to_goal, dx_to_goal))
+            else:
+                # If not task, check if stack waypoint exists and point towards it
+                stack_waypoint = _read_stack_waypoint(WAYPOINTS_STACK_FILE)
+                if stack_waypoint is not None:
+                    if stack_waypoint[2] is not None:
+                        target_orientation = stack_waypoint[2]
+                    else:
+                        dx_to_goal = stack_waypoint[0] - target_x
+                        dy_to_goal = stack_waypoint[1] - target_y
+                        target_orientation = math.degrees(math.atan2(dy_to_goal, dx_to_goal))
 
         if abs(cx + dx_world) < 0.9 and abs(cy + dy_world) < 0.9:
             goto(cx + dx_world, cy + dy_world, target_orientation, waypoint_type="collision")
@@ -900,7 +1530,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
             stop("collision")
 
         return True
-        
+
     if collision_status == "activated":
         if waypoint_status == "going":
             return True
@@ -1776,10 +2406,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     _refresh_sim_data()
+    _bootstrap_stack_data()
     args = parse_args()
     # precedence: CLI arg -> MODE env var -> DEFAULT_MODE
     mode = args.mode or os.environ.get("MODE") or DEFAULT_MODE
     mode = mode.strip().lower()
+    if mode == "developing":
+        _bootstrap_developing_data()
 
     handler = _MODE_HANDLERS.get(mode)
     if handler is None:

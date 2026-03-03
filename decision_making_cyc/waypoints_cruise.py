@@ -333,6 +333,16 @@ def _update_decision_making_local(key: str, value: str) -> bool:
     return _post_decision_making_data(dict(DECISION_MAKING_DATA_LOCAL_CACHE))
 
 
+def _bootstrap_stack_data() -> None:
+    _refresh_decision_making_data()
+    payload = dict(DECISION_MAKING_DATA_CACHE) if DECISION_MAKING_DATA_CACHE else {}
+    existing = payload.get("waypoints_stack")
+    if existing is None:
+        payload["waypoints_stack"] = ""
+        DECISION_MAKING_DATA_LOCAL_CACHE.update(payload)
+        _post_decision_making_data(payload)
+
+
 def _decision_key(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0].lower()
 
@@ -3823,6 +3833,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     _refresh_sim_data()
+    _bootstrap_stack_data()
     args = parse_args()
     # precedence: mode.txt -> CLI arg -> MODE env var -> DEFAULT_MODE
     mode = _read_mode(MODE_FILE) or args.mode or os.environ.get("MODE") or DEFAULT_MODE

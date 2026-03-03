@@ -31,6 +31,9 @@ DECISIONS_CACHE = {}
 DECISIONS_SEQ = 0
 DECISION_MAKING_DATA_CACHE = {}
 DECISION_MAKING_DATA_SEQ = 0
+DECISION_MAKING_DEFAULTS = {
+    "waypoints_stack": "",
+}
 
 
 def _read_text(path: str) -> str:
@@ -432,7 +435,11 @@ def _get_decision_making_data_cached():
 
 def _set_decision_making_data_cache(payload: dict):
     global DECISION_MAKING_DATA_CACHE, DECISION_MAKING_DATA_SEQ
-    DECISION_MAKING_DATA_CACHE = payload
+    merged = dict(DECISION_MAKING_DATA_CACHE)
+    merged.update(payload)
+    for key, value in DECISION_MAKING_DEFAULTS.items():
+        merged.setdefault(key, value)
+    DECISION_MAKING_DATA_CACHE = merged
     DECISION_MAKING_DATA_SEQ += 1
 
 
