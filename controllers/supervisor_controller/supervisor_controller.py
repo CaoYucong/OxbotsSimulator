@@ -146,6 +146,7 @@ MIN_SEPARATION = 2.0 * BALL_RADIUS + 0.001
 MAX_TRIES_PER_BALL = 2000
 SETTLE_STEPS_AFTER_PLACEMENT = max(1, int(0.2 / dt))
 Z_EPS = 0.001
+VISIBLE_RANGE_METERS = 2.0
 
 # Startup placement avoidance around the main robot
 ROBOT_X = -0.8
@@ -220,6 +221,8 @@ def _resolve_decision_making_dir():
             return os.path.join(PROJECT_ROOT, "decision_making_wly")
         if dev == "xjj":
             return os.path.join(PROJECT_ROOT, "decision_making_xjj")
+        if dev == "ros":
+            return os.path.join(PROJECT_ROOT, "decision_making_ros")
     except Exception:
         pass
     return default_dir
@@ -1002,7 +1005,7 @@ def _write_supervisor_status(path, status):
         except Exception:
             pass
 
-def _format_visible_balls(viewfield_deg=FIELD_OF_VIEW_DEGREES, visible_range_m=0.8):
+def _format_visible_balls(viewfield_deg=FIELD_OF_VIEW_DEGREES, visible_range_m=VISIBLE_RANGE_METERS):
     lines = []
     pos = main_robot.getField("translation").getSFVec3f()
     rx, ry = float(pos[0]), float(pos[1])
