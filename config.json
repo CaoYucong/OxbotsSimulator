@@ -1,9 +1,9 @@
 {
 	"develop_branch": "ros",
-	"data_flow": "web",
+	"data_flow": "file",
 	"default_linear_velocity": 0.1,
-	"default_angular_velocity": 90,
-	"run_on_pi": true,
+	"default_angular_velocity": 40,
+	"run_on_pi": false,
 	"pi_ip": "192.168.50.2",
 	"viewer_refresh_seconds": 1
 }

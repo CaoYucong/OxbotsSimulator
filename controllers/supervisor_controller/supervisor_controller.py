@@ -39,25 +39,55 @@ def _post_binary(url, data, content_type):
         return False
 
 
-def _post_front_camera_frame(camera_device, endpoint, image_path):
-    if camera_device is None or endpoint is None or image_path is None:
-        return
+def _load_early_data_flow(default="web"):
     try:
-        camera_device.saveImage(image_path, 90)
-        with open(image_path, "rb") as f:
-            img_bytes = f.read()
-        _post_binary(endpoint, img_bytes, "image/png")
-        return
+        config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.json"))
+        with open(config_path, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            flow = str(payload.get("data_flow", payload.get("data flow", default))).strip().lower()
+            if flow in ("web", "file"):
+                return flow
     except Exception:
         pass
-    try:
-        if cv2 is not None:
+    return default
+
+
+def _post_front_camera_frame(camera_device, endpoint=None, image_path=None, write_local=False):
+    if camera_device is None:
+        return
+    if write_local and image_path:
+        try:
+            os.makedirs(os.path.dirname(image_path), exist_ok=True)
+            camera_device.saveImage(image_path, CAMERA_JPEG_QUALITY)
+        except Exception:
+            pass
+        return
+    if endpoint is None:
+        return
+    if cv2 is not None:
+        try:
             img = np.array(camera_device.getImageArray(), dtype=np.uint8)
             if img is not None and img.size > 0:
                 bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-                ok, encoded = cv2.imencode(".png", bgr)
-                if ok:
-                    _post_binary(endpoint, encoded.tobytes(), "image/png")
+                ok, encoded = cv2.imencode(
+                    ".jpg",
+                    bgr,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), CAMERA_JPEG_QUALITY],
+                )
+                if ok and _post_binary(endpoint, encoded.tobytes(), "image/jpeg"):
+                    return
+        except Exception:
+            pass
+
+    try:
+        tmp_dir = os.path.join(os.path.dirname(__file__), "real_time_data")
+        os.makedirs(tmp_dir, exist_ok=True)
+        fallback_path = os.path.join(tmp_dir, "front_camera_fallback.jpg")
+        camera_device.saveImage(fallback_path, CAMERA_JPEG_QUALITY)
+        with open(fallback_path, "rb") as f:
+            img_bytes = f.read()
+        _post_binary(endpoint, img_bytes, "image/jpeg")
     except Exception:
         pass
 
@@ -84,14 +114,16 @@ def _has_supervisor_privileges(ctrl):
 # early constant needed by camera branch before full globals are defined
 # main robot name (also redefined later with full constant block)
 MAIN_ROBOT_NAME = "MY_ROBOT"
-CAMERA_ON = False
+CAMERA_ON = True
 IS_SUPERVISOR_NODE = _has_supervisor_privileges(supervisor)
+EARLY_DATA_FLOW = _load_early_data_flow()
 
 camera = None
 front_camera_endpoint = None
-tmp_image_path = None
+camera_local_image_path = os.path.join(os.path.dirname(__file__), "real_time_data", "front_camera.jpg")
 camera_frame_counter = 0
-post_interval_frames = 1
+post_interval_frames = 15
+CAMERA_JPEG_QUALITY = 65
 
 if CAMERA_ON:
     # Determine whether we are running on the dedicated supervisor node,
@@ -128,10 +160,7 @@ if CAMERA_ON:
         except Exception:
             pass
 
-        front_camera_endpoint = f"http://localhost:{port}/front_camera"
-        tmp_dir = os.path.join(os.path.dirname(__file__), "real_time_data")
-        os.makedirs(tmp_dir, exist_ok=True)
-        tmp_image_path = os.path.join(tmp_dir, "front_camera.png")
+        front_camera_endpoint = None if EARLY_DATA_FLOW == "file" else f"http://localhost:{port}/front_camera"
 
         # If this node is not a supervisor, keep camera-only behavior and exit.
         # If this node is also the supervisor, continue to full supervisor logic below.
@@ -140,7 +169,12 @@ if CAMERA_ON:
                 camera_frame_counter += 1
                 if camera_frame_counter % post_interval_frames != 0:
                     continue
-                _post_front_camera_frame(camera, front_camera_endpoint, tmp_image_path)
+                _post_front_camera_frame(
+                    camera,
+                    endpoint=front_camera_endpoint,
+                    image_path=camera_local_image_path,
+                    write_local=(EARLY_DATA_FLOW == "file"),
+                )
 
             sys.exit(0)
 
@@ -1400,9 +1434,14 @@ while supervisor.step(TIME_STEP) != -1:
     
     # 1.6) Execute cruise script at intervals
     frame_counter += 1
-    if camera is not None and front_camera_endpoint is not None and tmp_image_path is not None:
+    if camera is not None and (front_camera_endpoint is not None or DATA_FLOW == "file"):
         if frame_counter % post_interval_frames == 0:
-            _post_front_camera_frame(camera, front_camera_endpoint, tmp_image_path)
+            _post_front_camera_frame(
+                camera,
+                endpoint=front_camera_endpoint,
+                image_path=camera_local_image_path,
+                write_local=(DATA_FLOW == "file"),
+            )
     if (not RUN_ON_PI) and frame_counter % CRUISE_INTERVAL_FRAMES == 0:
         try:
             subprocess.run([sys.executable, CRUISE_SCRIPT_PATH], check=False)

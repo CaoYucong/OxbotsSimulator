@@ -6,11 +6,10 @@ EXTERNPROTO "../protos/UnibotsArena.proto"
 EXTERNPROTO "../protos/AprilTagWall.proto"
 EXTERNPROTO "../protos/Cube-Robot.proto"
 EXTERNPROTO "../protos/SteelBall.proto"
-EXTERNPROTO "../protos/Pingball.proto"
 EXTERNPROTO "../protos/PingBall.proto"
 
 WorldInfo {
-  basicTimeStep 4
+  basicTimeStep 16
   FPS 30
 }
 Viewpoint {
@@ -26,10 +25,9 @@ UnibotsArena {
 AprilTagWall {
 }
 DEF MY_ROBOT Cube-Robot {
-  name "MY_ROBOT"
-  controller "supervisor_controller"
-  supervisor TRUE
   rotation 0 0 1 -0.01200000000000001
+  name "MY_ROBOT"
+  supervisor TRUE
 }
 DEF BALL_0 PingBall {
   translation 0.7027071778893023 -0.12950020610531 0.019999671263744724

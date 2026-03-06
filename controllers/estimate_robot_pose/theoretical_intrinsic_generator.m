@@ -1,5 +1,5 @@
 % ====== Webots camera intrinsics (theoretical) =======
-fov = 2.5;      % horizontal field of view (radians)
+fov = 2.5829;      % horizontal field of view (radians)
 W = 1920;        
 H = 1080;
 

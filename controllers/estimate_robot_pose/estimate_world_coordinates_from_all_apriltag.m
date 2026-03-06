@@ -1,7 +1,7 @@
 function results = estimate_world_coordinates_from_all_apriltag(intrStruct, temp_img_path, debug)
     % ---------------- Main script (uses theoretical_intrinsics_webots.mat) ----------------
     if nargin < 3 || isempty(temp_img_path)
-        temp_img_path = "../../cache/camera/temp_img.png";
+        temp_img_path = "../../controllers/supervisor_controller/real_time_data/front_camera.jpg";
     end    
     if nargin < 3 || isempty(debug)
         debug = true;
