@@ -9,6 +9,7 @@ from typing import Optional
 import os
 import re
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -28,11 +29,15 @@ BALL_TAKEN_HISTORY_FILE = os.path.join(DATA_DIR, "ball_taken_history.txt")
 
 
 SIM_DATA_DIR = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data")
+HTML_PORT_FILE = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "html_port.txt")
 
 
-def _load_runtime_config() -> tuple[str, str]:
+def _load_runtime_config() -> tuple[str, str, bool, str, float]:
     branch = ""
     data_flow = "web"
+    run_on_pi = False
+    pi_ip = "127.0.0.1"
+    viewer_refresh_seconds = 0.1
     try:
         with open(CONFIG_FILE, "r") as f:
             payload = json.loads(f.read().strip())
@@ -41,12 +46,45 @@ def _load_runtime_config() -> tuple[str, str]:
             flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
             if flow_raw in ("web", "file"):
                 data_flow = flow_raw
+            run_on_pi_raw = payload.get("run_on_pi", False)
+            if isinstance(run_on_pi_raw, bool):
+                run_on_pi = run_on_pi_raw
+            elif isinstance(run_on_pi_raw, (int, float)):
+                run_on_pi = bool(run_on_pi_raw)
+            else:
+                run_on_pi = str(run_on_pi_raw).strip().lower() in ("1", "true", "yes", "y", "on")
+
+            ip_raw = str(payload.get("pi_ip", "")).strip()
+            if ip_raw:
+                pi_ip = ip_raw
+
+            refresh_raw = payload.get("viewer_refresh_seconds", 0.1)
+            try:
+                viewer_refresh_seconds = float(refresh_raw)
+                if viewer_refresh_seconds <= 0:
+                    viewer_refresh_seconds = 0.1
+            except Exception:
+                viewer_refresh_seconds = 0.1
     except Exception:
         pass
-    return branch, data_flow
+    return branch, data_flow, run_on_pi, pi_ip, viewer_refresh_seconds
 
 
-DEVELOPE_BRANCCH, DATA_FLOW = _load_runtime_config()
+def _load_html_port(path: str, default_port: int = 5001) -> int:
+    try:
+        with open(path, "r") as f:
+            raw = f.read().strip()
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return port
+    except Exception:
+        pass
+    return default_port
+
+
+DEVELOPE_BRANCCH, DATA_FLOW, RUN_ON_PI, PI_IP, VIEWER_REFRESH_SECONDS = _load_runtime_config()
+FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
+REMOTE_HOST = PI_IP if RUN_ON_PI else "localhost"
 DECISION_MAKING_DIR = os.path.join(PROJECT_ROOT, f"decision_making_{DEVELOPE_BRANCCH}") if DEVELOPE_BRANCCH else ""
 DECISION_DATA_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data") if DECISION_MAKING_DIR else ""
 
@@ -63,6 +101,47 @@ DECISION_MAKING_DEFAULTS = {
 FRONT_CAMERA_IMAGE = b""
 FRONT_CAMERA_MIME = "image/png"
 FRONT_CAMERA_UPDATED = 0.0
+
+REMOTE_PULL_INTERVAL_SECONDS = VIEWER_REFRESH_SECONDS
+_LAST_DECISIONS_PULL_TS = 0.0
+_LAST_DECISION_MAKING_PULL_TS = 0.0
+
+
+def _fetch_json(url: str, timeout: float = 0.25) -> dict:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as res:
+            payload = json.loads(res.read().decode("utf-8"))
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def _maybe_pull_remote_decisions(force: bool = False) -> None:
+    global _LAST_DECISIONS_PULL_TS
+    if not RUN_ON_PI:
+        return
+    now = time.time()
+    if not force and (now - _LAST_DECISIONS_PULL_TS) < REMOTE_PULL_INTERVAL_SECONDS:
+        return
+    _LAST_DECISIONS_PULL_TS = now
+    remote = _fetch_json(f"http://{REMOTE_HOST}:{FIELD_VIEWER_PORT}/data/decisions")
+    if remote:
+        _set_decisions_cache(remote)
+
+
+def _maybe_pull_remote_decision_making_data(force: bool = False) -> None:
+    global _LAST_DECISION_MAKING_PULL_TS
+    if not RUN_ON_PI:
+        return
+    now = time.time()
+    if not force and (now - _LAST_DECISION_MAKING_PULL_TS) < REMOTE_PULL_INTERVAL_SECONDS:
+        return
+    _LAST_DECISION_MAKING_PULL_TS = now
+    remote = _fetch_json(f"http://{REMOTE_HOST}:{FIELD_VIEWER_PORT}/data/decision_making_data")
+    if remote:
+        _set_decision_making_data_cache(remote)
 
 
 def _read_text(path: str) -> str:
@@ -118,9 +197,7 @@ def _read_last_line_from_text(text: str) -> str:
 def _get_decision_text(key: str) -> str:
     if DATA_FLOW == "file" and DECISION_DATA_DIR:
         return _read_text(os.path.join(DECISION_DATA_DIR, f"{key}.txt"))
-    if not DECISION_MAKING_DATA_CACHE:
-        return ""
-    value = DECISION_MAKING_DATA_CACHE.get(key)
+    value = _get_decision_making_data_cached().get(key)
     return value if isinstance(value, str) else ""
 
 
@@ -144,9 +221,7 @@ def _get_sim_lines(key: str) -> list[str]:
 def _get_decisions_text(key: str) -> str:
     if DATA_FLOW == "file" and DECISION_DATA_DIR:
         return _read_text(os.path.join(DECISION_DATA_DIR, f"{key}.txt"))
-    if not DECISIONS_CACHE:
-        return ""
-    value = DECISIONS_CACHE.get(key)
+    value = _get_decisions_data_cached().get(key)
     return value if isinstance(value, str) else ""
 
 
@@ -453,7 +528,10 @@ def _set_simulation_cache(payload: dict):
 
 
 def _get_decisions_data_cached():
-    return DECISIONS_CACHE if DECISIONS_CACHE else {}
+    _maybe_pull_remote_decisions()
+    if DECISIONS_CACHE:
+        return DECISIONS_CACHE
+    return _get_decisions_data()
 
 
 def _set_decisions_cache(payload: dict):
@@ -463,9 +541,20 @@ def _set_decisions_cache(payload: dict):
 
 
 def _get_decision_making_data_cached():
+    _maybe_pull_remote_decision_making_data()
     if DECISION_MAKING_DATA_CACHE:
         return DECISION_MAKING_DATA_CACHE
-    return {}
+    return _get_decision_making_data()
+
+
+def _get_decisions_data() -> dict:
+    _maybe_pull_remote_decisions(force=True)
+    return DECISIONS_CACHE if DECISIONS_CACHE else {}
+
+
+def _get_decision_making_data() -> dict:
+    _maybe_pull_remote_decision_making_data(force=True)
+    return DECISION_MAKING_DATA_CACHE if DECISION_MAKING_DATA_CACHE else {}
 
 
 def _set_decision_making_data_cache(payload: dict):
@@ -674,6 +763,7 @@ class Handler(BaseHTTPRequestHandler):
             last_payload_text = ""
             while True:
                 try:
+                    _maybe_pull_remote_decisions()
                     if DECISIONS_CACHE:
                         seq = DECISIONS_SEQ
                         if seq != last_seq:
@@ -706,6 +796,7 @@ class Handler(BaseHTTPRequestHandler):
             last_payload_text = ""
             while True:
                 try:
+                    _maybe_pull_remote_decision_making_data()
                     if DECISION_MAKING_DATA_CACHE:
                         seq = DECISION_MAKING_DATA_SEQ
                         if seq != last_seq:

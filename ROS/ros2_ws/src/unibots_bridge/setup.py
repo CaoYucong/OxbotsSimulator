@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'file_bridge_node = unibots_bridge.file_bridge_node:main',
+            'decision_making_node = unibots_bridge.decision_making_node:main',
             'decision_node = unibots_bridge.decision_node:main',
         ],
     },

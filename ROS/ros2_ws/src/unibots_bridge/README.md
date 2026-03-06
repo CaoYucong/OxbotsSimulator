@@ -3,7 +3,7 @@
 ROS2 Jazzy Python package providing:
 
 - `file_bridge_node`: HTTP mirror bridge for simulation data
-- `decision_node`: decision logic node adapted from `waypoints_cruise.py`
+- `decision_making_node`: decision making node adapted from `waypoints_cruise.py`
 
 ## Notes
 

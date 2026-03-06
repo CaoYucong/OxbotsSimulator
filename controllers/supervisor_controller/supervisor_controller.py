@@ -1382,7 +1382,7 @@ while supervisor.step(TIME_STEP) != -1:
     if camera is not None and front_camera_endpoint is not None and tmp_image_path is not None:
         if frame_counter % post_interval_frames == 0:
             _post_front_camera_frame(camera, front_camera_endpoint, tmp_image_path)
-    if frame_counter % CRUISE_INTERVAL_FRAMES == 0:
+    if (not RUN_ON_PI) and frame_counter % CRUISE_INTERVAL_FRAMES == 0:
         try:
             subprocess.run([sys.executable, CRUISE_SCRIPT_PATH], check=False)
         except Exception as e:

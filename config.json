@@ -1,6 +1,7 @@
 {
 	"develope_brancch": "ros",
-	"data_flow": "file",
-	"run_on_pi": false,
-	"pi_ip": "192.168.50.2"
+	"data_flow": "web",
+	"run_on_pi": true,
+	"pi_ip": "192.168.50.2",
+	"viewer_refresh_seconds": 1
 }

@@ -1,55 +1,64 @@
-# UniBots ROS2 ↔ Simulator File Bridge
+# UniBots ROS2 ↔ Simulator Bridge
 
-This directory contains a ROS2 Jazzy package implementing file-based integration only:
+This directory is now organized as a standard ROS2 workspace:
 
-- Simulator writes state files in `sim_dir`
-- `file_bridge_node` reads files and publishes ROS topics
-- `decision_node` computes commands from ROS topics
-- `file_bridge_node` writes command files atomically
+```text
+ROS/
+└── ros2_ws/
+		└── src/
+				└── unibots_bridge/
+						├── package.xml
+						├── setup.py
+						├── launch/
+						├── config/
+						└── unibots_bridge/
+```
+
+The inner `unibots_bridge/unibots_bridge` is normal for ROS2 Python packages:
+- outer folder: ROS package root (`package.xml`, `setup.py`)
+- inner folder: Python module source code
 
 ## Package
 
-- `unibots_file_bridge`
-
-## Topics
-
-Published by `file_bridge_node`:
-
-- `/sim/current_position` (`geometry_msgs/PoseStamped`)
-- `/sim/visible_balls` (`std_msgs/String`, JSON payload)
-- `/sim/time` (`std_msgs/String`)
-
-Subscribed by `file_bridge_node`:
-
-- `/sim/dynamic_waypoints_cmd` (`std_msgs/String`)
-- `/sim/speed_cmd` (`geometry_msgs/Twist`)
-
-## File Contract
-
-Input files (simulator → ROS):
-
-- `current_position.txt`: `x y theta` (radians)
-- `visible_balls.txt`: JSON array
-- `time.txt`: seconds from match start
-
-Output files (ROS → simulator):
-
-- `dynamic_waypoints.txt`
-- `speed.txt`
+- `unibots_bridge`
 
 ## Build and Run (ROS2 Jazzy)
 
 ```bash
-cd ~/OxbotsSimulator/ROS
+cd ~/OxbotsSimulator/ROS/ros2_ws
 colcon build --symlink-install
 source install/setup.bash
-ros2 launch unibots_file_bridge unibots_file_bridge.launch.py
+ros2 launch unibots_bridge unibots_bridge.launch.py
 ```
 
 ## Parameters
 
-Default parameters are in:
+- `src/unibots_bridge/config/params.yaml`
 
-- `unibots_file_bridge/config/params.yaml`
+Main defaults:
+- `remote_host: 192.168.50.1`
+- `remote_port: 5003`
+- `local_host: 127.0.0.1`
+- `local_port: 5003`
 
-Set `sim_dir` to your simulator shared directory (for your mode: `unibots_simulation`).
+## Sync to Raspberry Pi
+
+From your Mac:
+
+```bash
+rsync -avz --delete \
+	--exclude '.git' \
+	--exclude 'build' --exclude 'install' --exclude 'log' \
+	~/OxbotsSimulator/ROS/ros2_ws/ \
+	<pi_user>@<pi_ip>:~/OxbotsSimulator/ROS/ros2_ws/
+```
+
+Then on Raspberry Pi:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd ~/OxbotsSimulator/ROS/ros2_ws
+colcon build --symlink-install
+source install/setup.bash
+ros2 launch unibots_bridge unibots_bridge.launch.py
+```

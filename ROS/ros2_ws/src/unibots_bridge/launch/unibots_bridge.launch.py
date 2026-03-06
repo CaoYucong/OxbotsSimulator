@@ -18,8 +18,8 @@ def generate_launch_description() -> LaunchDescription:
         ),
         Node(
             package='unibots_bridge',
-            executable='decision_node',
-            name='decision_node',
+            executable='decision_making_node',
+            name='decision_making',
             output='screen',
             parameters=[params],
         ),

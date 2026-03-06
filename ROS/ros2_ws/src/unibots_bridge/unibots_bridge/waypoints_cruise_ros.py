@@ -125,9 +125,11 @@ INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball 
 FIELD_OF_VIEW_DEGREES = 120.0
 
 
-def _load_runtime_config() -> tuple[str, str]:
+def _load_runtime_config() -> tuple[str, str, bool, str]:
     branch = ""
     data_flow = "web"
+    run_on_pi = False
+    pi_ip = "127.0.0.1"
     try:
         with open(WHO_IS_DEV_JSON_FILE, "r") as f:
             payload = json.loads(f.read().strip())
@@ -136,12 +138,23 @@ def _load_runtime_config() -> tuple[str, str]:
             flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
             if flow_raw in ("web", "file"):
                 data_flow = flow_raw
+            run_on_pi_raw = payload.get("run_on_pi", False)
+            if isinstance(run_on_pi_raw, bool):
+                run_on_pi = run_on_pi_raw
+            elif isinstance(run_on_pi_raw, (int, float)):
+                run_on_pi = bool(run_on_pi_raw)
+            else:
+                run_on_pi = str(run_on_pi_raw).strip().lower() in ("1", "true", "yes", "y", "on")
+            ip_raw = str(payload.get("pi_ip", "")).strip()
+            if ip_raw:
+                pi_ip = ip_raw
     except Exception:
         pass
-    return branch, data_flow
+    return branch, data_flow, run_on_pi, pi_ip
 
 
-_DEVELOPE_BRANCCH, DATA_FLOW = _load_runtime_config()
+_DEVELOPE_BRANCCH, DATA_FLOW, RUN_ON_PI, PI_IP = _load_runtime_config()
+REMOTE_HOST = PI_IP if RUN_ON_PI else "localhost"
 
 
 def _read_file_text(path: str) -> str:
@@ -172,19 +185,19 @@ def _load_html_port(path, default_port=5001):
         pass
     return default_port
 
-FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
+FIELD_VIEWER_PORT = 5003
 
-SIM_DATA_URL = f"http://localhost:{FIELD_VIEWER_PORT}/simulation_data"
+SIM_DATA_URL = f"http://{REMOTE_HOST}:{FIELD_VIEWER_PORT}/simulation_data"
 
-SIM_DATA_URL_FALLBACK = f"http://localhost:{FIELD_VIEWER_PORT}/data/simulation_data"
+SIM_DATA_URL_FALLBACK = f"http://{REMOTE_HOST}:{FIELD_VIEWER_PORT}/data/simulation_data"
 
 SIM_DATA_TIMEOUT = 0.2
 
 SIM_DATA_CACHE = {}
 
-DECISIONS_URL = f"http://localhost:{FIELD_VIEWER_PORT}/decisions"
+DECISIONS_URL = f"http://{REMOTE_HOST}:{FIELD_VIEWER_PORT}/decisions"
 
-DECISIONS_URL_FALLBACK = f"http://localhost:{FIELD_VIEWER_PORT}/data/decisions"
+DECISIONS_URL_FALLBACK = f"http://{REMOTE_HOST}:{FIELD_VIEWER_PORT}/data/decisions"
 
 DECISIONS_TIMEOUT = 0.2
 
@@ -195,7 +208,7 @@ DECISIONS_LOCAL_CACHE = {
     "speed": f"{DEFAULT_LINEAR_VELOCITY:.6f}",
 }
 
-DECISION_MAKING_DATA_URL_FALLBACK = f"http://localhost:{FIELD_VIEWER_PORT}/data/decision_making_data"
+DECISION_MAKING_DATA_URL_FALLBACK = f"http://{REMOTE_HOST}:{FIELD_VIEWER_PORT}/data/decision_making_data"
 
 DECISION_MAKING_DATA_TIMEOUT = 0.2
 
