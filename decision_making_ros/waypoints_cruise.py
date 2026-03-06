@@ -51,6 +51,8 @@ SUPERVISOR_DIR = os.path.dirname(BASE_DIR)
 HTML_PORT_FILE = os.path.join(SUPERVISOR_DIR, "html_port.txt")
 
 WAYPOINT_STATUS_FILE = os.path.join(BASE_DIR, "waypoint_status.txt")
+DYNAMIC_WAYPOINTS_FILE = os.path.join(BASE_DIR, "dynamic_waypoints.txt")
+SPEED_FILE = os.path.join(BASE_DIR, "speed.txt")
 
 BALL_POS_FILE = os.path.join(BASE_DIR, "ball_position.txt")
 
@@ -375,9 +377,35 @@ def open(path, mode="r", *args, **kwargs):
 
 def _update_decisions_local(key: str, value: str) -> bool:
     DECISIONS_LOCAL_CACHE[key] = value
-    return _post_decisions_data(dict(DECISIONS_LOCAL_CACHE))
+
+    local_ok = False
+    if key in ("dynamic_waypoints", "speed"):
+        target = DYNAMIC_WAYPOINTS_FILE if key == "dynamic_waypoints" else SPEED_FILE
+        payload_text = f"{value}\n"
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            tmp = target + ".tmp"
+            with _REAL_OPEN(tmp, "w", encoding="utf-8") as f:
+                f.write(payload_text)
+            os.replace(tmp, target)
+            local_ok = True
+        except Exception:
+            local_ok = False
+
+    posted = _post_decisions_data(dict(DECISIONS_LOCAL_CACHE))
+    return local_ok or posted
 
 def _require_sim_value(key: str, source_path: str):
+    try:
+        abs_source = os.path.abspath(source_path)
+        if abs_source.startswith(os.path.abspath(BASE_DIR)):
+            with _REAL_OPEN(source_path, "r", encoding="utf-8") as f:
+                local_raw = f.read().strip()
+            if local_raw:
+                return local_raw
+    except Exception:
+        pass
+
     value = _get_sim_value(key)
     if value is None:
         _refresh_sim_data()
@@ -2157,7 +2185,12 @@ def main() -> int:
         print(f"[waypoints_cruise] unknown mode: {mode}", file=sys.stderr)
         return 2
 
-    return handler()
+    try:
+        return handler()
+    except RuntimeError as e:
+        if "Missing web sim data" in str(e):
+            return 0
+        raise
 
 
 _MODE_HANDLERS = {

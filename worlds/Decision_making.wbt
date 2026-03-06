@@ -26,7 +26,7 @@ AprilTagWall {
 }
 DEF MY_ROBOT Cube-Robot {
   name "MY_ROBOT"
-  controller "supervisor_controller"
+  controller "<none>"
   rotation 0 0 1 -0.01200000000000001
 }
 Robot {
