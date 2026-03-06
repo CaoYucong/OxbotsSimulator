@@ -121,6 +121,10 @@ if CAMERA_ON:
         sys.exit(0)
 
 # if we reach here, we are the supervisor controller and will proceed with full logic
+if supervisor.getName() != "supervisor":
+    # Safety guard: this script can be referenced by robot PROTO defaults.
+    # Only the dedicated Supervisor node is allowed to execute supervisor APIs.
+    sys.exit(0)
 
 
 
@@ -1195,7 +1199,7 @@ while supervisor.step(TIME_STEP) != -1:
     frame_counter += 1
     if frame_counter % CRUISE_INTERVAL_FRAMES == 0:
         try:
-            subprocess.run([sys.executable, CRUISE_SCRIPT_PATH], check=False, timeout=1)
+            subprocess.run([sys.executable, CRUISE_SCRIPT_PATH], check=False)
         except Exception as e:
             print(f"[Cruise] Error running waypoints_cruise.py: {e}")
 
