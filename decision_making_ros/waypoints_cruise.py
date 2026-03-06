@@ -42,6 +42,10 @@ from typing import Optional
 
 THIS_DIR = os.path.dirname(__file__)
 
+PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
+
+WHO_IS_DEV_JSON_FILE = os.path.join(PROJECT_ROOT, "config.json")
+
 REAL_TIME_DIR = os.path.join(THIS_DIR, "real_time_data")
 
 BASE_DIR = os.path.abspath(os.path.join(THIS_DIR, "..", "controllers", "supervisor_controller", "real_time_data"))
@@ -119,6 +123,43 @@ VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball (meters)
 
 FIELD_OF_VIEW_DEGREES = 120.0
+
+
+def _load_runtime_config() -> tuple[str, str]:
+    branch = ""
+    data_flow = "web"
+    try:
+        with open(WHO_IS_DEV_JSON_FILE, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            branch = str(payload.get("develope_brancch", "")).strip().lower()
+            flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
+            if flow_raw in ("web", "file"):
+                data_flow = flow_raw
+    except Exception:
+        pass
+    return branch, data_flow
+
+
+_DEVELOPE_BRANCCH, DATA_FLOW = _load_runtime_config()
+
+
+def _read_file_text(path: str) -> str:
+    try:
+        with _REAL_OPEN(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _write_file_text(path: str, content: str) -> bool:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _REAL_OPEN(path, "w") as f:
+            f.write(content)
+        return True
+    except Exception:
+        return False
 
 def _load_html_port(path, default_port=5001):
     try:
@@ -202,6 +243,13 @@ def _parse_sim_data_from_html(text: str) -> dict:
 
 def _refresh_sim_data() -> None:
     global SIM_DATA_CACHE
+    if DATA_FLOW == "file":
+        payload: dict[str, str] = {}
+        for path in WEB_ONLY_FILES:
+            key = os.path.splitext(os.path.basename(path))[0].lower()
+            payload[key] = _read_file_text(path)
+        SIM_DATA_CACHE = payload
+        return
     for url in (SIM_DATA_URL_FALLBACK, SIM_DATA_URL):
         try:
             with urllib.request.urlopen(url, timeout=SIM_DATA_TIMEOUT) as res:
@@ -225,6 +273,12 @@ def _get_sim_value(key: str):
 
 def _refresh_decisions_data() -> None:
     global DECISIONS_CACHE
+    if DATA_FLOW == "file":
+        payload: dict[str, str] = {}
+        for key in DECISIONS_LOCAL_CACHE.keys():
+            payload[key] = _read_file_text(os.path.join(REAL_TIME_DIR, f"{key}.txt"))
+        DECISIONS_CACHE = payload
+        return
     for url in (DECISIONS_URL_FALLBACK, DECISIONS_URL):
         try:
             with urllib.request.urlopen(url, timeout=DECISIONS_TIMEOUT) as res:
@@ -259,6 +313,14 @@ def _require_decision_value(key: str, source_path: str):
 
 def _post_decisions_data(payload: dict) -> bool:
     global DECISIONS_CACHE
+    if DATA_FLOW == "file":
+        ok = True
+        for key, value in payload.items():
+            path = os.path.join(REAL_TIME_DIR, f"{key}.txt")
+            ok = _write_file_text(path, str(value) + "\n") and ok
+        if ok:
+            DECISIONS_CACHE = dict(payload)
+        return ok
     try:
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -276,6 +338,18 @@ def _post_decisions_data(payload: dict) -> bool:
 
 def _refresh_decision_making_data() -> bool:
     global DECISION_MAKING_DATA_CACHE
+    if DATA_FLOW == "file":
+        payload: dict[str, str] = {}
+        try:
+            for name in os.listdir(REAL_TIME_DIR):
+                if not name.endswith(".txt"):
+                    continue
+                key = os.path.splitext(name)[0].lower()
+                payload[key] = _read_file_text(os.path.join(REAL_TIME_DIR, name))
+        except Exception:
+            payload = {}
+        DECISION_MAKING_DATA_CACHE = payload
+        return True
     try:
         with urllib.request.urlopen(
             DECISION_MAKING_DATA_URL_FALLBACK,
@@ -297,6 +371,14 @@ def _get_decision_making_value(key: str):
 
 def _post_decision_making_data(payload: dict) -> bool:
     global DECISION_MAKING_DATA_CACHE
+    if DATA_FLOW == "file":
+        ok = True
+        for key, value in payload.items():
+            path = os.path.join(REAL_TIME_DIR, f"{key}.txt")
+            ok = _write_file_text(path, str(value) + "\n") and ok
+        if ok:
+            DECISION_MAKING_DATA_CACHE = dict(payload)
+        return ok
     try:
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -333,11 +415,15 @@ def _decision_key(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0].lower()
 
 def _read_decision_text(path: str) -> str:
+    if DATA_FLOW == "file":
+        return _read_file_text(path)
     key = _decision_key(path)
     value = _get_decision_making_value(key)
     return "" if value is None else str(value)
 
 def _write_decision_text(path: str, content: str) -> bool:
+    if DATA_FLOW == "file":
+        return _write_file_text(path, content)
     key = _decision_key(path)
     return _update_decision_making_local(key, content)
 
@@ -365,6 +451,8 @@ def _is_decision_path(path: str) -> bool:
     return abs_path.startswith(os.path.abspath(THIS_DIR))
 
 def open(path, mode="r", *args, **kwargs):
+    if DATA_FLOW == "file":
+        return _REAL_OPEN(path, mode, *args, **kwargs)
     if "b" in mode or not _is_decision_path(path):
         return _REAL_OPEN(path, mode, *args, **kwargs)
     if "r" in mode and "w" not in mode and "a" not in mode and "+" not in mode:

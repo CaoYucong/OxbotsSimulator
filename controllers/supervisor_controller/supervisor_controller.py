@@ -11,6 +11,7 @@ import os
 import random
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -38,6 +39,29 @@ def _post_binary(url, data, content_type):
         return False
 
 
+def _post_front_camera_frame(camera_device, endpoint, image_path):
+    if camera_device is None or endpoint is None or image_path is None:
+        return
+    try:
+        camera_device.saveImage(image_path, 90)
+        with open(image_path, "rb") as f:
+            img_bytes = f.read()
+        _post_binary(endpoint, img_bytes, "image/png")
+        return
+    except Exception:
+        pass
+    try:
+        if cv2 is not None:
+            img = np.array(camera_device.getImageArray(), dtype=np.uint8)
+            if img is not None and img.size > 0:
+                bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+                ok, encoded = cv2.imencode(".png", bgr)
+                if ok:
+                    _post_binary(endpoint, encoded.tobytes(), "image/png")
+    except Exception:
+        pass
+
+
 # =============================================================================
 # RUNTIME INITIALIZATION
 # Instantiate controller for whichever node this script is attached to.
@@ -49,27 +73,43 @@ TIME_STEP = int(supervisor.getBasicTimeStep())
 dt = TIME_STEP / 1000.0  # seconds
 FIELD_OF_VIEW_DEGREES = 120.0  # degrees, for camera visibility checks (also used by cruise script)
 
+
+def _has_supervisor_privileges(ctrl):
+    """Return True when this controller is attached to a supervisor-capable node."""
+    try:
+        return ctrl.getRoot() is not None
+    except Exception:
+        return False
+
 # early constant needed by camera branch before full globals are defined
 # main robot name (also redefined later with full constant block)
 MAIN_ROBOT_NAME = "MY_ROBOT"
 CAMERA_ON = False
+IS_SUPERVISOR_NODE = _has_supervisor_privileges(supervisor)
+
+camera = None
+front_camera_endpoint = None
+tmp_image_path = None
+camera_frame_counter = 0
+post_interval_frames = 1
 
 if CAMERA_ON:
-    # determine whether we are running on the supervisor node or a robot
+    # Determine whether we are running on the dedicated supervisor node,
+    # main robot, or one of the obstacle robots.
     node_name = supervisor.getName()
-    if node_name != "supervisor":
-        # if this is an obstacle robot we don't need any camera logic at all
-        if node_name != MAIN_ROBOT_NAME:
-            # simply exit; the controller isn't used on obstacles
-            sys.exit(0)
+    if node_name != "supervisor" and node_name != MAIN_ROBOT_NAME:
+        # Obstacle robots do not need this controller.
+        sys.exit(0)
 
-        # running as the main Cube-Robot; only enable its camera and exit afterwards
+    if node_name == MAIN_ROBOT_NAME:
+        # Running as the main Cube-Robot: enable front camera streaming.
         robot = supervisor  # object is usable as Robot as well
+        camera = None
         try:
             camera = robot.getDevice('front_camera')
             if camera:
                 camera.enable(TIME_STEP)
-                print(f"[Camera] enabled on {node_name} {camera.getWidth()}x{camera.getHeight()}" )
+                print(f"[Camera] enabled on {node_name} {camera.getWidth()}x{camera.getHeight()}")
             else:
                 print(f"[Camera] front_camera device not found on {node_name}")
         except Exception as e:
@@ -93,37 +133,20 @@ if CAMERA_ON:
         os.makedirs(tmp_dir, exist_ok=True)
         tmp_image_path = os.path.join(tmp_dir, "front_camera.png")
 
-        frame_counter = 0
-        post_interval_frames = 1
-        while robot.step(TIME_STEP) != -1:
-            frame_counter += 1
-            if frame_counter % post_interval_frames != 0:
-                continue
-            try:
-                camera.saveImage(tmp_image_path, 90)
-                with open(tmp_image_path, "rb") as f:
-                    img_bytes = f.read()
-                _post_binary(front_camera_endpoint, img_bytes, "image/png")
-                continue
-            except Exception:
-                pass
-            try:
-                if cv2 is not None:
-                    img = np.array(camera.getImageArray(), dtype=np.uint8)
-                    if img is not None and img.size > 0:
-                        bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-                        ok, encoded = cv2.imencode(".png", bgr)
-                        if ok:
-                            _post_binary(front_camera_endpoint, encoded.tobytes(), "image/png")
-            except Exception:
-                pass
+        # If this node is not a supervisor, keep camera-only behavior and exit.
+        # If this node is also the supervisor, continue to full supervisor logic below.
+        if not IS_SUPERVISOR_NODE:
+            while robot.step(TIME_STEP) != -1:
+                camera_frame_counter += 1
+                if camera_frame_counter % post_interval_frames != 0:
+                    continue
+                _post_front_camera_frame(camera, front_camera_endpoint, tmp_image_path)
 
-        sys.exit(0)
+            sys.exit(0)
 
 # if we reach here, we are the supervisor controller and will proceed with full logic
-if supervisor.getName() != "supervisor":
-    # Safety guard: this script can be referenced by robot PROTO defaults.
-    # Only the dedicated Supervisor node is allowed to execute supervisor APIs.
+if not IS_SUPERVISOR_NODE:
+    # Safety guard: only supervisor-capable nodes are allowed to execute supervisor APIs.
     sys.exit(0)
 
 
@@ -190,7 +213,8 @@ def _load_html_port(path, default_port=5001):
 # =============================================================================
 THIS_DIR = os.path.dirname(__file__)
 PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
-WHO_IS_DEV_FILE = os.path.join(PROJECT_ROOT, "who_is_developing.txt")
+WHO_IS_DEV_FILE = os.path.join(PROJECT_ROOT, "config.json")
+WHO_IS_DEV_FILE_LEGACY = os.path.join(PROJECT_ROOT, "who_is_developing.txt")
 RANDOM_SEED_FILE = os.path.join(THIS_DIR, "random_seed.txt")
 REAL_TIME_DATA_DIR = os.path.join(THIS_DIR, "real_time_data")
 FIELD_VIEWER_PATH = os.path.abspath(
@@ -203,6 +227,51 @@ DECISIONS_ENDPOINT = f"http://localhost:{FIELD_VIEWER_PORT}/data/decisions"
 DECISIONS_CACHE = {}
 DECISIONS_SEQ = 0
 
+
+def _load_runtime_config():
+    """Load branch/data-flow config from JSON, fallback to legacy txt branch file."""
+    branch = ""
+    data_flow = "web"
+
+    try:
+        with open(WHO_IS_DEV_FILE, "r") as f:
+            raw = f.read().strip()
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            branch = str(payload.get("develope_brancch", "")).strip().lower()
+            flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
+            if flow_raw in ("web", "file"):
+                data_flow = flow_raw
+    except Exception:
+        pass
+
+    if not branch:
+        try:
+            with open(WHO_IS_DEV_FILE_LEGACY, "r") as f:
+                branch = f.read().strip().lower()
+        except Exception:
+            pass
+
+    return branch, data_flow
+
+
+def _read_local_text(path):
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+def _write_local_text(path, content):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+        return True
+    except Exception:
+        return False
+
 def _load_random_seed(path, default_seed=DEFAULT_RANDOM_SEED):
     """Load random seed from file, fallback to default on any error."""
     try:
@@ -213,12 +282,13 @@ def _load_random_seed(path, default_seed=DEFAULT_RANDOM_SEED):
         return default_seed
 
 
-def _resolve_decision_making_dir():
-    """Select decision_making folder based on who_is_developing.txt (cyc/wly)."""
+def _resolve_decision_making_dir(branch=None):
+    """Select decision_making folder based on config (develope_brancch)."""
     default_dir = os.path.join(PROJECT_ROOT, "decision_making")
     try:
-        with open(WHO_IS_DEV_FILE, "r") as f:
-            dev = f.read().strip().lower()
+        dev = (branch or "").strip().lower()
+        if not dev:
+            dev, _ = _load_runtime_config()
         if dev == "cyc":
             return os.path.join(PROJECT_ROOT, "decision_making_cyc")
         if dev == "wly":
@@ -232,7 +302,8 @@ def _resolve_decision_making_dir():
     return default_dir
 
 
-DECISION_MAKING_DIR = _resolve_decision_making_dir()
+DEVELOPE_BRANCCH, DATA_FLOW = _load_runtime_config()
+DECISION_MAKING_DIR = _resolve_decision_making_dir(DEVELOPE_BRANCCH)
 DECISION_REAL_TIME_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data")
 RANDOM_SEED = _load_random_seed(RANDOM_SEED_FILE)
 
@@ -277,16 +348,54 @@ for name in OBSTACLE_ROBOT_NAMES:
 
 def _start_field_viewer():
     try:
-        try:
-            out = subprocess.check_output(["lsof", "-ti", f":{FIELD_VIEWER_PORT}"], text=True)
-            pids = [int(pid) for pid in out.split() if pid.strip()]
-            for pid in pids:
+        def _is_port_open(port):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.2)
+            try:
+                return sock.connect_ex(("127.0.0.1", int(port))) == 0
+            finally:
+                sock.close()
+
+        def _pids_listening_on_port(port):
+            pids = set()
+            if sys.platform.startswith("win"):
                 try:
-                    os.kill(pid, signal.SIGTERM)
+                    out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True)
+                    token = f":{port}"
+                    for raw in out.splitlines():
+                        line = raw.strip()
+                        if token not in line or "LISTENING" not in line.upper():
+                            continue
+                        parts = line.split()
+                        if len(parts) >= 5 and parts[-1].isdigit():
+                            pids.add(int(parts[-1]))
                 except Exception:
                     pass
+                return pids
+            try:
+                out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True)
+                for pid in out.split():
+                    if pid.strip().isdigit():
+                        pids.add(int(pid))
+            except Exception:
+                pass
+            return pids
+
+        def _kill_pid(pid):
+            try:
+                if sys.platform.startswith("win"):
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+
+        try:
+            for pid in _pids_listening_on_port(FIELD_VIEWER_PORT):
+                _kill_pid(pid)
         except Exception:
             pass
+
         env = os.environ.copy()
         env.setdefault("PORT", str(FIELD_VIEWER_PORT))
         subprocess.Popen(
@@ -295,6 +404,19 @@ def _start_field_viewer():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+
+        # Wait briefly for server readiness to provide clear status in logs.
+        started = False
+        for _ in range(20):
+            if _is_port_open(FIELD_VIEWER_PORT):
+                started = True
+                break
+            time.sleep(0.1)
+
+        if not started:
+            print(f"可视化启动失败 / Failed to bind field viewer on port {FIELD_VIEWER_PORT}")
+            return
+
         print(f"可视化已启动 / Field viewer running: http://localhost:{env['PORT']}")
         print(f"Front Camera: http://localhost:{env['PORT']}/front_camera")
         print(f"For Simulation Data: http://localhost:{env['PORT']}/simulation_data")
@@ -941,6 +1063,11 @@ def _read_speed_mps(default_value):
 
 
 def _post_sim_data(payload):
+    if DATA_FLOW == "file":
+        for key, value in payload.items():
+            path = os.path.join(REAL_TIME_DATA_DIR, f"{key}.txt")
+            _write_local_text(path, f"{value}\n")
+        return
     try:
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -956,6 +1083,16 @@ def _post_sim_data(payload):
 
 def _refresh_decisions_data():
     global DECISIONS_CACHE, DECISIONS_SEQ
+    if DATA_FLOW == "file":
+        payload = {}
+        for key in ("dynamic_waypoints", "speed"):
+            path = os.path.join(DECISION_REAL_TIME_DIR, f"{key}.txt")
+            value = _read_local_text(path)
+            if value is not None:
+                payload[key] = value
+        DECISIONS_CACHE = payload
+        DECISIONS_SEQ += 1
+        return True
     try:
         with urllib.request.urlopen(DECISIONS_ENDPOINT, timeout=0.3) as res:
             payload = json.loads(res.read().decode("utf-8"))
@@ -1197,6 +1334,9 @@ while supervisor.step(TIME_STEP) != -1:
     
     # 1.6) Execute cruise script at intervals
     frame_counter += 1
+    if camera is not None and front_camera_endpoint is not None and tmp_image_path is not None:
+        if frame_counter % post_interval_frames == 0:
+            _post_front_camera_frame(camera, front_camera_endpoint, tmp_image_path)
     if frame_counter % CRUISE_INTERVAL_FRAMES == 0:
         try:
             subprocess.run([sys.executable, CRUISE_SCRIPT_PATH], check=False)

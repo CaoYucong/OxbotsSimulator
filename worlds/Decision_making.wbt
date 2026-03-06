@@ -27,13 +27,9 @@ AprilTagWall {
 }
 DEF MY_ROBOT Cube-Robot {
   name "MY_ROBOT"
-  controller "<none>"
-  rotation 0 0 1 -0.01200000000000001
-}
-Robot {
-  name "supervisor"
   controller "supervisor_controller"
   supervisor TRUE
+  rotation 0 0 1 -0.01200000000000001
 }
 DEF BALL_0 PingBall {
   translation 0.7027071778893023 -0.12950020610531 0.019999671263744724

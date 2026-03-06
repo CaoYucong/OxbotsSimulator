@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(ROOT_DIR, "..", ".."))
 
+CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.json")
+
 DATA_DIR = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data")
 
 INDEX_FILE = os.path.join(ROOT_DIR, "index.html")
@@ -26,6 +28,27 @@ BALL_TAKEN_HISTORY_FILE = os.path.join(DATA_DIR, "ball_taken_history.txt")
 
 
 SIM_DATA_DIR = os.path.join(PROJECT_ROOT, "controllers", "supervisor_controller", "real_time_data")
+
+
+def _load_runtime_config() -> tuple[str, str]:
+    branch = ""
+    data_flow = "web"
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            branch = str(payload.get("develope_brancch", "")).strip().lower()
+            flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
+            if flow_raw in ("web", "file"):
+                data_flow = flow_raw
+    except Exception:
+        pass
+    return branch, data_flow
+
+
+DEVELOPE_BRANCCH, DATA_FLOW = _load_runtime_config()
+DECISION_MAKING_DIR = os.path.join(PROJECT_ROOT, f"decision_making_{DEVELOPE_BRANCCH}") if DEVELOPE_BRANCCH else ""
+DECISION_DATA_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data") if DECISION_MAKING_DIR else ""
 
 SIM_DATA_CACHE = {}
 SIM_DATA_SEQ = 0
@@ -93,6 +116,8 @@ def _read_last_line_from_text(text: str) -> str:
 
 
 def _get_decision_text(key: str) -> str:
+    if DATA_FLOW == "file" and DECISION_DATA_DIR:
+        return _read_text(os.path.join(DECISION_DATA_DIR, f"{key}.txt"))
     if not DECISION_MAKING_DATA_CACHE:
         return ""
     value = DECISION_MAKING_DATA_CACHE.get(key)
@@ -104,6 +129,8 @@ def _get_decision_lines(key: str) -> list[str]:
 
 
 def _get_sim_text(key: str) -> str:
+    if DATA_FLOW == "file":
+        return _read_text(os.path.join(SIM_DATA_DIR, f"{key}.txt"))
     if not SIM_DATA_CACHE:
         return ""
     value = SIM_DATA_CACHE.get(key)
@@ -115,6 +142,8 @@ def _get_sim_lines(key: str) -> list[str]:
 
 
 def _get_decisions_text(key: str) -> str:
+    if DATA_FLOW == "file" and DECISION_DATA_DIR:
+        return _read_text(os.path.join(DECISION_DATA_DIR, f"{key}.txt"))
     if not DECISIONS_CACHE:
         return ""
     value = DECISIONS_CACHE.get(key)

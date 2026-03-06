@@ -5,6 +5,7 @@ PROTO Cube-Robot [
   field SFRotation rotation       0 0 1 0
   field SFString   name           "cube_robot"
   field SFString   controller     "supervisor_controller"
+  field SFBool     supervisor     FALSE
   field MFString   topTextureUrl     "../textures/robot_texture/top.png"
   field MFString   bottomTextureUrl  "../textures/robot_texture/bottom.png"
   field MFString   backTextureUrl    "../textures/robot_texture/back.png"
@@ -18,6 +19,7 @@ PROTO Cube-Robot [
     rotation    IS rotation
     name IS name
     controller IS controller
+    supervisor IS supervisor
     children [
 
       # Top
