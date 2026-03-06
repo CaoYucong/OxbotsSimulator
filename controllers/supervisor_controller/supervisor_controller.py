@@ -167,14 +167,18 @@ South = -math.pi / 2
 West = math.pi
 
 # Cruise script execution config
-CRUISE_INTERVAL_FRAMES = 60
-CRUISE_RESTART_INTERVAL_S = 0.5
-SIM_DATA_POST_INTERVAL_FRAMES = 3
-SIM_DATA_POST_TIMEOUT_S = 0.05
-DECISIONS_POLL_INTERVAL_FRAMES = 10
-DECISIONS_REFRESH_INTERVAL_S = 0.12
-DECISIONS_FETCH_TIMEOUT_S = 0.05
+CRUISE_INTERVAL_FRAMES = 15
+SIM_DATA_POST_INTERVAL_FRAMES = 10
+SIM_DATA_POST_TIMEOUT_S = 0.01
+DECISIONS_POLL_INTERVAL_FRAMES = 8
+DECISIONS_REFRESH_INTERVAL_S = 0.15
+DECISIONS_FETCH_TIMEOUT_S = 0.02
 DIAG_LOG_INTERVAL_S = 1.0
+FALLBACK_WAYPOINT_DELAY_S = 2.0
+FALLBACK_PATROL_WAYPOINTS = [
+    (0.0, 0.0, None),
+    (0.6, 0.0, None),
+]
 
 # Field viewer config
 def _load_html_port(path, default_port=5001):
@@ -240,21 +244,12 @@ def _resolve_decision_making_dir():
 DECISION_MAKING_DIR = _resolve_decision_making_dir()
 DECISION_REAL_TIME_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data")
 RANDOM_SEED = _load_random_seed(RANDOM_SEED_FILE)
-USE_LOCAL_COMMAND_BRIDGE = os.path.basename(DECISION_MAKING_DIR) == "decision_making_ros"
 
 WAYPOINTS_HISTORY_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoints_history.txt")
 OBSTACLE_PLAN_FILE = os.path.join(REAL_TIME_DATA_DIR, "obstacle_plan.txt")
 BALL_TAKEN_HISTORY_FILE = os.path.join(REAL_TIME_DATA_DIR, "ball_taken_history.txt")
 CRUISE_SCRIPT_PATH = os.path.join(DECISION_MAKING_DIR, "waypoints_cruise.py")
 SUPERVISOR_STATUS_FILE = os.path.join(REAL_TIME_DATA_DIR, "supervisor_controller_status.txt")
-DYNAMIC_WAYPOINTS_FILE = os.path.join(REAL_TIME_DATA_DIR, "dynamic_waypoints.txt")
-SPEED_FILE = os.path.join(REAL_TIME_DATA_DIR, "speed.txt")
-WAYPOINT_STATUS_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoint_status.txt")
-BALL_POSITION_FILE = os.path.join(REAL_TIME_DATA_DIR, "ball_position.txt")
-CURRENT_POSITION_FILE = os.path.join(REAL_TIME_DATA_DIR, "current_position.txt")
-OBSTACLE_ROBOT_FILE = os.path.join(REAL_TIME_DATA_DIR, "obstacle_robot.txt")
-TIME_FILE = os.path.join(REAL_TIME_DATA_DIR, "time.txt")
-VISIBLE_BALLS_FILE = os.path.join(REAL_TIME_DATA_DIR, "visible_balls.txt")
 
 
 def _resolve_python_executable(project_root):
@@ -273,36 +268,6 @@ def _resolve_python_executable(project_root):
 
 
 PYTHON_EXECUTABLE = _resolve_python_executable(PROJECT_ROOT)
-
-
-def _read_text_file(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except Exception:
-        return ""
-
-
-def _write_text_atomic(path, content):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp, path)
-        return True
-    except Exception:
-        return False
-
-
-def _file_diag(path):
-    try:
-        st = os.stat(path)
-        return f"ok mtime={st.st_mtime:.3f} size={st.st_size}"
-    except FileNotFoundError:
-        return "missing"
-    except Exception as e:
-        return f"err:{e.__class__.__name__}"
 
 
 # =============================================================================
@@ -835,9 +800,7 @@ def _load_dynamic_waypoint():
     Returns a single (x, y, orientation) tuple or None if file is empty/invalid.
     """
     namespace = {"North": 90.0, "East": 0.0, "South": -90.0, "West": 180.0, "None": None}
-    raw_payload = _read_text_file(DYNAMIC_WAYPOINTS_FILE)
-    if not raw_payload:
-        raw_payload = _get_decision_value("dynamic_waypoints")
+    raw_payload = _get_decision_value("dynamic_waypoints")
     if not raw_payload:
         return None
     for raw in raw_payload.splitlines():
@@ -1001,9 +964,7 @@ def _format_webots_time():
 
 def _read_speed_mps(default_value):
     """Read cruise speed in m/s from decisions data (web-only)."""
-    raw = _read_text_file(SPEED_FILE)
-    if not raw:
-        raw = _get_decision_value("speed")
+    raw = _get_decision_value("speed")
     if raw is None:
         return default_value
     try:
@@ -1214,20 +1175,14 @@ else:
 # Initialize waypoints history with new session header
 _append_history_header(WAYPOINTS_HISTORY_FILE)
 
-if USE_LOCAL_COMMAND_BRIDGE:
-    _write_text_atomic(DYNAMIC_WAYPOINTS_FILE, "")
-    _write_text_atomic(SPEED_FILE, f"{DEFAULT_VELOCITY:.6f}\n")
-
 # Prime decisions cache once at startup (non-fatal on failure)
-if not USE_LOCAL_COMMAND_BRIDGE:
-    _refresh_decisions_data(force=True)
+_refresh_decisions_data(force=True)
 
 # Load initial dynamic waypoint for main robot
 current_waypoint = _load_dynamic_waypoint()
 last_dynamic_waypoint = current_waypoint
-last_dynamic_waypoint_raw = _read_text_file(DYNAMIC_WAYPOINTS_FILE)
-if not last_dynamic_waypoint_raw:
-    last_dynamic_waypoint_raw = _get_decision_value("dynamic_waypoints") or ""
+last_dynamic_waypoint_raw = _get_decision_value("dynamic_waypoints") or ""
+fallback_waypoint_index = 0
 
 if current_waypoint is not None:
     x, y, ang = current_waypoint
@@ -1239,7 +1194,6 @@ if current_waypoint is not None:
 frame_counter = 0
 ball_taken_180_logged = False
 cruise_process = None
-last_cruise_start_monotonic = 0.0
 last_diag_log_time = -1.0
 
 # Mark supervisor status as running at initiation.
@@ -1253,7 +1207,7 @@ while supervisor.step(TIME_STEP) != -1:
     frame_counter += 1
     sim_time = supervisor.getTime()
 
-    if (not USE_LOCAL_COMMAND_BRIDGE) and frame_counter % DECISIONS_POLL_INTERVAL_FRAMES == 0:
+    if frame_counter % DECISIONS_POLL_INTERVAL_FRAMES == 0:
         _refresh_decisions_data()
 
     if (sim_time > 180.0) and (not ball_taken_180_logged):
@@ -1267,9 +1221,7 @@ while supervisor.step(TIME_STEP) != -1:
 
     # ==== Update main robot (single waypoint navigation) ====
     # Check if dynamic_waypoints has changed (web-only)
-    raw_dynamic_waypoint = _read_text_file(DYNAMIC_WAYPOINTS_FILE)
-    if not raw_dynamic_waypoint:
-        raw_dynamic_waypoint = DECISIONS_CACHE.get("dynamic_waypoints") or ""
+    raw_dynamic_waypoint = DECISIONS_CACHE.get("dynamic_waypoints") or ""
     if raw_dynamic_waypoint != last_dynamic_waypoint_raw:
         new_waypoint = _load_dynamic_waypoint()
         if new_waypoint is not None and new_waypoint != last_dynamic_waypoint:
@@ -1281,6 +1233,16 @@ while supervisor.step(TIME_STEP) != -1:
             x, y, ang = current_waypoint
             main_motion.start(x, y, velocity=None, angle=ang)
         last_dynamic_waypoint_raw = raw_dynamic_waypoint
+
+    if (
+        not raw_dynamic_waypoint and
+        not main_motion.active and
+        sim_time >= FALLBACK_WAYPOINT_DELAY_S):
+        current_waypoint = FALLBACK_PATROL_WAYPOINTS[fallback_waypoint_index % len(FALLBACK_PATROL_WAYPOINTS)]
+        fallback_waypoint_index += 1
+        last_dynamic_waypoint = current_waypoint
+        x, y, ang = current_waypoint
+        main_motion.start(x, y, velocity=None, angle=ang)
 
     # 0.5) Update main robot cruise speed from speed.txt
     main_motion.velocity = _read_speed_mps(DEFAULT_VELOCITY)
@@ -1299,38 +1261,22 @@ while supervisor.step(TIME_STEP) != -1:
         raw_preview = raw_dynamic_waypoint.strip().replace("\n", " ")
         if len(raw_preview) > 80:
             raw_preview = raw_preview[:77] + "..."
-        cruise_state = "none"
-        if cruise_process is not None:
-            ret = cruise_process.poll()
-            cruise_state = "running" if ret is None else f"exit={ret}"
-        dyn_file_diag = _file_diag(DYNAMIC_WAYPOINTS_FILE)
-        speed_file_diag = _file_diag(SPEED_FILE)
-        status_file_diag = _file_diag(WAYPOINT_STATUS_FILE)
-        time_file_diag = _file_diag(TIME_FILE)
         print(
             f"[Diag] t={sim_time:.2f}s active={int(main_motion.active)} "
-            f"status={waypoint_status} current_wp={current_waypoint} raw_wp='{raw_preview}' "
-            f"bridge={'local' if USE_LOCAL_COMMAND_BRIDGE else 'http'} cruise={cruise_state} "
-            f"dw_file=({dyn_file_diag}) speed_file=({speed_file_diag}) "
-            f"status_file=({status_file_diag}) time_file=({time_file_diag})"
+            f"status={waypoint_status} current_wp={current_waypoint} raw_wp='{raw_preview}'"
         )
         last_diag_log_time = sim_time
     
     # 1.6) Execute cruise script at intervals
     if frame_counter % CRUISE_INTERVAL_FRAMES == 0:
-        now_mono = time.monotonic()
         if cruise_process is None:
-            if (now_mono - last_cruise_start_monotonic) >= CRUISE_RESTART_INTERVAL_S:
-                cruise_process = _start_cruise_process()
-                last_cruise_start_monotonic = now_mono
+            cruise_process = _start_cruise_process()
         else:
             ret = cruise_process.poll()
             if ret is not None:
                 if ret != 0:
                     print(f"[Cruise] waypoints_cruise.py exited with code {ret}")
-                if (now_mono - last_cruise_start_monotonic) >= CRUISE_RESTART_INTERVAL_S:
-                    cruise_process = _start_cruise_process()
-                    last_cruise_start_monotonic = now_mono
+                cruise_process = _start_cruise_process()
 
     # 2) Call absorption check for main robot
     monitor_simple_step(ball_prefix=BALL_PREFIX, ball_count=BALL_COUNT, half_x=ABSORB_BOX_HALF_X, half_y=ABSORB_BOX_HALF_Y, absorb_location=ABSORB_LOCATION)
@@ -1365,13 +1311,6 @@ while supervisor.step(TIME_STEP) != -1:
         "ball_taken_number": ball_taken_text,
         "waypoint_status": waypoint_status,
     }
-    if USE_LOCAL_COMMAND_BRIDGE and frame_counter % SIM_DATA_POST_INTERVAL_FRAMES == 0:
-        _write_text_atomic(WAYPOINT_STATUS_FILE, f"{waypoint_status}\n")
-        _write_text_atomic(BALL_POSITION_FILE, (ball_positions_text + "\n") if ball_positions_text else "")
-        _write_text_atomic(CURRENT_POSITION_FILE, f"{current_position_text}\n")
-        _write_text_atomic(OBSTACLE_ROBOT_FILE, (obstacle_positions_text + "\n") if obstacle_positions_text else "")
-        _write_text_atomic(TIME_FILE, f"{webots_time_text}\n")
-        _write_text_atomic(VISIBLE_BALLS_FILE, (visible_balls_text + "\n") if visible_balls_text else "")
     if frame_counter % SIM_DATA_POST_INTERVAL_FRAMES == 0:
         _post_sim_data(payload)
 

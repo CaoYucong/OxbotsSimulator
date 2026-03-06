@@ -1,16 +1,3 @@
-(-0.633145, -0.131139, -131.52),  cut
-(-0.617931, -0.092046, -131.52),  cut
-(-0.49378, -0.131326, -131.52),  reached
-
-# Waypoint History - Started at 2026-03-03 17:57:23 - Random Seed 1010
-(-0.9, 0.0, -0.69),  reached
-(-0.608757, -0.038649, -7.56),  cut
-(-0.608788, -0.038661, -7.56),  cut
-(-0.608819, -0.038673, -7.57),  cut
-(-0.608849, -0.038685, -7.57),  cut
-(-0.60888, -0.038697, -7.57),  cut
-(-0.608911, -0.038709, -7.58),  cut
-(-0.608941, -0.038721, -7.58),  cut
 (-0.608972, -0.038733, -7.59),  cut
 (-0.609003, -0.038745, -7.59),  cut
 (-0.609034, -0.038757, -7.60),  cut
@@ -1998,3 +1985,16 @@
 (-0.60984, -0.03907, -7.67),  reached
 (-0.461182, -0.05909, -7.67),  reached
 (-0.481202, -0.207748, -7.67),  reached
+
+# Waypoint History - Started at 2026-03-06 16:29:57 - Random Seed 1010
+(-0.609882, -0.039087, -7.67),  reached
+
+# Waypoint History - Started at 2026-03-06 16:31:10 - Random Seed 1010
+
+# Waypoint History - Started at 2026-03-06 16:31:34 - Random Seed 1010
+
+# Waypoint History - Started at 2026-03-06 16:32:22 - Random Seed 1010
+
+# Waypoint History - Started at 2026-03-06 16:33:39 - Random Seed 1010
+
+# Waypoint History - Started at 2026-03-06 16:34:16 - Random Seed 1010
