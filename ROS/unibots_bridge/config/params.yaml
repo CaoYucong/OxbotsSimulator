@@ -12,3 +12,5 @@ decision_node:
     tick_hz: 10.0
     mode: mode_improved_nearest_v3_5
     default_speed: 0.3
+    decisions_post_url: http://127.0.0.1:5003/data/decisions
+    decisions_post_timeout: 0.2

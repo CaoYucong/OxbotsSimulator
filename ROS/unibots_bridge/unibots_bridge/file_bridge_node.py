@@ -24,6 +24,16 @@ class _MirrorState:
                 "content_type": "application/json; charset=utf-8",
                 "has_data": False,
             },
+            "/data/decisions": {
+                "body": b'{"dynamic_waypoints":"","speed":"0.300000"}',
+                "content_type": "application/json; charset=utf-8",
+                "has_data": True,
+            },
+            "/data/decision_making_data": {
+                "body": b"{}",
+                "content_type": "application/json; charset=utf-8",
+                "has_data": True,
+            },
         }
 
     def set(self, path: str, body: bytes, content_type: str) -> bool:
@@ -71,6 +81,40 @@ def _build_handler(state: _MirrorState):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self):
+            if self.path not in ("/data/decisions", "/data/decision_making_data"):
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"Not Found")
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except Exception:
+                length = 0
+
+            body = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                payload = json.loads(body.decode("utf-8", errors="ignore"))
+                if not isinstance(payload, dict):
+                    raise ValueError("payload must be a JSON object")
+            except Exception:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"Invalid JSON payload")
+                return
+
+            canonical = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+            state.set(self.path, canonical, "application/json; charset=utf-8")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
 
         def log_message(self, fmt, *args):
             # Keep HTTP server logs quiet; ROS logger is used for state changes.
@@ -151,61 +195,61 @@ class FileBridgeNode(Node):
                     self.get_logger().warn(f'upstream fetch failed for {url}: {exc}')
                     self._error_logged[path] = True
 
-            self._publish_sim_topics_from_cache()
+        self._publish_sim_topics_from_cache()
 
-        def _publish_sim_topics_from_cache(self) -> None:
-            data_item = self._state.get('/data/simulation_data')
-            if not data_item or not data_item.get('has_data'):
-                return
-            try:
-                payload = json.loads(data_item['body'].decode('utf-8', errors='ignore'))
-            except Exception:
-                return
-            if not isinstance(payload, dict):
-                return
+    def _publish_sim_topics_from_cache(self) -> None:
+        data_item = self._state.get('/data/simulation_data')
+        if not data_item or not data_item.get('has_data'):
+            return
+        try:
+            payload = json.loads(data_item['body'].decode('utf-8', errors='ignore'))
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
 
-            current_text = str(payload.get('current_position', '')).strip()
-            visible_text = str(payload.get('visible_balls', '')).strip()
-            waypoint_text = str(payload.get('waypoint_status', '')).strip()
-            time_text = str(payload.get('time', '')).strip()
+        current_text = str(payload.get('current_position', '')).strip()
+        visible_text = str(payload.get('visible_balls', '')).strip()
+        waypoint_text = str(payload.get('waypoint_status', '')).strip()
+        time_text = str(payload.get('time', '')).strip()
 
-            pose = self._parse_current_position(current_text)
-            if pose is not None:
-                x, y, theta_deg = pose
-                theta = math.radians(theta_deg)
-                msg = PoseStamped()
-                msg.header.stamp = self.get_clock().now().to_msg()
-                msg.header.frame_id = 'map'
-                msg.pose.position.x = x
-                msg.pose.position.y = y
-                msg.pose.position.z = 0.0
-                msg.pose.orientation.x = 0.0
-                msg.pose.orientation.y = 0.0
-                msg.pose.orientation.z = math.sin(theta * 0.5)
-                msg.pose.orientation.w = math.cos(theta * 0.5)
-                self.pub_current_position.publish(msg)
+        pose = self._parse_current_position(current_text)
+        if pose is not None:
+            x, y, theta_deg = pose
+            theta = math.radians(theta_deg)
+            msg = PoseStamped()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = 'map'
+            msg.pose.position.x = x
+            msg.pose.position.y = y
+            msg.pose.position.z = 0.0
+            msg.pose.orientation.x = 0.0
+            msg.pose.orientation.y = 0.0
+            msg.pose.orientation.z = math.sin(theta * 0.5)
+            msg.pose.orientation.w = math.cos(theta * 0.5)
+            self.pub_current_position.publish(msg)
 
-            vis_msg = String()
-            vis_msg.data = visible_text
-            self.pub_visible_balls.publish(vis_msg)
+        vis_msg = String()
+        vis_msg.data = visible_text
+        self.pub_visible_balls.publish(vis_msg)
 
-            wp_msg = String()
-            wp_msg.data = waypoint_text
-            self.pub_waypoint_status.publish(wp_msg)
+        wp_msg = String()
+        wp_msg.data = waypoint_text
+        self.pub_waypoint_status.publish(wp_msg)
 
-            if time_text:
-                t_msg = String()
-                t_msg.data = time_text
-                self.pub_time.publish(t_msg)
+        if time_text:
+            t_msg = String()
+            t_msg.data = time_text
+            self.pub_time.publish(t_msg)
 
-        def _parse_current_position(self, text: str):
-            nums = re.findall(r'[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?', text or '')
-            if len(nums) < 3:
-                return None
-            try:
-                return float(nums[0]), float(nums[1]), float(nums[2])
-            except Exception:
-                return None
+    def _parse_current_position(self, text: str):
+        nums = re.findall(r'[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?', text or '')
+        if len(nums) < 3:
+            return None
+        try:
+            return float(nums[0]), float(nums[1]), float(nums[2])
+        except Exception:
+            return None
 
     def destroy_node(self):
         try:

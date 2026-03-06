@@ -1,4 +1,6 @@
 import math
+import json
+import urllib.request
 from typing import Optional
 
 import rclpy
@@ -16,10 +18,15 @@ class DecisionNode(Node):
         self.declare_parameter('tick_hz', 10.0)
         self.declare_parameter('mode', 'mode_improved_nearest_v3_5')
         self.declare_parameter('default_speed', 0.3)
+        self.declare_parameter('decisions_post_url', 'http://127.0.0.1:5003/data/decisions')
+        self.declare_parameter('decisions_post_timeout', 0.2)
 
         tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)
         self.mode = self.get_parameter('mode').get_parameter_value().string_value
         self.default_speed = float(self.get_parameter('default_speed').get_parameter_value().double_value)
+        self.decisions_post_url = self.get_parameter('decisions_post_url').get_parameter_value().string_value
+        self.decisions_post_timeout = float(self.get_parameter('decisions_post_timeout').get_parameter_value().double_value)
+        self._post_error_logged = False
 
         self.current_x: Optional[float] = None
         self.current_y: Optional[float] = None
@@ -99,6 +106,32 @@ class DecisionNode(Node):
             tw = Twist()
             tw.linear.x = float(speed)
             self.pub_speed_cmd.publish(tw)
+
+        if waypoint is not None:
+            self._post_decisions(waypoint, speed)
+
+    def _post_decisions(self, waypoint, speed) -> None:
+        try:
+            x, y, theta = float(waypoint[0]), float(waypoint[1]), float(waypoint[2])
+            theta_deg = math.degrees(theta)
+            payload = {
+                'dynamic_waypoints': f'({x:.6f}, {y:.6f}, {theta_deg:.6f})',
+                'speed': f'{float(speed if speed is not None else self.default_speed):.6f}',
+            }
+            body = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(
+                self.decisions_post_url,
+                data=body,
+                method='POST',
+                headers={'Content-Type': 'application/json', 'Content-Length': str(len(body))},
+            )
+            with urllib.request.urlopen(req, timeout=self.decisions_post_timeout) as res:
+                res.read()
+            self._post_error_logged = False
+        except Exception as exc:
+            if not self._post_error_logged:
+                self.get_logger().warn(f'failed to POST decisions to {self.decisions_post_url}: {exc}')
+                self._post_error_logged = True
 
 
 def main(args=None) -> None:
