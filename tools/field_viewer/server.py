@@ -42,7 +42,7 @@ def _load_runtime_config() -> tuple[str, str, bool, str, float]:
         with open(CONFIG_FILE, "r") as f:
             payload = json.loads(f.read().strip())
         if isinstance(payload, dict):
-            branch = str(payload.get("develope_brancch", "")).strip().lower()
+            branch = str(payload.get("develop_branch", payload.get("develope_brancch", ""))).strip().lower()
             flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
             if flow_raw in ("web", "file"):
                 data_flow = flow_raw
@@ -82,10 +82,10 @@ def _load_html_port(path: str, default_port: int = 5001) -> int:
     return default_port
 
 
-DEVELOPE_BRANCCH, DATA_FLOW, RUN_ON_PI, PI_IP, VIEWER_REFRESH_SECONDS = _load_runtime_config()
+DEVELOP_BRANCH, DATA_FLOW, RUN_ON_PI, PI_IP, VIEWER_REFRESH_SECONDS = _load_runtime_config()
 FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
 REMOTE_HOST = PI_IP if RUN_ON_PI else "localhost"
-DECISION_MAKING_DIR = os.path.join(PROJECT_ROOT, f"decision_making_{DEVELOPE_BRANCCH}") if DEVELOPE_BRANCCH else ""
+DECISION_MAKING_DIR = os.path.join(PROJECT_ROOT, f"decision_making_{DEVELOP_BRANCH}") if DEVELOP_BRANCH else ""
 DECISION_DATA_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data") if DECISION_MAKING_DIR else ""
 
 SIM_DATA_CACHE = {}

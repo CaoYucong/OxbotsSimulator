@@ -114,9 +114,13 @@ VISIBLE_RANGE_METERS = 2.0
 
 MAX_LINEAR_VELOCITY = 0.7
 
-DEFAULT_LINEAR_VELOCITY = 0.3
+DEFAULT_LINEAR_VELOCITY_FALLBACK = 3.0
 
-DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
+DEFAULT_LINEAR_VELOCITY = DEFAULT_LINEAR_VELOCITY_FALLBACK
+
+DEFAULT_ANGULAR_VELOCITY_FALLBACK = 40.0
+
+DEFAULT_ANGULAR_VELOCITY = DEFAULT_ANGULAR_VELOCITY_FALLBACK # degrees per second
 
 VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 
@@ -125,23 +129,39 @@ INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball 
 FIELD_OF_VIEW_DEGREES = 120.0
 
 
-def _load_runtime_config() -> tuple[str, str]:
+def _load_runtime_config() -> tuple[str, str, float, float]:
     branch = ""
     data_flow = "web"
+    default_linear_velocity = DEFAULT_LINEAR_VELOCITY_FALLBACK
+    default_angular_velocity = DEFAULT_ANGULAR_VELOCITY_FALLBACK
     try:
         with open(WHO_IS_DEV_JSON_FILE, "r") as f:
             payload = json.loads(f.read().strip())
         if isinstance(payload, dict):
-            branch = str(payload.get("develope_brancch", "")).strip().lower()
+            branch = str(payload.get("develop_branch", payload.get("develope_brancch", ""))).strip().lower()
             flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
             if flow_raw in ("web", "file"):
                 data_flow = flow_raw
+            speed_raw = payload.get("default_linear_velocity", DEFAULT_LINEAR_VELOCITY_FALLBACK)
+            try:
+                parsed_speed = float(speed_raw)
+                if parsed_speed > 0:
+                    default_linear_velocity = parsed_speed
+            except Exception:
+                pass
+            angular_speed_raw = payload.get("default_angular_velocity", DEFAULT_ANGULAR_VELOCITY_FALLBACK)
+            try:
+                parsed_angular_speed = float(angular_speed_raw)
+                if parsed_angular_speed > 0:
+                    default_angular_velocity = parsed_angular_speed
+            except Exception:
+                pass
     except Exception:
         pass
-    return branch, data_flow
+    return branch, data_flow, default_linear_velocity, default_angular_velocity
 
 
-_DEVELOPE_BRANCCH, DATA_FLOW = _load_runtime_config()
+DEVELOP_BRANCH, DATA_FLOW, DEFAULT_LINEAR_VELOCITY, DEFAULT_ANGULAR_VELOCITY = _load_runtime_config()
 
 
 def _read_file_text(path: str) -> str:

@@ -11,6 +11,9 @@ PI_IP="${PI_IP:-192.168.50.2}"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 REMOTE_WS="${REMOTE_WS:-~/OxbotsSimulator/ROS/ros2_ws}"
 LOCAL_WS="${LOCAL_WS:-$LOCAL_WS_DEFAULT}"
+LOCAL_CONFIG="${LOCAL_CONFIG:-$ROOT_DIR/config.json}"
+REMOTE_PROJECT_ROOT="${REMOTE_PROJECT_ROOT:-~/OxbotsSimulator}"
+REMOTE_CONFIG="${REMOTE_CONFIG:-$REMOTE_PROJECT_ROOT/config.json}"
 LAUNCH_PACKAGE="${LAUNCH_PACKAGE:-unibots_bridge}"
 LAUNCH_FILE="${LAUNCH_FILE:-unibots_bridge.launch.py}"
 
@@ -31,7 +34,8 @@ Options:
   -h, --help    Show this help
 
 Environment overrides:
-  PI_USER, PI_IP, ROS_DISTRO, REMOTE_WS, LOCAL_WS, LAUNCH_PACKAGE, LAUNCH_FILE
+  PI_USER, PI_IP, ROS_DISTRO, REMOTE_WS, LOCAL_WS, LOCAL_CONFIG,
+  REMOTE_PROJECT_ROOT, REMOTE_CONFIG, LAUNCH_PACKAGE, LAUNCH_FILE
 
 Examples:
   ./ROS/deploy_and_run_ros_pi.sh
@@ -71,6 +75,11 @@ if [[ ! -d "$LOCAL_WS/src/$LAUNCH_PACKAGE" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$LOCAL_CONFIG" ]]; then
+  echo "[ERROR] Local config file not found: $LOCAL_CONFIG"
+  exit 1
+fi
+
 SSH_COMMON_OPTS=(
   -o ConnectTimeout=5
   -o ControlMaster=auto
@@ -85,14 +94,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/5] Test SSH connectivity: $PI_USER@$PI_IP"
+echo "[1/6] Test SSH connectivity: $PI_USER@$PI_IP"
 ssh "${SSH_COMMON_OPTS[@]}" -MNf "$PI_USER@$PI_IP"
 ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "echo '[OK] SSH connected to ' \"\$(hostname)\""
 
-echo "[2/5] Ensure remote workspace directory exists"
-ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "mkdir -p $REMOTE_WS"
+echo "[2/6] Ensure remote directories exist"
+ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "mkdir -p $REMOTE_PROJECT_ROOT $REMOTE_WS"
 
-echo "[3/5] Sync local workspace to Raspberry Pi"
+echo "[3/6] Sync local workspace to Raspberry Pi"
 rsync -avz --delete \
   --exclude '.git' \
   --exclude 'build' \
@@ -101,7 +110,12 @@ rsync -avz --delete \
   -e "ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH" \
   "$LOCAL_WS/" "$PI_USER@$PI_IP:$REMOTE_WS/"
 
-echo "[4/5] Verify remote package path"
+echo "[4/6] Sync config.json to Raspberry Pi"
+rsync -avz \
+  -e "ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH" \
+  "$LOCAL_CONFIG" "$PI_USER@$PI_IP:$REMOTE_CONFIG"
+
+echo "[5/6] Verify remote package path"
 ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "test -d $REMOTE_WS/src/$LAUNCH_PACKAGE"
 
 REMOTE_CMD="source /opt/ros/$ROS_DISTRO/setup.bash && cd $REMOTE_WS"
@@ -115,12 +129,12 @@ REMOTE_CMD+=" && source install/setup.bash"
 if [[ "$MODE" == "detach" ]]; then
   LOG_FILE='~/unibots_bridge_ros.log'
   REMOTE_CMD+=" && nohup ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE > $LOG_FILE 2>&1 & echo [OK] launched in background, log: $LOG_FILE"
-  echo "[5/5] Build and launch (background)"
+  echo "[6/6] Build and launch (background)"
   ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
   echo "Done. To view logs: ssh $PI_USER@$PI_IP 'tail -f ~/unibots_bridge_ros.log'"
 else
   REMOTE_CMD+=" && ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE"
-  echo "[5/5] Build and launch (foreground)"
+  echo "[6/6] Build and launch (foreground)"
   echo "Press Ctrl+C to stop launch on Raspberry Pi."
   ssh -t "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
 fi

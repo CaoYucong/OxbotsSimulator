@@ -35,6 +35,28 @@ from typing import Optional
 # Shared file paths used for supervisor <-> decision-making data exchange.
 # =============================================================================
 THIS_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
+WHO_IS_DEV_JSON_FILE = os.path.join(PROJECT_ROOT, "config.json")
+
+
+def _load_default_linear_velocity() -> float:
+    default_linear_velocity = 3.0
+    try:
+        with open(WHO_IS_DEV_JSON_FILE, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            speed_raw = payload.get("default_linear_velocity", default_linear_velocity)
+            parsed_speed = float(speed_raw)
+            if parsed_speed > 0:
+                default_linear_velocity = parsed_speed
+    except Exception:
+        pass
+    return default_linear_velocity
+
+
+DEFAULT_LINEAR_VELOCITY = _load_default_linear_velocity()
+
+
 REAL_TIME_DIR = os.path.join(THIS_DIR, "real_time_data")
 BASE_DIR = os.path.abspath(os.path.join(THIS_DIR, "..", "controllers", "supervisor_controller", "real_time_data"))
 SUPERVISOR_DIR = os.path.dirname(BASE_DIR)
@@ -101,7 +123,7 @@ DECISION_MAKING_DATA_CACHE = {}
 DECISIONS_CACHE = {}
 DECISIONS_LOCAL_CACHE = {
     "dynamic_waypoints": "",
-    "speed": "0.300000",
+    "speed": f"{DEFAULT_LINEAR_VELOCITY:.6f}",
 }
 DECISION_MAKING_DATA_LOCAL_CACHE = {}
 WEB_ONLY_FILES = {
@@ -153,7 +175,7 @@ X_MIN, X_MAX = -0.86, 0.86
 Y_MIN, Y_MAX = -0.86, 0.86
 RADAR_MAX_RANGE = 0.8
 MAX_SPEED = 0.7
-NORMAL_SPEED = 0.3
+NORMAL_SPEED = DEFAULT_LINEAR_VELOCITY
 
 SEARCHING_SEQUENCE = [
     (0, 0, 0),

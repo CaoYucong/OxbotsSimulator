@@ -5,13 +5,39 @@ import urllib.request
 import json
 import math
 import re
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
 
 
+THIS_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", "..", "..", "..", ".."))
+WHO_IS_DEV_JSON_FILE = os.path.join(PROJECT_ROOT, "config.json")
+
+
+def _load_default_linear_velocity() -> float:
+    default_linear_velocity = 3.0
+    try:
+        with open(WHO_IS_DEV_JSON_FILE, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            speed_raw = payload.get("default_linear_velocity", default_linear_velocity)
+            parsed_speed = float(speed_raw)
+            if parsed_speed > 0:
+                default_linear_velocity = parsed_speed
+    except Exception:
+        pass
+    return default_linear_velocity
+
+
 class _MirrorState:
     def __init__(self) -> None:
+        default_speed_payload = json.dumps(
+            {"dynamic_waypoints": "", "speed": f"{_load_default_linear_velocity():.6f}"},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         self._lock = threading.Lock()
         self._items = {
             "/simulation_data": {
@@ -25,7 +51,7 @@ class _MirrorState:
                 "has_data": False,
             },
             "/data/decisions": {
-                "body": b'{"dynamic_waypoints":"","speed":"0.300000"}',
+                "body": default_speed_payload,
                 "content_type": "application/json; charset=utf-8",
                 "has_data": True,
             },

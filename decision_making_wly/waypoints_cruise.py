@@ -29,7 +29,30 @@ import urllib.request
 from typing import Optional
 
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "controllers", "supervisor_controller", "real_time_data"))
+THIS_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
+WHO_IS_DEV_JSON_FILE = os.path.join(PROJECT_ROOT, "config.json")
+
+
+def _load_default_linear_velocity() -> float:
+    default_linear_velocity = 3.0
+    try:
+        with open(WHO_IS_DEV_JSON_FILE, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            speed_raw = payload.get("default_linear_velocity", default_linear_velocity)
+            parsed_speed = float(speed_raw)
+            if parsed_speed > 0:
+                default_linear_velocity = parsed_speed
+    except Exception:
+        pass
+    return default_linear_velocity
+
+
+DEFAULT_LINEAR_VELOCITY = _load_default_linear_velocity()
+
+
+BASE_DIR = os.path.abspath(os.path.join(THIS_DIR, "..", "controllers", "supervisor_controller", "real_time_data"))
 SUPERVISOR_DIR = os.path.dirname(BASE_DIR)
 HTML_PORT_FILE = os.path.join(SUPERVISOR_DIR, "html_port.txt")
 WAYPOINT_STATUS_FILE = os.path.join(BASE_DIR, "waypoint_status.txt")
@@ -80,7 +103,7 @@ DECISIONS_TIMEOUT = 0.2
 DECISIONS_CACHE = {}
 DECISIONS_LOCAL_CACHE = {
     "dynamic_waypoints": "",
-    "speed": "0.300000",
+    "speed": f"{DEFAULT_LINEAR_VELOCITY:.6f}",
 }
 DECISION_MAKING_DATA_URL = f"http://localhost:{FIELD_VIEWER_PORT}/decision_making_data"
 DECISION_MAKING_DATA_URL_FALLBACK = f"http://localhost:{FIELD_VIEWER_PORT}/data/decision_making_data"
@@ -112,7 +135,7 @@ X_MIN, X_MAX = -0.86, 0.86
 Y_MIN, Y_MAX = -0.86, 0.86
 RADAR_MAX_RANGE = 0.8
 MAX_SPEED = 0.5
-NORMAL_SPEED = 0.3
+NORMAL_SPEED = DEFAULT_LINEAR_VELOCITY
 
 # Tunable parameters (adjust based on your robot speed/time resolution)
 V_MAX = 0.5          # m/s, physical upper limit for relative velocity (for gating and clipping)

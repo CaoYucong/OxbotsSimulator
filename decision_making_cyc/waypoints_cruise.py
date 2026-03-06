@@ -37,6 +37,8 @@ from decision_making_ros.waypoints_cruise import VISIBLE_RANGE_METERS
 # Shared file paths used for supervisor <-> decision-making data exchange.
 # =============================================================================
 THIS_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
+WHO_IS_DEV_JSON_FILE = os.path.join(PROJECT_ROOT, "config.json")
 REAL_TIME_DIR = os.path.join(THIS_DIR, "real_time_data")
 BASE_DIR = os.path.abspath(os.path.join(THIS_DIR, "..", "controllers", "supervisor_controller", "real_time_data"))
 SUPERVISOR_DIR = os.path.dirname(BASE_DIR)
@@ -75,13 +77,43 @@ LAST_SECOND_TILES_FILE = os.path.join(REAL_TIME_DIR, "last_second_tiles.txt")
 UNSEEN_REGIONS_FILE = os.path.join(REAL_TIME_DIR, "unseen_regions.txt")
 COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt")
 
+
+def _load_default_linear_velocity() -> float:
+    default_linear_velocity = 3.0
+    try:
+        with open(WHO_IS_DEV_JSON_FILE, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            speed_raw = payload.get("default_linear_velocity", default_linear_velocity)
+            parsed_speed = float(speed_raw)
+            if parsed_speed > 0:
+                default_linear_velocity = parsed_speed
+    except Exception:
+        pass
+    return default_linear_velocity
+
+
+def _load_default_angular_velocity() -> float:
+    default_angular_velocity = 40.0
+    try:
+        with open(WHO_IS_DEV_JSON_FILE, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            angular_speed_raw = payload.get("default_angular_velocity", default_angular_velocity)
+            parsed_angular_speed = float(angular_speed_raw)
+            if parsed_angular_speed > 0:
+                default_angular_velocity = parsed_angular_speed
+    except Exception:
+        pass
+    return default_angular_velocity
+
 # generation bounds (match supervisor playground bounds)
 X_MIN, X_MAX = -0.86, 0.86
 Y_MIN, Y_MAX = -0.86, 0.86
 RADAR_MAX_RANGE = 0.8
 MAX_LINEAR_VELOCITY = 0.7
-DEFAULT_LINEAR_VELOCITY = 0.3
-DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
+DEFAULT_LINEAR_VELOCITY = _load_default_linear_velocity()
+DEFAULT_ANGULAR_VELOCITY = _load_default_angular_velocity() # degrees per second
 VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball (meters)
 FIELD_OF_VIEW_DEGREES = 120.0

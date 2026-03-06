@@ -43,8 +43,10 @@ from typing import Optional
 THIS_DIR = os.path.dirname(__file__)
 
 PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
+PROJECT_ROOT_FALLBACK = os.path.abspath(os.path.join(THIS_DIR, "..", "..", "..", "..", ".."))
 
 WHO_IS_DEV_JSON_FILE = os.path.join(PROJECT_ROOT, "config.json")
+WHO_IS_DEV_JSON_FILE_FALLBACK = os.path.join(PROJECT_ROOT_FALLBACK, "config.json")
 
 REAL_TIME_DIR = os.path.join(THIS_DIR, "real_time_data")
 
@@ -112,11 +114,13 @@ RADAR_MAX_RANGE = 0.8
 
 VISIBLE_RANGE_METERS = 2.0
 
-MAX_LINEAR_VELOCITY = 0.7
+DEFAULT_LINEAR_VELOCITY_FALLBACK = 0.1
 
-DEFAULT_LINEAR_VELOCITY = 0.3
+DEFAULT_LINEAR_VELOCITY = DEFAULT_LINEAR_VELOCITY_FALLBACK
 
-DEFAULT_ANGULAR_VELOCITY = 90 # degrees per second
+DEFAULT_ANGULAR_VELOCITY_FALLBACK = 40.0
+
+DEFAULT_ANGULAR_VELOCITY = DEFAULT_ANGULAR_VELOCITY_FALLBACK # degrees per second
 
 VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 
@@ -125,37 +129,55 @@ INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball 
 FIELD_OF_VIEW_DEGREES = 120.0
 
 
-def _load_runtime_config() -> tuple[str, str, bool, str]:
+def _load_runtime_config() -> tuple[str, str, bool, str, float, float]:
     branch = ""
     data_flow = "web"
     run_on_pi = False
     pi_ip = "127.0.0.1"
-    try:
-        with open(WHO_IS_DEV_JSON_FILE, "r") as f:
-            payload = json.loads(f.read().strip())
-        if isinstance(payload, dict):
-            branch = str(payload.get("develope_brancch", "")).strip().lower()
-            flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
-            if flow_raw in ("web", "file"):
-                data_flow = flow_raw
-            run_on_pi_raw = payload.get("run_on_pi", False)
-            if isinstance(run_on_pi_raw, bool):
-                run_on_pi = run_on_pi_raw
-            elif isinstance(run_on_pi_raw, (int, float)):
-                run_on_pi = bool(run_on_pi_raw)
-            else:
-                run_on_pi = str(run_on_pi_raw).strip().lower() in ("1", "true", "yes", "y", "on")
-            ip_raw = str(payload.get("pi_ip", "")).strip()
-            if ip_raw:
-                pi_ip = ip_raw
-    except Exception:
-        pass
-    return branch, data_flow, run_on_pi, pi_ip
+    default_linear_velocity = DEFAULT_LINEAR_VELOCITY_FALLBACK
+    default_angular_velocity = DEFAULT_ANGULAR_VELOCITY_FALLBACK
+    for config_path in (WHO_IS_DEV_JSON_FILE, WHO_IS_DEV_JSON_FILE_FALLBACK):
+        try:
+            with open(config_path, "r") as f:
+                payload = json.loads(f.read().strip())
+            if isinstance(payload, dict):
+                branch = str(payload.get("develop_branch", payload.get("develope_brancch", ""))).strip().lower()
+                flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
+                if flow_raw in ("web", "file"):
+                    data_flow = flow_raw
+                run_on_pi_raw = payload.get("run_on_pi", False)
+                if isinstance(run_on_pi_raw, bool):
+                    run_on_pi = run_on_pi_raw
+                elif isinstance(run_on_pi_raw, (int, float)):
+                    run_on_pi = bool(run_on_pi_raw)
+                else:
+                    run_on_pi = str(run_on_pi_raw).strip().lower() in ("1", "true", "yes", "y", "on")
+                ip_raw = str(payload.get("pi_ip", "")).strip()
+                if ip_raw:
+                    pi_ip = ip_raw
+                speed_raw = payload.get("default_linear_velocity", DEFAULT_LINEAR_VELOCITY_FALLBACK)
+                try:
+                    parsed_speed = float(speed_raw)
+                    if parsed_speed > 0:
+                        default_linear_velocity = parsed_speed
+                except Exception:
+                    pass
+                angular_speed_raw = payload.get("default_angular_velocity", DEFAULT_ANGULAR_VELOCITY_FALLBACK)
+                try:
+                    parsed_angular_speed = float(angular_speed_raw)
+                    if parsed_angular_speed > 0:
+                        default_angular_velocity = parsed_angular_speed
+                except Exception:
+                    pass
+                return branch, data_flow, run_on_pi, pi_ip, default_linear_velocity, default_angular_velocity
+        except Exception:
+            continue
+    return branch, data_flow, run_on_pi, pi_ip, default_linear_velocity, default_angular_velocity
 
 
-_DEVELOPE_BRANCCH, DATA_FLOW, RUN_ON_PI, PI_IP = _load_runtime_config()
+DEVELOP_BRANCH, DATA_FLOW, RUN_ON_PI, PI_IP, DEFAULT_LINEAR_VELOCITY, DEFAULT_ANGULAR_VELOCITY = _load_runtime_config()
 REMOTE_HOST = PI_IP if RUN_ON_PI else "localhost"
-
+MAX_LINEAR_VELOCITY = DEFAULT_LINEAR_VELOCITY * 1.5
 
 def _read_file_text(path: str) -> str:
     try:

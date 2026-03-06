@@ -156,9 +156,11 @@ if not IS_SUPERVISOR_NODE:
 # Tunable parameters for motion, balls, absorption, and scheduling.
 # =============================================================================
 DEFAULT_RANDOM_SEED = 1236
-DEFAULT_VELOCITY = 0.3  # m/s
-DEFAULT_ANGULAR_VELOCITY_MAIN = 90  # deg/s
-DEFAULT_ANGULAR_VELOCITY_OBSTACLE = 90  # deg/s
+DEFAULT_LINEAR_VELOCITY_FALLBACK = 3.0
+DEFAULT_ANGULAR_VELOCITY_FALLBACK = 40.0
+DEFAULT_VELOCITY = DEFAULT_LINEAR_VELOCITY_FALLBACK  # m/s
+DEFAULT_ANGULAR_VELOCITY_MAIN = DEFAULT_ANGULAR_VELOCITY_FALLBACK  # deg/s
+DEFAULT_ANGULAR_VELOCITY_OBSTACLE = DEFAULT_ANGULAR_VELOCITY_FALLBACK  # deg/s
 
 MAIN_ROBOT_NAME = "MY_ROBOT"
 OBSTACLE_ROBOT_NAMES = ["OBSTACLE_ROBOT_1", "OBSTACLE_ROBOT_2", "OBSTACLE_ROBOT_3"]
@@ -234,13 +236,15 @@ def _load_runtime_config():
     data_flow = "web"
     run_on_pi = False
     pi_ip = DEFAULT_PI_IP
+    default_linear_velocity = DEFAULT_LINEAR_VELOCITY_FALLBACK
+    default_angular_velocity = DEFAULT_ANGULAR_VELOCITY_FALLBACK
 
     try:
         with open(WHO_IS_DEV_FILE, "r") as f:
             raw = f.read().strip()
         payload = json.loads(raw)
         if isinstance(payload, dict):
-            branch = str(payload.get("develope_brancch", "")).strip().lower()
+            branch = str(payload.get("develop_branch", payload.get("develope_brancch", ""))).strip().lower()
             flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
             if flow_raw in ("web", "file"):
                 data_flow = flow_raw
@@ -254,6 +258,20 @@ def _load_runtime_config():
             ip_raw = str(payload.get("pi_ip", DEFAULT_PI_IP)).strip()
             if ip_raw:
                 pi_ip = ip_raw
+            speed_raw = payload.get("default_linear_velocity", DEFAULT_LINEAR_VELOCITY_FALLBACK)
+            try:
+                parsed_speed = float(speed_raw)
+                if parsed_speed > 0:
+                    default_linear_velocity = parsed_speed
+            except Exception:
+                pass
+            angular_speed_raw = payload.get("default_angular_velocity", DEFAULT_ANGULAR_VELOCITY_FALLBACK)
+            try:
+                parsed_angular_speed = float(angular_speed_raw)
+                if parsed_angular_speed > 0:
+                    default_angular_velocity = parsed_angular_speed
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -264,7 +282,7 @@ def _load_runtime_config():
         except Exception:
             pass
 
-    return branch, data_flow, run_on_pi, pi_ip
+    return branch, data_flow, run_on_pi, pi_ip, default_linear_velocity, default_angular_velocity
 
 
 def _read_local_text(path):
@@ -295,12 +313,12 @@ def _load_random_seed(path, default_seed=DEFAULT_RANDOM_SEED):
 
 
 def _resolve_decision_making_dir(branch=None):
-    """Select decision_making folder based on config (develope_brancch)."""
+    """Select decision_making folder based on config (develop_branch)."""
     default_dir = os.path.join(PROJECT_ROOT, "decision_making")
     try:
         dev = (branch or "").strip().lower()
         if not dev:
-            dev, _, _, _ = _load_runtime_config()
+            dev, _, _, _, _, _ = _load_runtime_config()
         if dev == "cyc":
             return os.path.join(PROJECT_ROOT, "decision_making_cyc")
         if dev == "wly":
@@ -314,13 +332,16 @@ def _resolve_decision_making_dir(branch=None):
     return default_dir
 
 
-DEVELOPE_BRANCCH, DATA_FLOW, RUN_ON_PI, PI_IP = _load_runtime_config()
+DEVELOP_BRANCH, DATA_FLOW, RUN_ON_PI, PI_IP, CONFIG_DEFAULT_LINEAR_VELOCITY, CONFIG_DEFAULT_ANGULAR_VELOCITY = _load_runtime_config()
+DEFAULT_VELOCITY = CONFIG_DEFAULT_LINEAR_VELOCITY
+DEFAULT_ANGULAR_VELOCITY_MAIN = CONFIG_DEFAULT_ANGULAR_VELOCITY
+DEFAULT_ANGULAR_VELOCITY_OBSTACLE = CONFIG_DEFAULT_ANGULAR_VELOCITY
 DECISIONS_HOST = PI_IP if RUN_ON_PI else "localhost"
 DECISIONS_ENDPOINT = f"http://{DECISIONS_HOST}:{FIELD_VIEWER_PORT}/data/decisions"
 DECISION_MAKING_DATA_ENDPOINT = f"http://{DECISIONS_HOST}:{FIELD_VIEWER_PORT}/data/decision_making_data"
 DECISIONS_RETRY_SECONDS_ON_PI = 1.0
 DECISIONS_RETRY_SLEEP_SECONDS_ON_PI = 0.05
-DECISION_MAKING_DIR = _resolve_decision_making_dir(DEVELOPE_BRANCCH)
+DECISION_MAKING_DIR = _resolve_decision_making_dir(DEVELOP_BRANCH)
 DECISION_REAL_TIME_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data")
 RANDOM_SEED = _load_random_seed(RANDOM_SEED_FILE)
 
@@ -471,7 +492,7 @@ class MotionController:
         self.target_pos = None
         self.start_angle = 0.0
         self.target_angle = None
-        self.velocity = 0.3
+        self.velocity = DEFAULT_VELOCITY
         self.angular_speed = _deg_to_rad(
             DEFAULT_ANGULAR_VELOCITY_OBSTACLE if cycle_mode else DEFAULT_ANGULAR_VELOCITY_MAIN
         )
