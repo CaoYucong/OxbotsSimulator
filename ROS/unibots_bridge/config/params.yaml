@@ -1,8 +1,11 @@
 file_bridge_node:
   ros__parameters:
-    sim_dir: /mnt/OxbotsSimulator/controllers/supervisor_controller/real_time_data
+    remote_host: 192.168.50.1
+    remote_port: 5003
+    local_host: 127.0.0.1
+    local_port: 5003
     poll_hz: 10.0
-    frame_id: map
+    request_timeout: 0.25
 
 decision_node:
   ros__parameters:

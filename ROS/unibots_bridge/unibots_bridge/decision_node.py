@@ -26,12 +26,14 @@ class DecisionNode(Node):
         self.current_theta: Optional[float] = None
         self.visible_balls_json: str = '[]'
         self.sim_time_seconds: float = 0.0
+        self.waypoint_status: str = 'going'
 
         self.pub_waypoint_cmd = self.create_publisher(String, '/sim/dynamic_waypoints_cmd', 10)
         self.pub_speed_cmd = self.create_publisher(Twist, '/sim/speed_cmd', 10)
 
         self.create_subscription(PoseStamped, '/sim/current_position', self._on_current_position, 10)
         self.create_subscription(String, '/sim/visible_balls', self._on_visible_balls, 10)
+        self.create_subscription(String, '/sim/waypoint_status', self._on_waypoint_status, 10)
         self.create_subscription(String, '/sim/time', self._on_time, 10)
 
         period = 0.1 if tick_hz <= 0.0 else (1.0 / tick_hz)
@@ -61,6 +63,11 @@ class DecisionNode(Node):
         except Exception:
             pass
 
+    def _on_waypoint_status(self, msg: String) -> None:
+        text = (msg.data or '').strip().lower()
+        if text:
+            self.waypoint_status = text
+
     def _tick(self) -> None:
         if self.current_x is None or self.current_y is None or self.current_theta is None:
             return
@@ -71,6 +78,7 @@ class DecisionNode(Node):
             current_theta=self.current_theta,
             visible_balls_json=self.visible_balls_json,
             sim_time_seconds=self.sim_time_seconds,
+            waypoint_status=self.waypoint_status,
             mode=self.mode,
             default_speed=self.default_speed,
         )

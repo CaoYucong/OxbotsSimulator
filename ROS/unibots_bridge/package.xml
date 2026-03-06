@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>unibots_file_bridge</name>
+  <name>unibots_bridge</name>
   <version>0.1.0</version>
-  <description>ROS2 Jazzy file bridge and decision node for UniBots simulator.</description>
+  <description>ROS2 Jazzy bridge and decision node for UniBots simulator.</description>
   <maintainer email="you@example.com">UniBots Dev</maintainer>
   <license>MIT</license>
 

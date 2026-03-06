@@ -1,4 +1,6 @@
 {
 	"develope_brancch": "ros",
-	"data_flow": "web"
+	"data_flow": "file",
+	"run_on_pi": false,
+	"pi_ip": "192.168.50.2"
 }

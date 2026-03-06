@@ -223,7 +223,7 @@ FIELD_VIEWER_PATH = os.path.abspath(
 HTML_PORT_FILE = os.path.join(THIS_DIR, "html_port.txt")
 FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
 SIM_DATA_ENDPOINT = f"http://localhost:{FIELD_VIEWER_PORT}/data/simulation_data"
-DECISIONS_ENDPOINT = f"http://localhost:{FIELD_VIEWER_PORT}/data/decisions"
+DEFAULT_PI_IP = "192.168.50.2"
 DECISIONS_CACHE = {}
 DECISIONS_SEQ = 0
 
@@ -232,6 +232,8 @@ def _load_runtime_config():
     """Load branch/data-flow config from JSON, fallback to legacy txt branch file."""
     branch = ""
     data_flow = "web"
+    run_on_pi = False
+    pi_ip = DEFAULT_PI_IP
 
     try:
         with open(WHO_IS_DEV_FILE, "r") as f:
@@ -242,6 +244,16 @@ def _load_runtime_config():
             flow_raw = str(payload.get("data_flow", payload.get("data flow", "web"))).strip().lower()
             if flow_raw in ("web", "file"):
                 data_flow = flow_raw
+            run_on_pi_raw = payload.get("run_on_pi", False)
+            if isinstance(run_on_pi_raw, bool):
+                run_on_pi = run_on_pi_raw
+            elif isinstance(run_on_pi_raw, (int, float)):
+                run_on_pi = bool(run_on_pi_raw)
+            else:
+                run_on_pi = str(run_on_pi_raw).strip().lower() in ("1", "true", "yes", "y", "on")
+            ip_raw = str(payload.get("pi_ip", DEFAULT_PI_IP)).strip()
+            if ip_raw:
+                pi_ip = ip_raw
     except Exception:
         pass
 
@@ -252,7 +264,7 @@ def _load_runtime_config():
         except Exception:
             pass
 
-    return branch, data_flow
+    return branch, data_flow, run_on_pi, pi_ip
 
 
 def _read_local_text(path):
@@ -288,7 +300,7 @@ def _resolve_decision_making_dir(branch=None):
     try:
         dev = (branch or "").strip().lower()
         if not dev:
-            dev, _ = _load_runtime_config()
+            dev, _, _, _ = _load_runtime_config()
         if dev == "cyc":
             return os.path.join(PROJECT_ROOT, "decision_making_cyc")
         if dev == "wly":
@@ -302,7 +314,12 @@ def _resolve_decision_making_dir(branch=None):
     return default_dir
 
 
-DEVELOPE_BRANCCH, DATA_FLOW = _load_runtime_config()
+DEVELOPE_BRANCCH, DATA_FLOW, RUN_ON_PI, PI_IP = _load_runtime_config()
+DECISIONS_HOST = PI_IP if RUN_ON_PI else "localhost"
+DECISIONS_ENDPOINT = f"http://{DECISIONS_HOST}:{FIELD_VIEWER_PORT}/data/decisions"
+DECISION_MAKING_DATA_ENDPOINT = f"http://{DECISIONS_HOST}:{FIELD_VIEWER_PORT}/data/decision_making_data"
+DECISIONS_RETRY_SECONDS_ON_PI = 1.0
+DECISIONS_RETRY_SLEEP_SECONDS_ON_PI = 0.05
 DECISION_MAKING_DIR = _resolve_decision_making_dir(DEVELOPE_BRANCCH)
 DECISION_REAL_TIME_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data")
 RANDOM_SEED = _load_random_seed(RANDOM_SEED_FILE)
@@ -1093,6 +1110,34 @@ def _refresh_decisions_data():
         DECISIONS_CACHE = payload
         DECISIONS_SEQ += 1
         return True
+    if RUN_ON_PI:
+        deadline = time.time() + DECISIONS_RETRY_SECONDS_ON_PI
+        last_error = None
+        while True:
+            try:
+                with urllib.request.urlopen(DECISIONS_ENDPOINT, timeout=0.3) as res:
+                    payload = json.loads(res.read().decode("utf-8"))
+                if isinstance(payload, dict):
+                    DECISIONS_CACHE = payload
+                    DECISIONS_SEQ += 1
+                    return True
+                last_error = RuntimeError(
+                    f"Invalid decisions payload type from {DECISIONS_ENDPOINT}. "
+                    f"Expected JSON object, got {type(payload).__name__}."
+                )
+            except Exception as e:
+                last_error = e
+
+            if time.time() >= deadline:
+                break
+            time.sleep(DECISIONS_RETRY_SLEEP_SECONDS_ON_PI)
+
+        raise RuntimeError(
+            f"Failed to read decisions data from {DECISIONS_ENDPOINT} "
+            f"after retrying for {DECISIONS_RETRY_SECONDS_ON_PI:.1f}s. "
+            f"Last error: {last_error}"
+        )
+
     try:
         with urllib.request.urlopen(DECISIONS_ENDPOINT, timeout=0.3) as res:
             payload = json.loads(res.read().decode("utf-8"))
