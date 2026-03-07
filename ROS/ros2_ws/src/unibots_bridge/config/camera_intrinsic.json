@@ -1,0 +1,59 @@
+{
+  "camera_name": "front_camera",
+  "image_size": {
+    "width": 1920,
+    "height": 1080
+  },
+  "fov": {
+    "horizontal_rad": 2.5829,
+    "horizontal_deg": 147.98926890434032
+  },
+  "intrinsics": {
+    "fx": 275.37286544903196,
+    "fy": 275.37286544903196,
+    "cx": 960.0,
+    "cy": 540.0,
+    "skew": 0.0,
+    "K": [
+      [
+        275.37286544903196,
+        0.0,
+        960.0
+      ],
+      [
+        0.0,
+        275.37286544903196,
+        540.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "distortion": {
+    "model": "plumb_bob",
+    "coefficients": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "camera_pose_on_robot": {
+    "translation": [
+      0.105,
+      0.0,
+      0.08
+    ],
+    "rotation_axis_angle": [
+      0.0,
+      1.0,
+      0.0,
+      0.6
+    ]
+  },
+  "source": "theoretical_from_camera_info_json"
+}

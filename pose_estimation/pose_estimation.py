@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+from typing import Optional
 from urllib.request import urlopen
 
 import cv2
@@ -67,7 +68,7 @@ def _load_tag_world_map(tag_map_path: Path) -> dict[int, np.ndarray]:
 	return result
 
 
-def _detect_apriltag_corners(image: np.ndarray) -> tuple[list[np.ndarray], np.ndarray | None]:
+def _detect_apriltag_corners(image: np.ndarray) -> tuple[list[np.ndarray], Optional[np.ndarray]]:
 	if not hasattr(cv2, "aruco"):
 		raise RuntimeError("OpenCV aruco module is unavailable.")
 	if not hasattr(cv2.aruco, "DICT_APRILTAG_36h11"):
@@ -103,7 +104,7 @@ def estimate_camera_world_position(
 	image: np.ndarray,
 	intrinsic_path: Path,
 	tag_map_path: Path,
-) -> tuple[dict | None, np.ndarray]:
+) -> tuple[Optional[dict], np.ndarray]:
 	K, dist_coeffs = _load_intrinsics(intrinsic_path)
 	tag_world = _load_tag_world_map(tag_map_path)
 	corners_list, ids = _detect_apriltag_corners(image)
