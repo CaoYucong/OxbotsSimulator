@@ -1,5 +1,3 @@
-(0.404155, -0.741358, -61.21),  cut
-(0.404181, -0.741538, -61.23),  cut
 (0.404193, -0.741619, -61.25),  cut
 (0.404237, -0.741919, -61.30),  cut
 (0.404254, -0.742039, -61.32),  cut
@@ -1998,3 +1996,5 @@
 # Waypoint History - Started at 2026-03-07 10:55:57 - Random Seed 1010
 
 # Waypoint History - Started at 2026-03-07 10:56:13 - Random Seed 1010
+
+# Waypoint History - Started at 2026-03-07 10:58:09 - Random Seed 1010

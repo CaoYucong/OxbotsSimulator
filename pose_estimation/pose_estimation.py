@@ -380,7 +380,7 @@ def main() -> None:
 	robot = estimate["robot_pose_world"]
 	print(
 		"Estimated robot world pose: "
-		f"({robot['x']:.4f}, {robot['y']:.4f}, {robot['heading_x0']:.2f}deg)"
+		f"({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.2f}deg)"
 	)
 	print("-----------------------------------")
 	# print(

@@ -138,7 +138,7 @@ def _print_ground_truth_current_position(node=None):
         rot = rot_field.getSFRotation()
         x, y = float(pos[0]), float(pos[1])
         heading_deg = math.degrees(float(rot[3]))
-        print(f"[GT] current_position=      ({x:.4f}, {y:.4f}, {heading_deg:.2f}deg)")
+        print(f"[GT] current_position=      ({x:.2f}, {y:.2f}, {heading_deg:.2f}deg)")
     except Exception:
         pass
 
