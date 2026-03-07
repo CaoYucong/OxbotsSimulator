@@ -14,6 +14,7 @@ def load_front_camera_image_from_config(config_path: Path) -> np.ndarray:
 		config = json.load(f)
 
 	data_flow = str(config.get("data_flow", "")).strip().lower()
+	is_web = data_flow == "web"
 	workspace_root = config_path.parent
 
 	if data_flow == "file":
@@ -24,7 +25,7 @@ def load_front_camera_image_from_config(config_path: Path) -> np.ndarray:
 		return image
 
 	if data_flow == "web":
-		url = "http://localhost:5003/front_camera"
+		url = f"http://localhost:{_load_html_port(workspace_root)}/data/front_camera"
 		with urlopen(url, timeout=3.0) as resp:
 			data = resp.read()
 		arr = np.frombuffer(data, dtype=np.uint8)
@@ -36,6 +37,18 @@ def load_front_camera_image_from_config(config_path: Path) -> np.ndarray:
 	raise ValueError(
 		f"Unsupported data_flow='{data_flow}' in {config_path}. Expected 'file' or 'web'."
 	)
+
+
+def _load_html_port(workspace_root: Path, default_port: int = 5001) -> int:
+	port_path = workspace_root / "controllers" / "supervisor_controller" / "html_port.txt"
+	try:
+		raw = port_path.read_text(encoding="utf-8").strip()
+		port = int(raw)
+		if 1 <= port <= 65535:
+			return port
+	except Exception:
+		pass
+	return default_port
 
 
 def _load_intrinsics(intrinsic_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -331,6 +344,11 @@ def main() -> None:
 	)
 	args = parser.parse_args()
 
+	with args.config.open("r", encoding="utf-8") as f:
+		config = json.load(f)
+	data_flow = str(config.get("data_flow", "")).strip().lower()
+	is_web = data_flow == "web"
+
 	image = load_front_camera_image_from_config(args.config)
 
 	if args.save_debug is not None:
@@ -345,17 +363,18 @@ def main() -> None:
 		tag_map_path=args.tag_map,
 	)
 
-	recognised_path = (
-		args.config.parent
-		/ "controllers"
-		/ "supervisor_controller"
-		/ "real_time_data"
-		/ "temp_img_recognised.jpg"
-	)
-	recognised_path.parent.mkdir(parents=True, exist_ok=True)
-	ok = cv2.imwrite(str(recognised_path), debug_img)
-	if not ok:
-		raise IOError(f"Failed to save recognised image to: {recognised_path}")
+	if not is_web:
+		recognised_path = (
+			args.config.parent
+			/ "controllers"
+			/ "supervisor_controller"
+			/ "real_time_data"
+			/ "temp_img_recognised.jpg"
+		)
+		recognised_path.parent.mkdir(parents=True, exist_ok=True)
+		ok = cv2.imwrite(str(recognised_path), debug_img)
+		if not ok:
+			raise IOError(f"Failed to save recognised image to: {recognised_path}")
 
 	# print(f"Loaded image shape: {image.shape}")
 	# print("Image source resolved from config.json successfully.")

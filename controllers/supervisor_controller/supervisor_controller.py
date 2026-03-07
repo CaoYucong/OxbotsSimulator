@@ -53,6 +53,27 @@ def _load_early_data_flow(default="web"):
     return default
 
 
+def _load_early_camera_on(default=True):
+    try:
+        config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.json"))
+        with open(config_path, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            raw = payload.get("camera", default)
+            if isinstance(raw, bool):
+                return raw
+            if isinstance(raw, (int, float)):
+                return bool(raw)
+            text = str(raw).strip().lower()
+            if text in ("on", "true", "1", "yes", "y"):
+                return True
+            if text in ("off", "false", "0", "no", "n"):
+                return False
+    except Exception:
+        pass
+    return default
+
+
 def _post_front_camera_frame(camera_device, endpoint=None, image_path=None, write_local=False):
     if camera_device is None:
         return
@@ -67,16 +88,21 @@ def _post_front_camera_frame(camera_device, endpoint=None, image_path=None, writ
         return
     if cv2 is not None:
         try:
-            img = np.array(camera_device.getImageArray(), dtype=np.uint8)
-            if img is not None and img.size > 0:
-                bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-                ok, encoded = cv2.imencode(
-                    ".jpg",
-                    bgr,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), CAMERA_JPEG_QUALITY],
-                )
-                if ok and _post_binary(endpoint, encoded.tobytes(), "image/jpeg"):
-                    return
+            raw = camera_device.getImage()
+            if raw:
+                cam_w = int(camera_device.getWidth())
+                cam_h = int(camera_device.getHeight())
+                img = np.frombuffer(raw, dtype=np.uint8).reshape((cam_h, cam_w, 4))
+                bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            else:
+                bgr = None
+            ok, encoded = cv2.imencode(
+                ".jpg",
+                bgr,
+                [int(cv2.IMWRITE_JPEG_QUALITY), CAMERA_JPEG_QUALITY],
+            )
+            if ok and _post_binary(endpoint, encoded.tobytes(), "image/jpeg"):
+                return
         except Exception:
             pass
 
@@ -165,7 +191,7 @@ def _has_supervisor_privileges(ctrl):
 # early constant needed by camera branch before full globals are defined
 # main robot name (also redefined later with full constant block)
 MAIN_ROBOT_NAME = "MY_ROBOT"
-CAMERA_ON = True
+CAMERA_ON = _load_early_camera_on(default=True)
 IS_SUPERVISOR_NODE = _has_supervisor_privileges(supervisor)
 EARLY_DATA_FLOW = _load_early_data_flow()
 

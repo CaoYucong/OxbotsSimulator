@@ -647,14 +647,15 @@ class Handler(BaseHTTPRequestHandler):
     <style>
         body { font-family: Arial, sans-serif; background: #0f1115; color: #f3f4f6; margin: 0; }
         .wrap { padding: 16px; }
-        img { max-width: 100%; height: auto; border: 1px solid #23262d; background: #151a21; }
+        .frame { max-width: 100%; aspect-ratio: 16 / 9; border: 1px solid #23262d; background: #151a21; }
+        .frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
         .meta { font-size: 12px; color: #9ca3af; margin-top: 8px; }
     </style>
 </head>
 <body>
     <div class=\"wrap\">
         <h2>Front Camera</h2>
-        <img id=\"cam\" alt=\"front camera\" />
+        <div class=\"frame\"><img id=\"cam\" alt=\"front camera\" /></div>
         <div class=\"meta\" id=\"meta\"></div>
     </div>
     <script>
