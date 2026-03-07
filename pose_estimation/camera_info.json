@@ -1,0 +1,25 @@
+{
+	"camera_name": "front_camera",
+	"units": {
+		"translation": "m",
+		"rotation_angle": "rad",
+		"field_of_view": "rad"
+	},
+	"transform": {
+		"translation": [0.105, 0.0, 0.08],
+		"rotation_axis_angle": [0.0, 1.0, 0.0, 0.6]
+	},
+	"camera": {
+		"translation": [0.0, 0.0, 0.0],
+		"rotation_axis_angle": [0.0, 1.0, 0.0, 0.6],
+		"fieldOfView": 2.5829,
+		"width": 1920,
+		"height": 1080,
+		"near": 0.01,
+		"far": 5.0
+	},
+	"notes": {
+		"webots_default_optical_axis": "+X",
+		"theoretical_intrinsics_assumption": "Square pixels and no skew"
+	}
+}

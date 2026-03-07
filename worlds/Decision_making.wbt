@@ -9,7 +9,7 @@ EXTERNPROTO "../protos/SteelBall.proto"
 EXTERNPROTO "../protos/PingBall.proto"
 
 WorldInfo {
-  basicTimeStep 16
+  basicTimeStep 4
   FPS 30
 }
 Viewpoint {

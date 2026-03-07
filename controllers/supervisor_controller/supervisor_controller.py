@@ -92,6 +92,57 @@ def _post_front_camera_frame(camera_device, endpoint=None, image_path=None, writ
         pass
 
 
+def _trigger_pose_estimation_if_ready():
+    """Run pose_estimation periodically without creating overlapping processes."""
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    script_path = os.path.abspath(
+        os.path.join(project_root, "pose_estimation", "pose_estimation.py")
+    )
+    config_path = os.path.abspath(os.path.join(project_root, "config.json"))
+    if not os.path.isfile(script_path):
+        return
+    try:
+        proc = getattr(_trigger_pose_estimation_if_ready, "_proc", None)
+        if proc is not None and proc.poll() is None:
+            return
+    except Exception:
+        pass
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                script_path,
+                "--config",
+                config_path,
+            ],
+            cwd=project_root,
+        )
+        _trigger_pose_estimation_if_ready._proc = proc
+    except Exception:
+        pass
+
+
+def _print_ground_truth_current_position(node=None):
+    """Print ground-truth robot position (x, y, heading_deg)."""
+    try:
+        target = node
+        if target is None:
+            target = globals().get("main_robot", None)
+        if target is None:
+            return
+        trans_field = target.getField("translation")
+        rot_field = target.getField("rotation")
+        if trans_field is None or rot_field is None:
+            return
+        pos = trans_field.getSFVec3f()
+        rot = rot_field.getSFRotation()
+        x, y = float(pos[0]), float(pos[1])
+        heading_deg = math.degrees(float(rot[3]))
+        print(f"[GT] current_position=      ({x:.4f}, {y:.4f}, {heading_deg:.2f}deg)")
+    except Exception:
+        pass
+
+
 # =============================================================================
 # RUNTIME INITIALIZATION
 # Instantiate controller for whichever node this script is attached to.
@@ -175,6 +226,11 @@ if CAMERA_ON:
                     image_path=camera_local_image_path,
                     write_local=(EARLY_DATA_FLOW == "file"),
                 )
+                _trigger_pose_estimation_if_ready()
+                try:
+                    _print_ground_truth_current_position(robot.getSelf())
+                except Exception:
+                    _print_ground_truth_current_position()
 
             sys.exit(0)
 
@@ -335,6 +391,7 @@ def _write_local_text(path, content):
         return True
     except Exception:
         return False
+
 
 def _load_random_seed(path, default_seed=DEFAULT_RANDOM_SEED):
     """Load random seed from file, fallback to default on any error."""
@@ -1442,6 +1499,8 @@ while supervisor.step(TIME_STEP) != -1:
                 image_path=camera_local_image_path,
                 write_local=(DATA_FLOW == "file"),
             )
+            _trigger_pose_estimation_if_ready()
+            _print_ground_truth_current_position(main_robot)
     if (not RUN_ON_PI) and frame_counter % CRUISE_INTERVAL_FRAMES == 0:
         try:
             subprocess.run([sys.executable, CRUISE_SCRIPT_PATH], check=False)
