@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>unibots_bridge</name>
+  <name>unibots</name>
   <version>0.1.0</version>
   <description>ROS2 Jazzy bridge and decision node for UniBots simulator.</description>
   <maintainer email="you@example.com">UniBots Dev</maintainer>
@@ -11,6 +11,8 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>

@@ -6,21 +6,21 @@ This directory is now organized as a standard ROS2 workspace:
 ROS/
 └── ros2_ws/
 		└── src/
-				└── unibots_bridge/
+				└── unibots/
 						├── package.xml
 						├── setup.py
 						├── launch/
 						├── config/
-						└── unibots_bridge/
+						└── unibots/
 ```
 
-The inner `unibots_bridge/unibots_bridge` is normal for ROS2 Python packages:
+The inner `unibots/unibots` is normal for ROS2 Python packages:
 - outer folder: ROS package root (`package.xml`, `setup.py`)
 - inner folder: Python module source code
 
 ## Package
 
-- `unibots_bridge`
+- `unibots`
 
 ## Build and Run (ROS2 Jazzy)
 
@@ -28,12 +28,12 @@ The inner `unibots_bridge/unibots_bridge` is normal for ROS2 Python packages:
 cd ~/OxbotsSimulator/ROS/ros2_ws
 colcon build --symlink-install
 source install/setup.bash
-ros2 launch unibots_bridge unibots_bridge.launch.py
+ros2 launch unibots unibots.launch.py
 ```
 
 ## Parameters
 
-- `src/unibots_bridge/config/params.yaml`
+- `src/unibots/config/params.yaml`
 
 Main defaults:
 - `remote_host: 192.168.50.1`
@@ -60,5 +60,5 @@ source /opt/ros/jazzy/setup.bash
 cd ~/OxbotsSimulator/ROS/ros2_ws
 colcon build --symlink-install
 source install/setup.bash
-ros2 launch unibots_bridge unibots_bridge.launch.py
+ros2 launch unibots unibots.launch.py
 ```

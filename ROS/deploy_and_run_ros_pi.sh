@@ -14,8 +14,8 @@ LOCAL_WS="${LOCAL_WS:-$LOCAL_WS_DEFAULT}"
 LOCAL_CONFIG="${LOCAL_CONFIG:-$ROOT_DIR/config.json}"
 REMOTE_PROJECT_ROOT="${REMOTE_PROJECT_ROOT:-~/OxbotsSimulator}"
 REMOTE_CONFIG="${REMOTE_CONFIG:-$REMOTE_PROJECT_ROOT/config.json}"
-LAUNCH_PACKAGE="${LAUNCH_PACKAGE:-unibots_bridge}"
-LAUNCH_FILE="${LAUNCH_FILE:-unibots_bridge.launch.py}"
+LAUNCH_PACKAGE="${LAUNCH_PACKAGE:-unibots}"
+LAUNCH_FILE="${LAUNCH_FILE:-unibots.launch.py}"
 
 CONTROL_PATH_DEFAULT="$HOME/.ssh/cm-%C"
 SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-$CONTROL_PATH_DEFAULT}"
@@ -29,7 +29,7 @@ Usage:
   ./ROS/deploy_and_run_ros_pi.sh [--detach] [--skip-build]
 
 Options:
-  --detach      Build then launch in background on Raspberry Pi (logs -> ~/unibots_bridge_ros.log)
+  --detach      Build then launch in background on Raspberry Pi (logs -> ~/unibots_ros.log)
   --skip-build  Skip colcon build and directly launch
   -h, --help    Show this help
 
@@ -127,11 +127,11 @@ fi
 REMOTE_CMD+=" && source install/setup.bash"
 
 if [[ "$MODE" == "detach" ]]; then
-  LOG_FILE='~/unibots_bridge_ros.log'
+  LOG_FILE='~/unibots_ros.log'
   REMOTE_CMD+=" && nohup ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE > $LOG_FILE 2>&1 & echo [OK] launched in background, log: $LOG_FILE"
   echo "[6/6] Build and launch (background)"
   ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
-  echo "Done. To view logs: ssh $PI_USER@$PI_IP 'tail -f ~/unibots_bridge_ros.log'"
+  echo "Done. To view logs: ssh $PI_USER@$PI_IP 'tail -f ~/unibots_ros.log'"
 else
   REMOTE_CMD+=" && ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE"
   echo "[6/6] Build and launch (foreground)"

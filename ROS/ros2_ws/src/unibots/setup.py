@@ -1,6 +1,6 @@
 from setuptools import setup
 
-package_name = 'unibots_bridge'
+package_name = 'unibots'
 
 setup(
     name=package_name,
@@ -9,7 +9,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/unibots_bridge.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/unibots.launch.py']),
         ('share/' + package_name + '/config', ['config/params.yaml']),
     ],
     install_requires=['setuptools'],
@@ -21,9 +21,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'file_bridge_node = unibots_bridge.file_bridge_node:main',
-            'decision_making_node = unibots_bridge.decision_making_node:main',
-            'decision_node = unibots_bridge.decision_node:main',
+            'web_bridge_node = unibots.web_bridge_node:main',
+            'decision_node = unibots.decision_node:main',
+            'pose_estimation_node = unibots.pose_estimation_node:main',
         ],
     },
 )

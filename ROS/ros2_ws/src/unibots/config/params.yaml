@@ -1,0 +1,58 @@
+web_bridge_node:
+  ros__parameters:
+    # Master switch for using pose_estimation to publish /current_position.
+    pose_estimation_enabled: &pose_estimation false
+    # Shared frequency (Hz) used by all nodes.
+    common_hz: &common_hz 10.0
+    # Upstream simulator host for simulation data mirror.
+    remote_host: 192.168.50.1
+    # Upstream simulator port for simulation data mirror.
+    remote_port: 5003
+    # Local bind address for the HTTP mirror server.
+    local_host: 0.0.0.0
+    # Local port for the HTTP mirror server.
+    local_port: 5003
+    # Poll rate for fetching upstream simulation data (Hz).
+    poll_hz: *common_hz
+    # HTTP timeout for upstream simulation data requests (sec).
+    request_timeout: 0.25
+    # Upstream host for front camera JPEG.
+    camera_remote_host: 192.168.50.2
+    # Upstream port for front camera JPEG.
+    camera_remote_port: 5003
+    # URL path for front camera JPEG.
+    camera_path: /front_camera
+    # ROS topic to publish the front camera image.
+    camera_topic: /front_camera
+    # Poll rate for front camera JPEG (Hz).
+    camera_poll_hz: *common_hz
+    # HTTP timeout for front camera JPEG requests (sec).
+    camera_request_timeout: 0.25
+    # Mirror the pose_estimation flag into web_bridge_node behavior.
+    pose_estimation: *pose_estimation
+    # When true, post decisions/decision_making_data to web endpoints.
+    web_debug: false
+
+decision_node:
+  ros__parameters:
+    # Decision loop tick rate (Hz).
+    tick_hz: *common_hz
+    # Decision mode string (selects handler in decision_cruise).
+    mode: improved_nearest_v3_5
+    # Fallback speed when not provided by planner.
+    default_speed: 0.3
+
+pose_estimation:
+  ros__parameters:
+    # Enable pose_estimation node and publish /current_position.
+    pose_estimation: *pose_estimation
+    # Input camera topic for pose estimation.
+    camera_topic: /front_camera
+    # Override intrinsic JSON path (empty = use package default).
+    intrinsic_path: ''
+    # Override tag map JSON path (empty = use package default).
+    tag_map_path: ''
+    # Camera offset from robot center along +x (meters).
+    camera_offset_x: 0.105
+    # Throttle pose logs to once per N seconds.
+    log_every_sec: 1.0

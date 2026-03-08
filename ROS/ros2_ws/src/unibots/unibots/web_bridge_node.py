@@ -1,14 +1,21 @@
-import rclpy
-from rclpy.node import Node
-import threading
-import urllib.request
 import json
 import math
-import re
 import os
+import re
+import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import cv2
+import numpy as np
+import rclpy
+from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
+from rclpy.node import Node
+from sensor_msgs.msg import Image
 from std_msgs.msg import String
+
+from . import decision_cruise as planner
 
 
 THIS_DIR = os.path.dirname(__file__)
@@ -149,9 +156,9 @@ def _build_handler(state: _MirrorState):
     return MirrorHandler
 
 
-class FileBridgeNode(Node):
+class WebBridgeNode(Node):
     def __init__(self) -> None:
-        super().__init__('file_bridge_node')
+        super().__init__('web_bridge_node')
 
         self.declare_parameter('remote_host', '192.168.50.1')
         self.declare_parameter('remote_port', 5003)
@@ -159,6 +166,14 @@ class FileBridgeNode(Node):
         self.declare_parameter('local_port', 5003)
         self.declare_parameter('poll_hz', 10.0)
         self.declare_parameter('request_timeout', 0.25)
+        self.declare_parameter('camera_remote_host', '192.168.50.2')
+        self.declare_parameter('camera_remote_port', 5003)
+        self.declare_parameter('camera_path', '/front_camera')
+        self.declare_parameter('camera_topic', '/front_camera')
+        self.declare_parameter('camera_poll_hz', 10.0)
+        self.declare_parameter('camera_request_timeout', 0.25)
+        self.declare_parameter('pose_estimation', False)
+        self.declare_parameter('web_debug', False)
 
         self.remote_host = self.get_parameter('remote_host').get_parameter_value().string_value
         self.remote_port = int(self.get_parameter('remote_port').get_parameter_value().integer_value)
@@ -166,9 +181,27 @@ class FileBridgeNode(Node):
         self.local_port = int(self.get_parameter('local_port').get_parameter_value().integer_value)
         poll_hz = float(self.get_parameter('poll_hz').get_parameter_value().double_value)
         self.request_timeout = float(self.get_parameter('request_timeout').get_parameter_value().double_value)
+        self.camera_remote_host = self.get_parameter('camera_remote_host').get_parameter_value().string_value
+        self.camera_remote_port = int(self.get_parameter('camera_remote_port').get_parameter_value().integer_value)
+        self.camera_path = self.get_parameter('camera_path').get_parameter_value().string_value
+        self.camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
+        camera_poll_hz = float(self.get_parameter('camera_poll_hz').get_parameter_value().double_value)
+        self.camera_request_timeout = float(
+            self.get_parameter('camera_request_timeout').get_parameter_value().double_value
+        )
+        self._pose_estimation_enabled = bool(
+            self.get_parameter('pose_estimation').get_parameter_value().bool_value
+        )
+        self._web_debug_enabled = bool(
+            self.get_parameter('web_debug').get_parameter_value().bool_value
+        )
+
+        planner.DATA_FLOW = 'web'
 
         if self.request_timeout <= 0.0:
             self.request_timeout = 0.25
+        if self.camera_request_timeout <= 0.0:
+            self.camera_request_timeout = 0.25
 
         self.remote_targets = (
             {
@@ -190,17 +223,34 @@ class FileBridgeNode(Node):
 
         self._error_logged = {item["path"]: False for item in self.remote_targets}
 
-        self.pub_current_position = self.create_publisher(PoseStamped, '/sim/current_position', 10)
-        self.pub_visible_balls = self.create_publisher(String, '/sim/visible_balls', 10)
-        self.pub_waypoint_status = self.create_publisher(String, '/sim/waypoint_status', 10)
-        self.pub_time = self.create_publisher(String, '/sim/time', 10)
+        self._last_decisions_payload: dict | None = None
+        self._last_decision_making_payload: dict | None = None
+
+        self.create_subscription(String, '/decisions', self._on_decisions, 10)
+        self.create_subscription(String, '/decision_making_data', self._on_decision_making_data, 10)
+
+        self.pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
+        self.pub_visible_balls = self.create_publisher(String, '/visible_balls', 10)
+        self.pub_waypoint_status = self.create_publisher(String, '/waypoint_status', 10)
+        self.pub_time = self.create_publisher(String, '/time', 10)
+        self.pub_front_camera = self.create_publisher(Image, self.camera_topic, 10)
+
+        self._cv_bridge = CvBridge()
+        self._camera_last_payload: bytes | None = None
+        self._camera_error_logged = False
 
         period = 0.1 if poll_hz <= 0.0 else (1.0 / poll_hz)
         self.create_timer(period, self._poll_once)
+        camera_period = 0.1 if camera_poll_hz <= 0.0 else (1.0 / camera_poll_hz)
+        self.create_timer(camera_period, self._poll_camera_once)
 
         self.get_logger().info(
-            f'file_bridge_node started; upstream={self.remote_host}:{self.remote_port}, '
+            f'web_bridge_node started; upstream={self.remote_host}:{self.remote_port}, '
             f'local_mirror=http://{self.local_host}:{self.local_port}, poll_hz={poll_hz}'
+        )
+        self.get_logger().info(
+            f'front_camera bridge enabled; upstream={self.camera_remote_host}:{self.camera_remote_port}'
+            f'{self.camera_path}, topic={self.camera_topic}, poll_hz={camera_poll_hz}'
         )
 
     def _poll_once(self) -> None:
@@ -239,21 +289,22 @@ class FileBridgeNode(Node):
         waypoint_text = str(payload.get('waypoint_status', '')).strip()
         time_text = str(payload.get('time', '')).strip()
 
-        pose = self._parse_current_position(current_text)
-        if pose is not None:
-            x, y, theta_deg = pose
-            theta = math.radians(theta_deg)
-            msg = PoseStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = 'map'
-            msg.pose.position.x = x
-            msg.pose.position.y = y
-            msg.pose.position.z = 0.0
-            msg.pose.orientation.x = 0.0
-            msg.pose.orientation.y = 0.0
-            msg.pose.orientation.z = math.sin(theta * 0.5)
-            msg.pose.orientation.w = math.cos(theta * 0.5)
-            self.pub_current_position.publish(msg)
+        if not self._pose_estimation_enabled:
+            pose = self._parse_current_position(current_text)
+            if pose is not None:
+                x, y, theta_deg = pose
+                theta = math.radians(theta_deg)
+                msg = PoseStamped()
+                msg.header.stamp = self.get_clock().now().to_msg()
+                msg.header.frame_id = 'map'
+                msg.pose.position.x = x
+                msg.pose.position.y = y
+                msg.pose.position.z = 0.0
+                msg.pose.orientation.x = 0.0
+                msg.pose.orientation.y = 0.0
+                msg.pose.orientation.z = math.sin(theta * 0.5)
+                msg.pose.orientation.w = math.cos(theta * 0.5)
+                self.pub_current_position.publish(msg)
 
         vis_msg = String()
         vis_msg.data = visible_text
@@ -267,6 +318,64 @@ class FileBridgeNode(Node):
             t_msg = String()
             t_msg.data = time_text
             self.pub_time.publish(t_msg)
+
+    def _poll_camera_once(self) -> None:
+        url = f'http://{self.camera_remote_host}:{self.camera_remote_port}{self.camera_path}'
+        try:
+            with urllib.request.urlopen(url, timeout=self.camera_request_timeout) as res:
+                body = res.read()
+        except Exception as exc:
+            if not self._camera_error_logged:
+                self.get_logger().warn(f'front camera fetch failed for {url}: {exc}')
+                self._camera_error_logged = True
+            return
+
+        self._camera_error_logged = False
+        if not body:
+            return
+        if self._camera_last_payload is not None and body == self._camera_last_payload:
+            return
+
+        image = cv2.imdecode(np.frombuffer(body, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            self.get_logger().warn('front camera payload could not be decoded')
+            return
+
+        msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'front_camera'
+        self.pub_front_camera.publish(msg)
+        self._camera_last_payload = body
+
+    def _on_decisions(self, msg: String) -> None:
+        payload = self._parse_json_payload(msg.data)
+        if payload is None:
+            return
+        self._last_decisions_payload = payload
+        if not self._web_debug_enabled:
+            return
+        if not planner._post_decisions_data(payload):
+            self.get_logger().warn('failed to post decisions payload')
+
+    def _on_decision_making_data(self, msg: String) -> None:
+        payload = self._parse_json_payload(msg.data)
+        if payload is None:
+            return
+        self._last_decision_making_payload = payload
+        if not self._web_debug_enabled:
+            return
+        if not planner._post_decision_making_data(payload):
+            self.get_logger().warn('failed to post decision_making_data payload')
+
+
+    def _parse_json_payload(self, raw: str) -> dict | None:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
 
     def _parse_current_position(self, text: str):
         nums = re.findall(r'[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?', text or '')
@@ -288,7 +397,7 @@ class FileBridgeNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = FileBridgeNode()
+    node = WebBridgeNode()
     try:
         rclpy.spin(node)
     finally:

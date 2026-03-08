@@ -10,6 +10,7 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
+from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 
@@ -151,19 +152,21 @@ class PoseEstimationNode(Node):
     def __init__(self) -> None:
         super().__init__('pose_estimation')
 
-        self.declare_parameter('camera_topic', '/sim/front_camera')
+        self.declare_parameter('camera_topic', '/front_camera')
         self.declare_parameter('intrinsic_path', '')
         self.declare_parameter('tag_map_path', '')
         self.declare_parameter('camera_offset_x', 0.105)
         self.declare_parameter('log_every_sec', 1.0)
+        self.declare_parameter('pose_estimation', False)
 
         camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
         tag_map_path_raw = self.get_parameter('tag_map_path').get_parameter_value().string_value
         self.camera_offset_x = float(self.get_parameter('camera_offset_x').get_parameter_value().double_value)
         self.log_every_sec = float(self.get_parameter('log_every_sec').get_parameter_value().double_value)
+        self._enabled = bool(self.get_parameter('pose_estimation').get_parameter_value().bool_value)
 
-        pkg_share = get_package_share_directory('unibots_bridge')
+        pkg_share = get_package_share_directory('unibots')
         default_intrinsic = os.path.join(pkg_share, 'config', 'camera_intrinsic.json')
         default_tag_map = os.path.join(pkg_share, 'config', 'tag_world_map.json')
 
@@ -180,10 +183,12 @@ class PoseEstimationNode(Node):
         self._last_pose_log = 0.0
         self._last_warn_log = 0.0
 
+        self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
         self.create_subscription(Image, camera_topic, self._on_image, 10)
 
+        state = 'enabled' if self._enabled else 'disabled'
         self.get_logger().info(
-            f'pose_estimation started; topic={camera_topic}, intrinsics={intrinsic_path}, tag_map={tag_map_path}'
+            f'pose_estimation {state}; topic={camera_topic}, intrinsics={intrinsic_path}, tag_map={tag_map_path}'
         )
 
     def _should_log(self, last_time: float) -> bool:
@@ -193,6 +198,8 @@ class PoseEstimationNode(Node):
         return (now - last_time) >= self.log_every_sec
 
     def _on_image(self, msg: Image) -> None:
+        if not self._enabled:
+            return
         try:
             image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as exc:
@@ -228,6 +235,20 @@ class PoseEstimationNode(Node):
                 'Estimated robot world pose: '
                 f"({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.2f}deg)"
             )
+
+        robot = estimate['robot_pose_world']
+        heading_rad = math.radians(float(robot['heading_x0']))
+        msg_out = PoseStamped()
+        msg_out.header.stamp = self.get_clock().now().to_msg()
+        msg_out.header.frame_id = 'map'
+        msg_out.pose.position.x = float(robot['x'])
+        msg_out.pose.position.y = float(robot['y'])
+        msg_out.pose.position.z = 0.0
+        msg_out.pose.orientation.x = 0.0
+        msg_out.pose.orientation.y = 0.0
+        msg_out.pose.orientation.z = math.sin(heading_rad * 0.5)
+        msg_out.pose.orientation.w = math.cos(heading_rad * 0.5)
+        self._pub_current_position.publish(msg_out)
 
 
 def main(args=None) -> None:
