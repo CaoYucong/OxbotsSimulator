@@ -47,14 +47,14 @@ class _MirrorState:
         ).encode("utf-8")
         self._lock = threading.Lock()
         self._items = {
-            "/simulation_data": {
-                "body": b"",
-                "content_type": "text/html; charset=utf-8",
-                "has_data": False,
-            },
             "/data/simulation_data": {
                 "body": b"{}",
                 "content_type": "application/json; charset=utf-8",
+                "has_data": False,
+            },
+            "/data/front_camera": {
+                "body": b"",
+                "content_type": "image/jpeg",
                 "has_data": False,
             },
             "/data/decisions": {
@@ -165,13 +165,13 @@ class WebBridgeNode(Node):
         self.declare_parameter('local_host', '127.0.0.1')
         self.declare_parameter('local_port', 5003)
         self.declare_parameter('poll_hz', 10.0)
-        self.declare_parameter('request_timeout', 0.25)
-        self.declare_parameter('camera_remote_host', '192.168.50.2')
+        self.declare_parameter('request_timeout', 1.0)
+        self.declare_parameter('camera_remote_host', '192.168.50.1')
         self.declare_parameter('camera_remote_port', 5003)
-        self.declare_parameter('camera_path', '/front_camera')
+        self.declare_parameter('camera_path', '/data/front_camera')
         self.declare_parameter('camera_topic', '/front_camera')
         self.declare_parameter('camera_poll_hz', 10.0)
-        self.declare_parameter('camera_request_timeout', 0.25)
+        self.declare_parameter('camera_request_timeout', 1.0)
         self.declare_parameter('pose_estimation', False)
         self.declare_parameter('web_debug', False)
 
@@ -199,16 +199,11 @@ class WebBridgeNode(Node):
         planner.DATA_FLOW = 'web'
 
         if self.request_timeout <= 0.0:
-            self.request_timeout = 0.25
+            self.request_timeout = 1.0
         if self.camera_request_timeout <= 0.0:
-            self.camera_request_timeout = 0.25
+            self.camera_request_timeout = 1.0
 
         self.remote_targets = (
-            {
-                "path": "/simulation_data",
-                "url": f"http://{self.remote_host}:{self.remote_port}/simulation_data",
-                "content_type": "text/html; charset=utf-8",
-            },
             {
                 "path": "/data/simulation_data",
                 "url": f"http://{self.remote_host}:{self.remote_port}/data/simulation_data",
@@ -236,7 +231,6 @@ class WebBridgeNode(Node):
         self.pub_front_camera = self.create_publisher(Image, self.camera_topic, 10)
 
         self._cv_bridge = CvBridge()
-        self._camera_last_payload: bytes | None = None
         self._camera_error_logged = False
 
         period = 0.1 if poll_hz <= 0.0 else (1.0 / poll_hz)
@@ -323,6 +317,7 @@ class WebBridgeNode(Node):
         url = f'http://{self.camera_remote_host}:{self.camera_remote_port}{self.camera_path}'
         try:
             with urllib.request.urlopen(url, timeout=self.camera_request_timeout) as res:
+                content_type = (res.headers.get_content_type() or '').lower()
                 body = res.read()
         except Exception as exc:
             if not self._camera_error_logged:
@@ -333,8 +328,19 @@ class WebBridgeNode(Node):
         self._camera_error_logged = False
         if not body:
             return
-        if self._camera_last_payload is not None and body == self._camera_last_payload:
+        if content_type and not content_type.startswith('image/'):
+            self.get_logger().warn(
+                f'front camera upstream returned non-image content-type: {content_type}; '
+                f'check camera_path={self.camera_path}'
+            )
             return
+
+        merged_content_type = f"{content_type}; charset=utf-8" if content_type else "image/jpeg"
+        changed = self._state.set('/data/front_camera', body, merged_content_type)
+        if not changed:
+            return
+
+        self.get_logger().info(f'updated mirror payload for /data/front_camera from {url}')
 
         image = cv2.imdecode(np.frombuffer(body, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
@@ -345,7 +351,6 @@ class WebBridgeNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'front_camera'
         self.pub_front_camera.publish(msg)
-        self._camera_last_payload = body
 
     def _on_decisions(self, msg: String) -> None:
         payload = self._parse_json_payload(msg.data)

@@ -94,14 +94,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/6] Test SSH connectivity: $PI_USER@$PI_IP"
+echo "[1/8] Test SSH connectivity: $PI_USER@$PI_IP"
 ssh "${SSH_COMMON_OPTS[@]}" -MNf "$PI_USER@$PI_IP"
 ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "echo '[OK] SSH connected to ' \"\$(hostname)\""
 
-echo "[2/6] Ensure remote directories exist"
+echo "[2/8] Ensure remote directories exist"
 ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "mkdir -p $REMOTE_PROJECT_ROOT $REMOTE_WS"
 
-echo "[3/6] Sync local workspace to Raspberry Pi"
+echo "[3/8] Sync local workspace to Raspberry Pi"
 rsync -avz --delete \
   --exclude '.git' \
   --exclude 'build' \
@@ -110,13 +110,49 @@ rsync -avz --delete \
   -e "ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH" \
   "$LOCAL_WS/" "$PI_USER@$PI_IP:$REMOTE_WS/"
 
-echo "[4/6] Sync config.json to Raspberry Pi"
+echo "[4/8] Sync config.json to Raspberry Pi"
 rsync -avz \
   -e "ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH" \
   "$LOCAL_CONFIG" "$PI_USER@$PI_IP:$REMOTE_CONFIG"
 
-echo "[5/6] Verify remote package path"
+echo "[5/8] Verify remote package path"
 ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "test -d $REMOTE_WS/src/$LAUNCH_PACKAGE"
+
+echo "[6/8] Ensure Python OpenCV runtime exists on Raspberry Pi"
+ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '
+  if python3 -c \"import cv2\" >/dev/null 2>&1; then
+    echo \"[OK] python3-opencv already available\"
+  elif sudo -n true >/dev/null 2>&1; then
+    echo \"[INFO] Installing python3-opencv (non-interactive sudo)\"
+    sudo -n apt-get update
+    sudo -n apt-get install -y python3-opencv
+    python3 -c \"import cv2\" >/dev/null 2>&1
+    echo \"[OK] python3-opencv installed\"
+  else
+    echo \"[ERROR] Missing Python module cv2 and passwordless sudo is unavailable.\"
+    echo \"[ERROR] Run once on Raspberry Pi: sudo apt-get update && sudo apt-get install -y python3-opencv\"
+    exit 1
+  fi
+'"
+
+echo "[7/8] Ensure ROS cv_bridge runtime exists on Raspberry Pi"
+ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '
+  source /opt/ros/$ROS_DISTRO/setup.bash
+  if python3 -c \"import cv_bridge\" >/dev/null 2>&1; then
+    echo \"[OK] ros-$ROS_DISTRO-cv-bridge already available\"
+  elif sudo -n true >/dev/null 2>&1; then
+    echo \"[INFO] Installing ros-$ROS_DISTRO-cv-bridge (non-interactive sudo)\"
+    sudo -n apt-get update
+    sudo -n apt-get install -y ros-$ROS_DISTRO-cv-bridge
+    source /opt/ros/$ROS_DISTRO/setup.bash
+    python3 -c \"import cv_bridge\" >/dev/null 2>&1
+    echo \"[OK] ros-$ROS_DISTRO-cv-bridge installed\"
+  else
+    echo \"[ERROR] Missing Python module cv_bridge and passwordless sudo is unavailable.\"
+    echo \"[ERROR] Run once on Raspberry Pi: sudo apt-get update && sudo apt-get install -y ros-$ROS_DISTRO-cv-bridge\"
+    exit 1
+  fi
+'"
 
 REMOTE_CMD="source /opt/ros/$ROS_DISTRO/setup.bash && cd $REMOTE_WS"
 
@@ -129,12 +165,12 @@ REMOTE_CMD+=" && source install/setup.bash"
 if [[ "$MODE" == "detach" ]]; then
   LOG_FILE='~/unibots_ros.log'
   REMOTE_CMD+=" && nohup ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE > $LOG_FILE 2>&1 & echo [OK] launched in background, log: $LOG_FILE"
-  echo "[6/6] Build and launch (background)"
+  echo "[8/8] Build and launch (background)"
   ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
   echo "Done. To view logs: ssh $PI_USER@$PI_IP 'tail -f ~/unibots_ros.log'"
 else
   REMOTE_CMD+=" && ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE"
-  echo "[6/6] Build and launch (foreground)"
+  echo "[8/8] Build and launch (foreground)"
   echo "Press Ctrl+C to stop launch on Raspberry Pi."
   ssh -t "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
 fi

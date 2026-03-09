@@ -53,6 +53,27 @@ def _load_early_data_flow(default="web"):
     return default
 
 
+def _load_early_run_on_pi(default=False):
+    try:
+        config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.json"))
+        with open(config_path, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            raw = payload.get("run_on_pi", default)
+            if isinstance(raw, bool):
+                return raw
+            if isinstance(raw, (int, float)):
+                return bool(raw)
+            text = str(raw).strip().lower()
+            if text in ("1", "true", "yes", "y", "on"):
+                return True
+            if text in ("0", "false", "no", "n", "off"):
+                return False
+    except Exception:
+        pass
+    return default
+
+
 def _load_early_camera_on(default=True):
     try:
         config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.json"))
@@ -194,6 +215,7 @@ MAIN_ROBOT_NAME = "MY_ROBOT"
 CAMERA_ON = _load_early_camera_on(default=True)
 IS_SUPERVISOR_NODE = _has_supervisor_privileges(supervisor)
 EARLY_DATA_FLOW = _load_early_data_flow()
+EARLY_RUN_ON_PI = _load_early_run_on_pi(default=False)
 
 camera = None
 front_camera_endpoint = None
@@ -252,11 +274,12 @@ if CAMERA_ON:
                     image_path=camera_local_image_path,
                     write_local=(EARLY_DATA_FLOW == "file"),
                 )
-                _trigger_pose_estimation_if_ready()
-                try:
-                    _print_ground_truth_current_position(robot.getSelf())
-                except Exception:
-                    _print_ground_truth_current_position()
+                if not EARLY_RUN_ON_PI:
+                    _trigger_pose_estimation_if_ready()
+                    try:
+                        _print_ground_truth_current_position(robot.getSelf())
+                    except Exception:
+                        _print_ground_truth_current_position()
 
             sys.exit(0)
 
@@ -1525,8 +1548,9 @@ while supervisor.step(TIME_STEP) != -1:
                 image_path=camera_local_image_path,
                 write_local=(DATA_FLOW == "file"),
             )
-            _trigger_pose_estimation_if_ready()
-            _print_ground_truth_current_position(main_robot)
+            if not RUN_ON_PI:
+                _trigger_pose_estimation_if_ready()
+                _print_ground_truth_current_position(main_robot)
     if (not RUN_ON_PI) and frame_counter % CRUISE_INTERVAL_FRAMES == 0:
         try:
             subprocess.run([sys.executable, CRUISE_SCRIPT_PATH], check=False)

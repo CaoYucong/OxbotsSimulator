@@ -2313,6 +2313,63 @@ def _parse_visible_balls_from_topic(text: str) -> list[tuple[float, float, str]]
     return _parse_ball_lines(raw)
 
 
+def _sync_ros_topic_state(
+    current_x: float,
+    current_y: float,
+    current_theta: float,
+    visible_balls_json: str,
+    sim_time_seconds: float,
+    waypoint_status: str,
+) -> None:
+    """Mirror ROS topic values into SIM_DATA_CACHE so mode handlers can run."""
+    balls = _parse_visible_balls_from_topic(visible_balls_json)
+    balls_text = "\n".join(
+        f"({bx:.6f}, {by:.6f}, {str(btyp).upper()})" for bx, by, btyp in balls
+    )
+    if balls_text:
+        balls_text += "\n"
+
+    SIM_DATA_CACHE.update(
+        {
+            "current_position": (
+                f"({float(current_x):.6f}, {float(current_y):.6f}, "
+                f"{math.degrees(float(current_theta)):.6f})"
+            ),
+            "visible_balls": balls_text,
+            "time": f"{float(sim_time_seconds):.6f}",
+            "waypoint_status": (waypoint_status or "going").strip().lower() or "going",
+        }
+    )
+
+
+def _normalize_mode_key(mode: str) -> str:
+    text = (mode or "").strip().lower()
+    if text.startswith("mode_"):
+        text = text[len("mode_"):]
+    return text or DEFAULT_MODE
+
+
+def _export_ros_decision(default_speed: float) -> Optional[dict]:
+    waypoint = _read_dynamic_waypoints()
+    if waypoint is None:
+        return None
+
+    speed_text = DECISIONS_LOCAL_CACHE.get("speed")
+    if speed_text is None and DECISIONS_CACHE:
+        speed_text = DECISIONS_CACHE.get("speed")
+    try:
+        speed = float(speed_text) if speed_text is not None else float(default_speed)
+    except Exception:
+        speed = float(default_speed)
+
+    wx, wy, bearing_deg = waypoint
+    theta = None if bearing_deg is None else math.radians(float(bearing_deg))
+    return {
+        "dynamic_waypoint": (float(wx), float(wy), theta),
+        "speed": speed,
+    }
+
+
 def decide_from_ros_state(
     current_x: float,
     current_y: float,
@@ -2323,51 +2380,42 @@ def decide_from_ros_state(
     mode: str = 'mode_improved_nearest_v3_5',
     default_speed: float = DEFAULT_LINEAR_VELOCITY,
 ):
-    """Lightweight ROS planner entrypoint used by decision_node.
+    """ROS planner entrypoint used by decision_node.
 
-    Consumes data from ROS topics and returns command payload:
-    {'dynamic_waypoint': (x, y, theta_rad), 'speed': v}
+    Reuses full mode handlers so decision_making_data artifacts are updated.
     """
-    _ = mode
-    _ = sim_time_seconds
+    _sync_ros_topic_state(
+        current_x=current_x,
+        current_y=current_y,
+        current_theta=current_theta,
+        visible_balls_json=visible_balls_json,
+        sim_time_seconds=sim_time_seconds,
+        waypoint_status=waypoint_status,
+    )
 
-    balls = _parse_visible_balls_from_topic(visible_balls_json)
-    status = (waypoint_status or '').strip().lower()
-
-    # Keep current command while moving and no better target is visible.
-    if not balls and status != 'reached':
-        return None
-
-    if not balls:
-        # No balls and waypoint reached: keep heading and stay put.
-        return {
-            'dynamic_waypoint': (float(current_x), float(current_y), float(current_theta)),
-            'speed': float(default_speed),
-        }
-
-    best = None
-    best_cost = None
-    cur_heading_deg = math.degrees(float(current_theta))
-    for x, y, _typ in balls:
-        cost = next_point_time_cost(
-            (float(current_x), float(current_y)),
-            cur_heading_deg,
-            (float(x), float(y)),
-            None,
+    if not DECISIONS_CACHE:
+        DECISIONS_CACHE.update(DECISIONS_LOCAL_CACHE)
+    if not DECISIONS_CACHE.get("dynamic_waypoints"):
+        DECISIONS_CACHE["dynamic_waypoints"] = (
+            f"({float(current_x):.6f}, {float(current_y):.6f}, "
+            f"{math.degrees(float(current_theta)):.6f})"
         )
-        if best_cost is None or cost < best_cost:
-            best_cost = cost
-            best = (float(x), float(y))
+    if "dynamic_waypoints" not in DECISIONS_LOCAL_CACHE:
+        DECISIONS_LOCAL_CACHE["dynamic_waypoints"] = DECISIONS_CACHE["dynamic_waypoints"]
+    if "speed" not in DECISIONS_LOCAL_CACHE:
+        DECISIONS_LOCAL_CACHE["speed"] = DECISIONS_CACHE.get("speed", f"{float(default_speed):.6f}")
 
-    if best is None:
-        return None
+    mode_key = _normalize_mode_key(mode)
+    handler = _MODE_HANDLERS.get(mode_key) or _MODE_HANDLERS.get(DEFAULT_MODE)
+    if handler is None:
+        return _export_ros_decision(default_speed)
 
-    tx, ty = best
-    theta = math.atan2(ty - float(current_y), tx - float(current_x))
-    return {
-        'dynamic_waypoint': (tx, ty, theta),
-        'speed': float(default_speed),
-    }
+    try:
+        handler()
+    except Exception:
+        return _export_ros_decision(default_speed)
+
+    return _export_ros_decision(default_speed)
 
 if __name__ == "__main__":
     sys.exit(main())

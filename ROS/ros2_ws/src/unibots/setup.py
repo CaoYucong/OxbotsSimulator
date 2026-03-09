@@ -10,7 +10,14 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/unibots.launch.py']),
-        ('share/' + package_name + '/config', ['config/params.yaml']),
+        (
+            'share/' + package_name + '/config',
+            [
+                'config/params.yaml',
+                'config/camera_intrinsic.json',
+                'config/tag_world_map.json',
+            ],
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

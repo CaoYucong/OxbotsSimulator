@@ -4,7 +4,7 @@
 	"camera": "on",
 	"default_linear_velocity": 0.1,
 	"default_angular_velocity": 40,
-	"run_on_pi": false,
+	"run_on_pi": true,
 	"pi_ip": "192.168.50.2",
 	"viewer_refresh_seconds": 1
 }

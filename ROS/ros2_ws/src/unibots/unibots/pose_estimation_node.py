@@ -54,10 +54,45 @@ def _detect_apriltag_corners(image: np.ndarray) -> tuple[list[np.ndarray], Optio
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     dict_id = cv2.aruco.DICT_APRILTAG_36h11
     dictionary = cv2.aruco.getPredefinedDictionary(dict_id)
-    params = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.ArucoDetector(dictionary, params)
-    corners, ids, _ = detector.detectMarkers(gray)
+
+    # OpenCV API differs across versions:
+    # - Newer: DetectorParameters + ArucoDetector(...).detectMarkers(...)
+    # - Older: DetectorParameters_create + detectMarkers(...)
+    if hasattr(cv2.aruco, 'DetectorParameters'):
+        params = cv2.aruco.DetectorParameters()
+    elif hasattr(cv2.aruco, 'DetectorParameters_create'):
+        params = cv2.aruco.DetectorParameters_create()
+    else:
+        raise RuntimeError('OpenCV aruco DetectorParameters API is unavailable.')
+
+    if hasattr(cv2.aruco, 'ArucoDetector'):
+        detector = cv2.aruco.ArucoDetector(dictionary, params)
+        corners, ids, _ = detector.detectMarkers(gray)
+    else:
+        corners, ids, _ = cv2.aruco.detectMarkers(gray, dictionary, parameters=params)
     return corners, ids
+
+
+def _opencv_apriltag_runtime_supported() -> tuple[bool, str]:
+    if not hasattr(cv2, 'aruco'):
+        return False, 'OpenCV aruco module is unavailable'
+    if not hasattr(cv2.aruco, 'DICT_APRILTAG_36h11'):
+        return False, 'OpenCV aruco APRILTAG dictionary is unavailable'
+
+    # On some Raspberry Pi system OpenCV builds (notably 4.6.x), AprilTag detection
+    # can crash in native code (SIGSEGV). Keep node alive by disabling pose estimation.
+    version = str(getattr(cv2, '__version__', 'unknown'))
+    try:
+        parts = version.split('.')
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except Exception:
+        return False, f'Cannot parse OpenCV version: {version}'
+
+    if (major, minor) < (4, 7):
+        return False, f'OpenCV {version} is too old for stable AprilTag runtime on this target (need >= 4.7)'
+
+    return True, f'OpenCV {version}'
 
 
 def _rotation_matrix_to_euler_zyx_deg(R: np.ndarray) -> tuple[float, float, float]:
@@ -158,6 +193,7 @@ class PoseEstimationNode(Node):
         self.declare_parameter('camera_offset_x', 0.105)
         self.declare_parameter('log_every_sec', 1.0)
         self.declare_parameter('pose_estimation', False)
+        self.declare_parameter('allow_legacy_opencv', False)
 
         camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
@@ -165,6 +201,22 @@ class PoseEstimationNode(Node):
         self.camera_offset_x = float(self.get_parameter('camera_offset_x').get_parameter_value().double_value)
         self.log_every_sec = float(self.get_parameter('log_every_sec').get_parameter_value().double_value)
         self._enabled = bool(self.get_parameter('pose_estimation').get_parameter_value().bool_value)
+        self._allow_legacy_opencv = bool(
+            self.get_parameter('allow_legacy_opencv').get_parameter_value().bool_value
+        )
+
+        if self._enabled:
+            ok_runtime, reason = _opencv_apriltag_runtime_supported()
+            if not ok_runtime:
+                if self._allow_legacy_opencv:
+                    self.get_logger().warn(
+                        f'pose_estimation running in legacy OpenCV mode (may crash): {reason}'
+                    )
+                else:
+                    self.get_logger().warn(
+                        f'pose_estimation requested but disabled to avoid native crash: {reason}'
+                    )
+                    self._enabled = False
 
         pkg_share = get_package_share_directory('unibots')
         default_intrinsic = os.path.join(pkg_share, 'config', 'camera_intrinsic.json')
@@ -231,9 +283,14 @@ class PoseEstimationNode(Node):
         if self._should_log(self._last_pose_log):
             self._last_pose_log = time.monotonic()
             robot = estimate['robot_pose_world']
+            cam = estimate['camera_position_world']
+            used_tags = int(estimate.get('num_tags_used', 0))
+            used_points = int(estimate.get('num_points', 0))
             self.get_logger().info(
-                'Estimated robot world pose: '
-                f"({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.2f}deg)"
+                'Estimated pose '
+                f"robot=({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.2f}deg), "
+                f"camera=({cam['x']:.2f}, {cam['y']:.2f}, {cam['z']:.2f}), "
+                f'tags={used_tags}, points={used_points}'
             )
 
         robot = estimate['robot_pose_world']
