@@ -191,6 +191,7 @@ class PoseEstimationNode(Node):
         self.declare_parameter('intrinsic_path', '')
         self.declare_parameter('tag_map_path', '')
         self.declare_parameter('camera_offset_x', 0.105)
+        self.declare_parameter('tick_hz', 0.0)
         self.declare_parameter('log_every_sec', 1.0)
         self.declare_parameter('pose_estimation', False)
         self.declare_parameter('allow_legacy_opencv', False)
@@ -199,11 +200,13 @@ class PoseEstimationNode(Node):
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
         tag_map_path_raw = self.get_parameter('tag_map_path').get_parameter_value().string_value
         self.camera_offset_x = float(self.get_parameter('camera_offset_x').get_parameter_value().double_value)
+        self.tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)
         self.log_every_sec = float(self.get_parameter('log_every_sec').get_parameter_value().double_value)
         self._enabled = bool(self.get_parameter('pose_estimation').get_parameter_value().bool_value)
         self._allow_legacy_opencv = bool(
             self.get_parameter('allow_legacy_opencv').get_parameter_value().bool_value
         )
+        self._process_interval_sec = (1.0 / self.tick_hz) if self.tick_hz > 0.0 else 0.0
 
         if self._enabled:
             ok_runtime, reason = _opencv_apriltag_runtime_supported()
@@ -234,13 +237,16 @@ class PoseEstimationNode(Node):
         self._bridge = CvBridge()
         self._last_pose_log = 0.0
         self._last_warn_log = 0.0
+        self._last_process_time = 0.0
 
         self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
         self.create_subscription(Image, camera_topic, self._on_image, 10)
 
         state = 'enabled' if self._enabled else 'disabled'
+        tick_hz_text = f'{self.tick_hz:.3f}Hz' if self.tick_hz > 0.0 else 'image-rate'
         self.get_logger().info(
-            f'pose_estimation {state}; topic={camera_topic}, intrinsics={intrinsic_path}, tag_map={tag_map_path}'
+            f'pose_estimation {state}; topic={camera_topic}, tick={tick_hz_text}, '
+            f'intrinsics={intrinsic_path}, tag_map={tag_map_path}'
         )
 
     def _should_log(self, last_time: float) -> bool:
@@ -252,6 +258,13 @@ class PoseEstimationNode(Node):
     def _on_image(self, msg: Image) -> None:
         if not self._enabled:
             return
+
+        if self._process_interval_sec > 0.0:
+            now = time.monotonic()
+            if (now - self._last_process_time) < self._process_interval_sec:
+                return
+            self._last_process_time = now
+
         try:
             image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as exc:

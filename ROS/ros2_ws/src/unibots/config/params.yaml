@@ -54,6 +54,8 @@ pose_estimation:
     tag_map_path: ''
     # Camera offset from robot center along +x (meters).
     camera_offset_x: 0.105
+    # Pose estimation processing tick rate (Hz). 0 = process every image.
+    tick_hz: 10.0
     # Throttle pose logs to once per N seconds.
     log_every_sec: 1.0
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
