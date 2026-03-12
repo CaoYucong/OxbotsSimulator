@@ -14,6 +14,8 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 
+PERF_METRICS_ENABLED = True
+
 
 def _load_intrinsics(intrinsic_path: Path) -> tuple[np.ndarray, np.ndarray]:
     with intrinsic_path.open('r', encoding='utf-8') as f:
@@ -118,7 +120,13 @@ def estimate_camera_world_position(
     tag_world: dict[int, np.ndarray],
     cam_offset_x_robot: float,
 ) -> Optional[dict]:
+    timing_payload: Optional[dict] = None
+    if PERF_METRICS_ENABLED:
+        t_total_start = time.perf_counter()
+        t_detect_start = time.perf_counter()
     corners_list, ids = _detect_apriltag_corners(image)
+    if PERF_METRICS_ENABLED:
+        detect_ms = (time.perf_counter() - t_detect_start) * 1000.0
 
     if ids is None or len(ids) == 0:
         return None
@@ -144,11 +152,21 @@ def estimate_camera_world_position(
 
     obj = np.asarray(obj_points, dtype=np.float64)
     img = np.asarray(img_points, dtype=np.float64)
+    if PERF_METRICS_ENABLED:
+        t_pnp_start = time.perf_counter()
     ok, rvec, tvec = cv2.solvePnP(obj, img, K, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
     if not ok:
         return None
 
     R, _ = cv2.Rodrigues(rvec)
+    if PERF_METRICS_ENABLED:
+        pnp_ms = (time.perf_counter() - t_pnp_start) * 1000.0
+        total_ms = (time.perf_counter() - t_total_start) * 1000.0
+        timing_payload = {
+            'detect': float(detect_ms),
+            'pnp': float(pnp_ms),
+            'total': float(total_ms),
+        }
     cam_world = -R.T @ tvec
     cam_world = cam_world.reshape(3)
     R_wc = R.T
@@ -175,6 +193,7 @@ def estimate_camera_world_position(
         },
         'num_points': int(len(obj_points)),
         'num_tags_used': int(len(img_points) // 4),
+        'timing_ms': timing_payload,
         'robot_pose_world': {
             'x': robot_x,
             'y': robot_y,
@@ -206,7 +225,6 @@ class PoseEstimationNode(Node):
         self._allow_legacy_opencv = bool(
             self.get_parameter('allow_legacy_opencv').get_parameter_value().bool_value
         )
-        self._process_interval_sec = (1.0 / self.tick_hz) if self.tick_hz > 0.0 else 0.0
 
         if self._enabled:
             ok_runtime, reason = _opencv_apriltag_runtime_supported()
@@ -237,10 +255,20 @@ class PoseEstimationNode(Node):
         self._bridge = CvBridge()
         self._last_pose_log = 0.0
         self._last_warn_log = 0.0
-        self._last_process_time = 0.0
+        self._latest_image: Optional[np.ndarray] = None
+        if PERF_METRICS_ENABLED:
+            self._perf_window_start = time.monotonic()
+            self._perf_frames = 0
+            self._perf_success = 0
+            self._perf_tags = 0
+            self._perf_detect_ms = 0.0
+            self._perf_pnp_ms = 0.0
+            self._perf_total_ms = 0.0
 
         self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
         self.create_subscription(Image, camera_topic, self._on_image, 10)
+        if self.tick_hz > 0.0:
+            self.create_timer(1.0 / self.tick_hz, self._on_tick)
 
         state = 'enabled' if self._enabled else 'disabled'
         tick_hz_text = f'{self.tick_hz:.3f}Hz' if self.tick_hz > 0.0 else 'image-rate'
@@ -259,12 +287,6 @@ class PoseEstimationNode(Node):
         if not self._enabled:
             return
 
-        if self._process_interval_sec > 0.0:
-            now = time.monotonic()
-            if (now - self._last_process_time) < self._process_interval_sec:
-                return
-            self._last_process_time = now
-
         try:
             image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as exc:
@@ -272,6 +294,23 @@ class PoseEstimationNode(Node):
                 self._last_warn_log = time.monotonic()
                 self.get_logger().warn(f'failed to decode image: {exc}')
             return
+
+        if self.tick_hz > 0.0:
+            self._latest_image = image
+            return
+
+        self._process_image(image)
+
+    def _on_tick(self) -> None:
+        if not self._enabled or self.tick_hz <= 0.0:
+            return
+        if self._latest_image is None:
+            return
+        self._process_image(self._latest_image)
+
+    def _process_image(self, image: np.ndarray) -> None:
+        if PERF_METRICS_ENABLED:
+            self._perf_frames += 1
 
         try:
             estimate = estimate_camera_world_position(
@@ -293,18 +332,54 @@ class PoseEstimationNode(Node):
                 self.get_logger().warn('pose estimation: no valid AprilTag-world correspondences')
             return
 
+        used_tags = int(estimate.get('num_tags_used', 0))
+        if PERF_METRICS_ENABLED:
+            timing = estimate.get('timing_ms', {}) or {}
+            detect_ms = float(timing.get('detect', 0.0))
+            pnp_ms = float(timing.get('pnp', 0.0))
+            total_ms = float(timing.get('total', 0.0))
+            self._perf_success += 1
+            self._perf_tags += used_tags
+            self._perf_detect_ms += detect_ms
+            self._perf_pnp_ms += pnp_ms
+            self._perf_total_ms += total_ms
+
         if self._should_log(self._last_pose_log):
             self._last_pose_log = time.monotonic()
             robot = estimate['robot_pose_world']
             cam = estimate['camera_position_world']
-            used_tags = int(estimate.get('num_tags_used', 0))
             used_points = int(estimate.get('num_points', 0))
-            self.get_logger().info(
-                'Estimated pose '
-                f"robot=({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.2f}deg), "
-                f"camera=({cam['x']:.2f}, {cam['y']:.2f}, {cam['z']:.2f}), "
-                f'tags={used_tags}, points={used_points}'
-            )
+            if PERF_METRICS_ENABLED:
+                now = time.monotonic()
+                window_sec = max(1e-6, now - self._perf_window_start)
+                proc_hz = self._perf_frames / window_sec
+                solve_hz = self._perf_success / window_sec
+                tags_per_sec = self._perf_tags / window_sec
+                avg_detect_ms = self._perf_detect_ms / max(1, self._perf_success)
+                avg_pnp_ms = self._perf_pnp_ms / max(1, self._perf_success)
+                avg_total_ms = self._perf_total_ms / max(1, self._perf_success)
+                self.get_logger().info(
+                    'Estimated pose '
+                    f"robot=({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.0f}deg), "
+                    f"camera=({cam['x']:.2f}, {cam['y']:.2f}, {cam['z']:.2f}), "
+                    f'tags={used_tags}, points={used_points}, '
+                    f'proc_hz={proc_hz:.2f}, solve_hz={solve_hz:.2f}, tags_per_sec={tags_per_sec:.2f}, '
+                    f'detect_ms={avg_detect_ms:.2f}, pnp_ms={avg_pnp_ms:.2f}, total_ms={avg_total_ms:.2f}'
+                )
+                self._perf_window_start = now
+                self._perf_frames = 0
+                self._perf_success = 0
+                self._perf_tags = 0
+                self._perf_detect_ms = 0.0
+                self._perf_pnp_ms = 0.0
+                self._perf_total_ms = 0.0
+            else:
+                self.get_logger().info(
+                    'Estimated pose '
+                    f"robot=({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.2f}deg), "
+                    f"camera=({cam['x']:.2f}, {cam['y']:.2f}, {cam['z']:.2f}), "
+                    f'tags={used_tags}, points={used_points}'
+                )
 
         robot = estimate['robot_pose_world']
         heading_rad = math.radians(float(robot['heading_x0']))

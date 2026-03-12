@@ -243,7 +243,7 @@ camera = None
 front_camera_endpoint = None
 camera_local_image_path = os.path.join(os.path.dirname(__file__), "real_time_data", "front_camera.jpg")
 camera_frame_counter = 0
-post_interval_frames = 15
+post_interval_frames = 1
 CAMERA_JPEG_QUALITY = 65
 
 if CAMERA_ON:
@@ -1320,6 +1320,7 @@ def _radar_sensor_distances(max_range=RADAR_MAX_RANGE, corridor=RADAR_CORRIDOR):
             continue
 
         if dist <= max_range:
+            dist = max(0.0, dist)
             prev = hits.get(direction)
             if prev is None or dist < prev:
                 hits[direction] = dist
@@ -1332,7 +1333,7 @@ def _radar_sensor_distances(max_range=RADAR_MAX_RANGE, corridor=RADAR_CORRIDOR):
     }
     for direction, dist in hits.items():
         if direction in memory_values:
-            memory_values[direction] = dist
+            memory_values[direction] = max(0.0, dist)
     return memory_values
 
 def _read_speed_mps(default_value):

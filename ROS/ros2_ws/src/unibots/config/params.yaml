@@ -3,7 +3,7 @@ web_bridge_node:
     # Master switch for using pose_estimation to publish /current_position.
     pose_estimation_enabled: true
     # Shared frequency (Hz) used by all nodes.
-    common_hz: 10.0
+    common_hz: 20.0
     # Upstream simulator host for simulation data mirror.
     remote_host: 192.168.50.1
     # Upstream simulator port for simulation data mirror.
@@ -13,7 +13,7 @@ web_bridge_node:
     # Local port for the HTTP mirror server.
     local_port: 5003
     # Poll rate for fetching upstream simulation data (Hz).
-    poll_hz: 10.0
+    poll_hz: 20.0
     # HTTP timeout for upstream simulation data requests (sec).
     request_timeout: 1.0
     # Upstream host for front camera JPEG.
@@ -25,7 +25,7 @@ web_bridge_node:
     # ROS topic to publish the front camera image.
     camera_topic: /front_camera
     # Poll rate for front camera JPEG (Hz).
-    camera_poll_hz: 10.0
+    camera_poll_hz: 20.0
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
     # Mirror the pose_estimation flag into web_bridge_node behavior.
@@ -36,7 +36,7 @@ web_bridge_node:
 decision_node:
   ros__parameters:
     # Decision loop tick rate (Hz).
-    tick_hz: 10.0
+    tick_hz: 20.0
     # Decision mode string (selects handler in decision_cruise).
     mode: improved_nearest_v3_5
     # Fallback speed when not provided by planner.
@@ -48,15 +48,16 @@ pose_estimation:
     pose_estimation: true
     # Input camera topic for pose estimation.
     camera_topic: /front_camera
-    # Override intrinsic JSON path (empty = use package default).
+    # Override intrinsic JSON path (empty = use package default config/camera_intrinsic.json,
+    # copied from pose_estimation/camera_intrinsic.json).
     intrinsic_path: ''
     # Override tag map JSON path (empty = use package default).
     tag_map_path: ''
     # Camera offset from robot center along +x (meters).
     camera_offset_x: 0.105
     # Pose estimation processing tick rate (Hz). 0 = process every image.
-    tick_hz: 10.0
+    tick_hz: 20.0
     # Throttle pose logs to once per N seconds.
-    log_every_sec: 1.0
+    log_every_sec: 0.05
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
     allow_legacy_opencv: true

@@ -518,7 +518,6 @@ def _get_all_ball_path():
 def _get_simulation_data():
     blocked = {
         ".ds_store",
-        "ball_position",
         "ball_taken_history",
         "obstacle_plan",
         "obstacle_robot",
@@ -708,7 +707,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"current": _get_current()})
             return
         if path == "/data/balls":
-            self._send_json({"balls": _get_balls_from_lines(_get_sim_lines("ball_position"))})
+            self._send_json({"balls": _get_balls_from_lines(_get_sim_lines("visible_balls"))})
             return
         if path == "/data/visible":
             self._send_json({"visible": _get_balls_from_lines(_get_sim_lines("visible_balls"))})

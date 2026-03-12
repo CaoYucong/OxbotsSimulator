@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Simulation Data</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        background: #ffffff;
+        color: #111111;
+      }
+      pre {
+        margin: 0;
+        padding: 16px;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <pre id="json">Loading...</pre>
+    <script>
+      const pre = document.getElementById("json");
+
+      const source = new EventSource("/data/simulation-stream");
+      source.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          pre.textContent = JSON.stringify(payload, null, 2);
+        } catch (e) {
+          pre.textContent = "Failed to parse data.";
+        }
+      };
+      source.onerror = () => {
+        pre.textContent = "Disconnected.";
+      };
+    </script>
+  </body>
+</html>
