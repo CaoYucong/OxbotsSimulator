@@ -16,6 +16,10 @@ REMOTE_PROJECT_ROOT="${REMOTE_PROJECT_ROOT:-~/OxbotsSimulator}"
 REMOTE_CONFIG="${REMOTE_CONFIG:-$REMOTE_PROJECT_ROOT/config.json}"
 LAUNCH_PACKAGE="${LAUNCH_PACKAGE:-unibots}"
 LAUNCH_FILE="${LAUNCH_FILE:-unibots.launch.py}"
+PREFER_SOURCE_CV_BRIDGE="${PREFER_SOURCE_CV_BRIDGE:-1}"
+REMOTE_OFFLINE_ROOT="${REMOTE_OFFLINE_ROOT:-~/offline_pkgs}"
+REMOTE_VISION_OPENCV_ARCHIVE="${REMOTE_VISION_OPENCV_ARCHIVE:-$REMOTE_OFFLINE_ROOT/src/vision_opencv-rolling.tar.gz}"
+REMOTE_VISION_OPENCV_SRC_DIR="${REMOTE_VISION_OPENCV_SRC_DIR:-$REMOTE_WS/src/vision_opencv-rolling}"
 
 CONTROL_PATH_DEFAULT="$HOME/.ssh/cm-%C"
 SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-$CONTROL_PATH_DEFAULT}"
@@ -35,7 +39,9 @@ Options:
 
 Environment overrides:
   PI_USER, PI_IP, ROS_DISTRO, REMOTE_WS, LOCAL_WS, LOCAL_CONFIG,
-  REMOTE_PROJECT_ROOT, REMOTE_CONFIG, LAUNCH_PACKAGE, LAUNCH_FILE
+  REMOTE_PROJECT_ROOT, REMOTE_CONFIG, LAUNCH_PACKAGE, LAUNCH_FILE,
+  PREFER_SOURCE_CV_BRIDGE, REMOTE_OFFLINE_ROOT, REMOTE_VISION_OPENCV_ARCHIVE,
+  REMOTE_VISION_OPENCV_SRC_DIR
 
 Examples:
   ./ROS/deploy_and_run_ros_pi.sh
@@ -107,6 +113,7 @@ rsync -avz --delete \
   --exclude 'build' \
   --exclude 'install' \
   --exclude 'log' \
+  --exclude 'src/vision_opencv-rolling' \
   -e "ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH" \
   "$LOCAL_WS/" "$PI_USER@$PI_IP:$REMOTE_WS/"
 
@@ -122,15 +129,9 @@ echo "[6/8] Ensure Python OpenCV runtime exists on Raspberry Pi"
 ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '
   if python3 -c \"import cv2\" >/dev/null 2>&1; then
     echo \"[OK] python3-opencv already available\"
-  elif sudo -n true >/dev/null 2>&1; then
-    echo \"[INFO] Installing python3-opencv (non-interactive sudo)\"
-    sudo -n apt-get update
-    sudo -n apt-get install -y python3-opencv
-    python3 -c \"import cv2\" >/dev/null 2>&1
-    echo \"[OK] python3-opencv installed\"
   else
-    echo \"[ERROR] Missing Python module cv2 and passwordless sudo is unavailable.\"
-    echo \"[ERROR] Run once on Raspberry Pi: sudo apt-get update && sudo apt-get install -y python3-opencv\"
+    echo \"[ERROR] Missing Python module cv2.\"
+    echo \"[ERROR] Use offline wheels copied from Mac (recommended for this project).\"
     exit 1
   fi
 '"
@@ -138,18 +139,31 @@ ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '
 echo "[7/8] Ensure ROS cv_bridge runtime exists on Raspberry Pi"
 ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '
   source /opt/ros/$ROS_DISTRO/setup.bash
-  if python3 -c \"import cv_bridge\" >/dev/null 2>&1; then
-    echo \"[OK] ros-$ROS_DISTRO-cv-bridge already available\"
-  elif sudo -n true >/dev/null 2>&1; then
-    echo \"[INFO] Installing ros-$ROS_DISTRO-cv-bridge (non-interactive sudo)\"
-    sudo -n apt-get update
-    sudo -n apt-get install -y ros-$ROS_DISTRO-cv-bridge
-    source /opt/ros/$ROS_DISTRO/setup.bash
-    python3 -c \"import cv_bridge\" >/dev/null 2>&1
-    echo \"[OK] ros-$ROS_DISTRO-cv-bridge installed\"
+  if [[ \"$PREFER_SOURCE_CV_BRIDGE\" == \"1\" ]]; then
+    if [[ ! -d $REMOTE_VISION_OPENCV_SRC_DIR ]]; then
+      if [[ -f $REMOTE_VISION_OPENCV_ARCHIVE ]]; then
+        echo \"[INFO] Restoring vision_opencv source from offline archive\"
+        mkdir -p $REMOTE_WS/src
+        tar -xzf $REMOTE_VISION_OPENCV_ARCHIVE -C $REMOTE_WS/src
+      else
+        echo \"[WARN] Source cv_bridge requested but archive not found: $REMOTE_VISION_OPENCV_ARCHIVE\"
+      fi
+    fi
+
+    if [[ -d $REMOTE_VISION_OPENCV_SRC_DIR ]]; then
+      echo \"[OK] Source cv_bridge available: $REMOTE_VISION_OPENCV_SRC_DIR\"
+    elif python3 -c \"import cv_bridge\" >/dev/null 2>&1; then
+      echo \"[OK] System cv_bridge importable\"
+    else
+      echo \"[ERROR] cv_bridge missing and source package unavailable.\"
+      echo \"[ERROR] Upload archive to $REMOTE_VISION_OPENCV_ARCHIVE from Mac.\"
+      exit 1
+    fi
+  elif python3 -c \"import cv_bridge\" >/dev/null 2>&1; then
+    echo \"[OK] System cv_bridge importable\"
   else
-    echo \"[ERROR] Missing Python module cv_bridge and passwordless sudo is unavailable.\"
-    echo \"[ERROR] Run once on Raspberry Pi: sudo apt-get update && sudo apt-get install -y ros-$ROS_DISTRO-cv-bridge\"
+    echo \"[ERROR] Missing Python module cv_bridge.\"
+    echo \"[ERROR] Set PREFER_SOURCE_CV_BRIDGE=1 and provide offline vision_opencv archive.\"
     exit 1
   fi
 '"

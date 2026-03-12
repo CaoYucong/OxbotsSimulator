@@ -1,7 +1,8 @@
 {
 	"develop_branch": "ros",
 	"data_flow": "web",
-	"camera": "on",
+	"camera": true,
+	"pose_estimation": false,
 	"default_linear_velocity": 0.1,
 	"default_angular_velocity": 40,
 	"run_on_pi": true,

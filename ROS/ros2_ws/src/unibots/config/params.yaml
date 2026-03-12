@@ -1,7 +1,7 @@
 web_bridge_node:
   ros__parameters:
     # Master switch for using pose_estimation to publish /current_position.
-    pose_estimation_enabled: false
+    pose_estimation_enabled: true
     # Shared frequency (Hz) used by all nodes.
     common_hz: 10.0
     # Upstream simulator host for simulation data mirror.
@@ -29,7 +29,7 @@ web_bridge_node:
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
     # Mirror the pose_estimation flag into web_bridge_node behavior.
-    pose_estimation: false
+    pose_estimation: true
     # When true, post decisions/decision_making_data to web endpoints.
     web_debug: true
 
@@ -45,7 +45,7 @@ decision_node:
 pose_estimation:
   ros__parameters:
     # Enable pose_estimation node and publish /current_position.
-    pose_estimation: false
+    pose_estimation: true
     # Input camera topic for pose estimation.
     camera_topic: /front_camera
     # Override intrinsic JSON path (empty = use package default).
@@ -57,4 +57,4 @@ pose_estimation:
     # Throttle pose logs to once per N seconds.
     log_every_sec: 1.0
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
-    allow_legacy_opencv: false
+    allow_legacy_opencv: true

@@ -194,6 +194,29 @@ def _read_last_line_from_text(text: str) -> str:
     return lines[-1]
 
 
+def _read_data_dir_snapshot(data_dir: str, blocked: Optional[set[str]] = None) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    if not data_dir:
+        return snapshot
+    blocked_keys = blocked or set()
+    try:
+        for name in sorted(os.listdir(data_dir)):
+            full_path = os.path.join(data_dir, name)
+            if not os.path.isfile(full_path):
+                continue
+            base = os.path.splitext(name)[0].lower()
+            if base in blocked_keys:
+                continue
+            if base == "time":
+                value = _read_first_line_number(full_path)
+            else:
+                value = _read_text(full_path)
+            snapshot[base] = value
+    except Exception:
+        return {}
+    return snapshot
+
+
 def _get_decision_text(key: str) -> str:
     if DATA_FLOW == "file" and DECISION_DATA_DIR:
         return _read_text(os.path.join(DECISION_DATA_DIR, f"{key}.txt"))
@@ -461,16 +484,23 @@ def _get_unseen_regions():
 
 
 def _get_text_status():
+    if DATA_FLOW == "file":
+        random_seed = _read_text(RANDOM_SEED_FILE)
+        last_ball_taken = _read_last_line(BALL_TAKEN_HISTORY_FILE)
+    else:
+        random_seed = _get_sim_text("random_seed")
+        last_ball_taken = _read_last_line_from_text(_get_sim_text("ball_taken_history"))
+
     return {
         "waypoint_status": _get_sim_text("waypoint_status"),
         "mode": _get_decision_text("mode"),
         "collision_avoiding": _get_decision_text("collision_avoiding"),
         "simulation_time": _read_first_line_number_from_text(_get_sim_text("time")),
-        "random_seed": _read_text(RANDOM_SEED_FILE),
+        "random_seed": random_seed,
         "collision_counter": _read_first_line_number_from_text(
             _get_decision_text("collision_counter")
         ),
-        "last_ball_taken": _read_last_line(BALL_TAKEN_HISTORY_FILE),
+        "last_ball_taken": last_ball_taken,
     }
 
 
@@ -498,26 +528,12 @@ def _get_simulation_data():
         "waypoints_history",
         "ball_taken_number"
     }
-    sim_data = {}
-    try:
-        for name in sorted(os.listdir(SIM_DATA_DIR)):
-            full_path = os.path.join(SIM_DATA_DIR, name)
-            if not os.path.isfile(full_path):
-                continue
-            base = os.path.splitext(name)[0].lower()
-            if base in blocked:
-                continue
-            if base == "time":
-                value = _read_first_line_number(full_path)
-            else:
-                value = _read_text(full_path)
-            sim_data[base] = value
-    except Exception:
-        sim_data = {}
-    return sim_data
+    return _read_data_dir_snapshot(SIM_DATA_DIR, blocked)
 
 
 def _get_simulation_data_cached():
+    if DATA_FLOW == "file":
+        return _get_simulation_data()
     return SIM_DATA_CACHE if SIM_DATA_CACHE else {}
 
 
@@ -528,6 +544,8 @@ def _set_simulation_cache(payload: dict):
 
 
 def _get_decisions_data_cached():
+    if DATA_FLOW == "file":
+        return _read_data_dir_snapshot(DECISION_DATA_DIR)
     _maybe_pull_remote_decisions()
     if DECISIONS_CACHE:
         return DECISIONS_CACHE
@@ -541,6 +559,11 @@ def _set_decisions_cache(payload: dict):
 
 
 def _get_decision_making_data_cached():
+    if DATA_FLOW == "file":
+        payload = _read_data_dir_snapshot(DECISION_DATA_DIR)
+        for key, value in DECISION_MAKING_DEFAULTS.items():
+            payload.setdefault(key, value)
+        return payload
     _maybe_pull_remote_decision_making_data()
     if DECISION_MAKING_DATA_CACHE:
         return DECISION_MAKING_DATA_CACHE
@@ -548,11 +571,18 @@ def _get_decision_making_data_cached():
 
 
 def _get_decisions_data() -> dict:
+    if DATA_FLOW == "file":
+        return _read_data_dir_snapshot(DECISION_DATA_DIR)
     _maybe_pull_remote_decisions(force=True)
     return DECISIONS_CACHE if DECISIONS_CACHE else {}
 
 
 def _get_decision_making_data() -> dict:
+    if DATA_FLOW == "file":
+        payload = _read_data_dir_snapshot(DECISION_DATA_DIR)
+        for key, value in DECISION_MAKING_DEFAULTS.items():
+            payload.setdefault(key, value)
+        return payload
     _maybe_pull_remote_decision_making_data(force=True)
     return DECISION_MAKING_DATA_CACHE if DECISION_MAKING_DATA_CACHE else {}
 

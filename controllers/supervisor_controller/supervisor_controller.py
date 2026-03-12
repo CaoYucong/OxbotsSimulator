@@ -95,6 +95,27 @@ def _load_early_camera_on(default=True):
     return default
 
 
+def _load_early_pose_estimation_on(default=False):
+    try:
+        config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.json"))
+        with open(config_path, "r") as f:
+            payload = json.loads(f.read().strip())
+        if isinstance(payload, dict):
+            raw = payload.get("pose_estimation", payload.get("pose estimation", default))
+            if isinstance(raw, bool):
+                return raw
+            if isinstance(raw, (int, float)):
+                return bool(raw)
+            text = str(raw).strip().lower()
+            if text in ("on", "true", "1", "yes", "y"):
+                return True
+            if text in ("off", "false", "0", "no", "n"):
+                return False
+    except Exception:
+        pass
+    return default
+
+
 def _post_front_camera_frame(camera_device, endpoint=None, image_path=None, write_local=False):
     if camera_device is None:
         return
@@ -213,6 +234,7 @@ def _has_supervisor_privileges(ctrl):
 # main robot name (also redefined later with full constant block)
 MAIN_ROBOT_NAME = "MY_ROBOT"
 CAMERA_ON = _load_early_camera_on(default=True)
+POSE_ESTIMATION_ON = _load_early_pose_estimation_on(default=False)
 IS_SUPERVISOR_NODE = _has_supervisor_privileges(supervisor)
 EARLY_DATA_FLOW = _load_early_data_flow()
 EARLY_RUN_ON_PI = _load_early_run_on_pi(default=False)
@@ -274,7 +296,7 @@ if CAMERA_ON:
                     image_path=camera_local_image_path,
                     write_local=(EARLY_DATA_FLOW == "file"),
                 )
-                if not EARLY_RUN_ON_PI:
+                if POSE_ESTIMATION_ON and (not EARLY_RUN_ON_PI):
                     _trigger_pose_estimation_if_ready()
                     try:
                         _print_ground_truth_current_position(robot.getSelf())
@@ -315,6 +337,8 @@ MAX_TRIES_PER_BALL = 2000
 SETTLE_STEPS_AFTER_PLACEMENT = max(1, int(0.2 / dt))
 Z_EPS = 0.001
 VISIBLE_RANGE_METERS = 2.0
+RADAR_MAX_RANGE = 0.8
+RADAR_CORRIDOR = 0.2
 
 # Startup placement avoidance around the main robot
 ROBOT_X = -0.8
@@ -488,6 +512,7 @@ RANDOM_SEED = _load_random_seed(RANDOM_SEED_FILE)
 WAYPOINTS_HISTORY_FILE = os.path.join(REAL_TIME_DATA_DIR, "waypoints_history.txt")
 OBSTACLE_PLAN_FILE = os.path.join(REAL_TIME_DATA_DIR, "obstacle_plan.txt")
 BALL_TAKEN_HISTORY_FILE = os.path.join(REAL_TIME_DATA_DIR, "ball_taken_history.txt")
+RADAR_SENSOR_FILE = os.path.join(REAL_TIME_DATA_DIR, "radar_sensor.txt")
 CRUISE_SCRIPT_PATH = os.path.join(DECISION_MAKING_DIR, "waypoints_cruise.py")
 SUPERVISOR_STATUS_FILE = os.path.join(REAL_TIME_DATA_DIR, "supervisor_controller_status.txt")
 
@@ -1020,6 +1045,7 @@ monitor_simple_init(ball_prefix=BALL_PREFIX, ball_count=BALL_COUNT)
 for _dir in (
     os.path.join(PROJECT_ROOT, "decision_making_cyc", "real_time_data"),
     os.path.join(PROJECT_ROOT, "decision_making_wly", "real_time_data"),
+    os.path.join(PROJECT_ROOT, "decision_making_ros", "real_time_data"),
 ):
     try:
         for name in os.listdir(_dir):
@@ -1224,6 +1250,91 @@ def _format_obstacle_positions():
 def _format_webots_time():
     return f"{supervisor.getTime():.6f}"
 
+def _radar_sensor_distances(max_range=RADAR_MAX_RANGE, corridor=RADAR_CORRIDOR):
+    """Return nearest radar distances by direction using world geometry samples."""
+    pos = main_robot.getField("translation").getSFVec3f()
+    rot = main_robot.getField("rotation").getSFRotation()
+    cx, cy = float(pos[0]), float(pos[1])
+    bearing_deg = math.degrees(float(rot[3]))
+
+    half_band = corridor / 2.0
+    theta = math.radians(bearing_deg)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    robot_half = 0.1
+    obstacle_half = 0.1
+
+    sample_points_world = []
+
+    sample_spacing = 0.1 * obstacle_half
+    obstacle_edge_samples_local = []
+    num_samples = int(2 * obstacle_half / sample_spacing) + 1
+    for i in range(num_samples):
+        offset = -obstacle_half + i * sample_spacing
+        obstacle_edge_samples_local.append((offset, obstacle_half))
+        obstacle_edge_samples_local.append((offset, -obstacle_half))
+        obstacle_edge_samples_local.append((-obstacle_half, offset))
+        obstacle_edge_samples_local.append((obstacle_half, offset))
+
+    for robot in obstacle_robots:
+        pos_o = robot.getField("translation").getSFVec3f()
+        ox, oy = float(pos_o[0]), float(pos_o[1])
+        rot_o = robot.getField("rotation").getSFRotation()
+        otheta = float(rot_o[3])
+        cos_o = math.cos(otheta)
+        sin_o = math.sin(otheta)
+        for lx, ly in obstacle_edge_samples_local:
+            wx = ox + lx * cos_o - ly * sin_o
+            wy = oy + lx * sin_o + ly * cos_o
+            sample_points_world.append((wx, wy))
+
+    edge_samples = [i * 0.05 for i in range(-20, 21)]
+    wall_samples = (
+        [(x, 1.0) for x in edge_samples]
+        + [(x, -1.0) for x in edge_samples]
+        + [(1.0, y) for y in edge_samples]
+        + [(-1.0, y) for y in edge_samples]
+    )
+    sample_points_world.extend(wall_samples)
+
+    hits = {}
+    for wx, wy in sample_points_world:
+        dx = wx - cx
+        dy = wy - cy
+        x_robot = dx * cos_t + dy * sin_t
+        y_robot = -dx * sin_t + dy * cos_t
+
+        if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
+            dist = x_robot - robot_half
+            direction = "front"
+        elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
+            dist = -x_robot - robot_half
+            direction = "rear"
+        elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
+            dist = y_robot - robot_half
+            direction = "left"
+        elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
+            dist = -y_robot - robot_half
+            direction = "right"
+        else:
+            continue
+
+        if dist <= max_range:
+            prev = hits.get(direction)
+            if prev is None or dist < prev:
+                hits[direction] = dist
+
+    memory_values = {
+        "front": max_range,
+        "right": max_range,
+        "left": max_range,
+        "rear": max_range,
+    }
+    for direction, dist in hits.items():
+        if direction in memory_values:
+            memory_values[direction] = dist
+    return memory_values
+
 def _read_speed_mps(default_value):
     """Read cruise speed in m/s from decisions data (web-only)."""
     raw = _get_decision_value("speed")
@@ -1293,11 +1404,12 @@ def _refresh_decisions_data():
                 break
             time.sleep(DECISIONS_RETRY_SLEEP_SECONDS_ON_PI)
 
-        raise RuntimeError(
-            f"Failed to read decisions data from {DECISIONS_ENDPOINT} "
+        print(
+            f"[Supervisor][warning] Failed to read decisions data from {DECISIONS_ENDPOINT} "
             f"after retrying for {DECISIONS_RETRY_SECONDS_ON_PI:.1f}s. "
-            f"Last error: {last_error}"
+            f"Last error: {last_error}. Continue without stopping supervisor."
         )
+        return False
 
     try:
         with urllib.request.urlopen(DECISIONS_ENDPOINT, timeout=0.3) as res:
@@ -1548,7 +1660,7 @@ while supervisor.step(TIME_STEP) != -1:
                 image_path=camera_local_image_path,
                 write_local=(DATA_FLOW == "file"),
             )
-            if not RUN_ON_PI:
+            if POSE_ESTIMATION_ON and (not RUN_ON_PI):
                 _trigger_pose_estimation_if_ready()
                 _print_ground_truth_current_position(main_robot)
     if (not RUN_ON_PI) and frame_counter % CRUISE_INTERVAL_FRAMES == 0:
@@ -1579,6 +1691,11 @@ while supervisor.step(TIME_STEP) != -1:
     webots_time_text = _format_webots_time()
     visible_balls_text = _format_visible_balls()
     ball_taken_text = f"{int(MAIN_BALL_TAKEN)}"
+    radar_values = _radar_sensor_distances()
+    radar_sensor_text = (
+        f"{sim_time:.3f},{radar_values['front']:.6f},{radar_values['right']:.6f},"
+        f"{radar_values['left']:.6f},{radar_values['rear']:.6f}"
+    )
 
     # 2.95) Push simulation data to field viewer server
     payload = {
@@ -1589,6 +1706,7 @@ while supervisor.step(TIME_STEP) != -1:
         "visible_balls": visible_balls_text,
         "ball_taken_number": ball_taken_text,
         "waypoint_status": waypoint_status,
+        "radar_sensor": radar_sensor_text,
     }
     _post_sim_data(payload)
 

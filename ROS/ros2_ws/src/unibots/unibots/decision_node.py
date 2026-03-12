@@ -27,11 +27,13 @@ class DecisionNode(Node):
         self._current_y: Optional[float] = None
         self._current_theta: Optional[float] = None
         self._visible_balls_text = ''
+        self._radar_sensor_text = ''
         self._waypoint_status = 'going'
         self._sim_time_seconds = 0.0
 
         self.create_subscription(PoseStamped, '/current_position', self._on_current_position, 10)
         self.create_subscription(String, '/visible_balls', self._on_visible_balls, 10)
+        self.create_subscription(String, '/radar_sensor', self._on_radar_sensor, 10)
         self.create_subscription(String, '/waypoint_status', self._on_waypoint_status, 10)
         self.create_subscription(String, '/time', self._on_time, 10)
 
@@ -61,6 +63,9 @@ class DecisionNode(Node):
     def _on_visible_balls(self, msg: String) -> None:
         self._visible_balls_text = msg.data if msg.data else ''
 
+    def _on_radar_sensor(self, msg: String) -> None:
+        self._radar_sensor_text = msg.data if msg.data else ''
+
     def _on_waypoint_status(self, msg: String) -> None:
         text = (msg.data or '').strip().lower()
         if text:
@@ -89,6 +94,7 @@ class DecisionNode(Node):
             current_y=self._current_y,
             current_theta=self._current_theta,
             visible_balls_json=self._visible_balls_text,
+            radar_sensor_text=self._radar_sensor_text,
             sim_time_seconds=self._sim_time_seconds,
             waypoint_status=self._waypoint_status,
             mode=mode_key,

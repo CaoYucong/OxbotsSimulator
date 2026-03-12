@@ -810,6 +810,48 @@ def _read_time_seconds(path: str) -> Optional[float]:
     except Exception:
         return None
 
+
+def _read_radar_sensor_values() -> tuple[Optional[float], dict[str, float]]:
+    """Read radar_sensor payload from sim cache.
+
+    Payload format:
+    time,front,right,left,rear
+    """
+    values = {
+        "front": RADAR_MAX_RANGE,
+        "right": RADAR_MAX_RANGE,
+        "left": RADAR_MAX_RANGE,
+        "rear": RADAR_MAX_RANGE,
+    }
+    sim_time: Optional[float] = None
+
+    raw_radar = _get_sim_value("radar_sensor")
+    if raw_radar is None:
+        _refresh_sim_data()
+        raw_radar = _get_sim_value("radar_sensor")
+
+    if raw_radar is None:
+        return sim_time, values
+
+    parts = [p.strip() for p in str(raw_radar).split(",")]
+    if len(parts) < 5:
+        return sim_time, values
+
+    try:
+        sim_time = float(parts[0])
+    except Exception:
+        sim_time = None
+
+    for idx, direction in enumerate(("front", "right", "left", "rear"), start=1):
+        try:
+            dist = float(parts[idx])
+            if math.isfinite(dist):
+                values[direction] = dist
+        except Exception:
+            continue
+
+    return sim_time, values
+
 def _read_wall_only_memory(
     path: str = WALL_ONLY_RADAR_MEMORY_FILE,
 ) -> list[tuple[float, dict[str, float]]]:
@@ -1080,100 +1122,23 @@ def in_view(point,
     return True
 
 def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> list[tuple[str, float]]:
-    """Return obstacle directions and distances in robot frame.
+    """Read radar from topic-mirrored sim cache.
 
-    Directions: "front", "right", "left", "rear" within +/- corridor/2
-    lateral band, and within max_range. Returns [] if nothing.
+    Expected payload format:
+    "time,front,right,left,rear"
+    e.g. "13.168,-0.093470,0.002556,0.000382,-0.098903"
     """
-    cur = _read_current_position(CURRENT_POSITION_FILE)
-    if cur is None:
-        return []
-    cx, cy, bearing = cur
-    if bearing is None:
-        return []
+    _ = corridor  # kept for backward-compatible signature
 
-    half_band = corridor / 2.0
-    theta = math.radians(bearing)
-    cos_t = math.cos(theta)
-    sin_t = math.sin(theta)
-    hits = {}
+    sim_time, memory_values = _read_radar_sensor_values()
 
-    obstacle_half = 0.1
-    robot_half = 0.1
-    sample_points_world = []
-
-    # 1) Collect obstacle edge samples in world frame.
-    obstacles = _read_obstacle_positions(OBSTACLE_ROBOT_FILE)
-    if obstacles:
-        sample_spacing = 0.1 * obstacle_half  # 0.01 spacing between sample points
-        obstacle_edge_samples_local = []
-
-        num_samples = int(2 * obstacle_half / sample_spacing) + 1
-        for i in range(num_samples):
-            offset = -obstacle_half + i * sample_spacing
-            obstacle_edge_samples_local.append((offset, obstacle_half))
-            obstacle_edge_samples_local.append((offset, -obstacle_half))
-            obstacle_edge_samples_local.append((-obstacle_half, offset))
-            obstacle_edge_samples_local.append((obstacle_half, offset))
-
-        for ox, oy, obearing in obstacles:
-            otheta = math.radians(obearing) if obearing is not None else 0.0
-            cos_o = math.cos(otheta)
-            sin_o = math.sin(otheta)
-            for lx, ly in obstacle_edge_samples_local:
-                wx = ox + lx * cos_o - ly * sin_o
-                wy = oy + lx * sin_o + ly * cos_o
-                sample_points_world.append((wx, wy))
-
-    # 2) Collect wall boundary samples in world frame.
-    edge_samples = [i * 0.05 for i in range(-20, 21)]
-    wall_samples = (
-        [(x, 1.0) for x in edge_samples]
-        + [(x, -1.0) for x in edge_samples]
-        + [(1.0, y) for y in edge_samples]
-        + [(-1.0, y) for y in edge_samples]
-    )
-    sample_points_world.extend(wall_samples)
-
-    # 3) Single pass radar projection/classification for all sample points.
-    for wx, wy in sample_points_world:
-        dx = wx - cx
-        dy = wy - cy
-        x_robot = dx * cos_t + dy * sin_t
-        y_robot = -dx * sin_t + dy * cos_t
-
-        if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
-            dist = x_robot - robot_half
-            direction = "front"
-        elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
-            dist = -x_robot - robot_half
-            direction = "rear"
-        elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
-            dist = y_robot - robot_half
-            direction = "left"
-        elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
-            dist = -y_robot - robot_half
-            direction = "right"
-        else:
-            continue
-
-        # dist = max(0.0, dist)
+    hits: dict[str, float] = {}
+    for direction, dist in memory_values.items():
         if dist <= max_range:
-            prev = hits.get(direction)
-            if prev is None or dist < prev:
-                hits[direction] = dist
+            hits[direction] = dist
 
-    memory_values = {
-        "front": RADAR_MAX_RANGE,
-        "right": RADAR_MAX_RANGE,
-        "left": RADAR_MAX_RANGE,
-        "rear": RADAR_MAX_RANGE,
-    }
-    for direction, dist in hits.items():
-        if direction in memory_values:
-            memory_values[direction] = dist
-
-    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is None:
+        sim_time = _read_time_seconds(TIME_FILE)
     if sim_time is not None:
         history_lines = []
         cutoff_time = sim_time - 2
@@ -1200,8 +1165,8 @@ def radar_sensor(max_range: float = RADAR_MAX_RANGE, corridor: float = 0.2) -> l
         
 
     # print([(direction, dist) for direction, dist in hits.items()])
-    wall_only_radar()
-    robot_only_radar()
+    wall_values = wall_only_radar()
+    robot_only_radar(wall_radar=wall_values, radar_radar=memory_values)
     _process_collision_counter_from_history()
     return [(direction, dist) for direction, dist in hits.items()]
 
@@ -1303,87 +1268,40 @@ def wall_only_radar(
 
 def robot_only_radar(
     current_file: str = CURRENT_POSITION_FILE,
-    obstacle_file: str = OBSTACLE_ROBOT_FILE,
     memory_window_seconds: float = 2.0,
     memory_file: str = ROBOT_ONLY_RADAR_MEMORY_FILE,
+    wall_match_tolerance: float = 0.05,
+    wall_radar: Optional[dict[str, float]] = None,
+    radar_radar: Optional[dict[str, float]] = None,
 ) -> dict[str, float]:
-    """Predict robot-only radar distances using obstacle samples only.
+    """Compute robot-only radar by removing wall-like echoes.
 
-    Uses the same projection/classification logic as `radar_sensor` and
-    `wall_only_radar`, but excludes wall samples.
-
-    Also keeps a short memory (default 2s) and fills missing directions from
-    recent robot-only predictions.
+    Rule:
+    - compare `radar_sensor` and `wall_only_radar` per direction.
+    - if |radar - wall| <= wall_match_tolerance, treat as wall echo and set
+      robot-only value to RADAR_MAX_RANGE.
     """
-    cur = _read_current_position(current_file)
-    if cur is None:
-        return {}
-
-    cx, cy, bearing = cur
-    if bearing is None:
-        return {}
-
+    _ = current_file  # kept for backward-compatible signature
     max_range = RADAR_MAX_RANGE
-    corridor = 0.2
-    half_band = corridor / 2.0
+    if wall_radar is None:
+        wall_radar = wall_only_radar(current_file)
+    if radar_radar is None:
+        _, radar_radar = _read_radar_sensor_values()
 
-    theta = math.radians(bearing)
-    cos_t = math.cos(theta)
-    sin_t = math.sin(theta)
-    robot_half = 0.1
     predicted: dict[str, float] = {}
+    for direction in ("front", "right", "left", "rear"):
+        radar_dist = radar_radar.get(direction, max_range)
+        wall_dist = wall_radar.get(direction, max_range)
 
-    obstacle_half = 0.1
-    sample_spacing = 0.1 * obstacle_half  # 0.01m
-    sample_points_world: list[tuple[float, float]] = []
+        if not math.isfinite(radar_dist):
+            radar_dist = max_range
+        if not math.isfinite(wall_dist):
+            wall_dist = max_range
 
-    obstacles = _read_obstacle_positions(obstacle_file)
-    if not obstacles:
-        return {}
-
-    obstacle_edge_samples_local: list[tuple[float, float]] = []
-    num_samples = int(2 * obstacle_half / sample_spacing) + 1
-    for i in range(num_samples):
-        offset = -obstacle_half + i * sample_spacing
-        obstacle_edge_samples_local.append((offset, obstacle_half))
-        obstacle_edge_samples_local.append((offset, -obstacle_half))
-        obstacle_edge_samples_local.append((-obstacle_half, offset))
-        obstacle_edge_samples_local.append((obstacle_half, offset))
-
-    for ox, oy, obearing in obstacles:
-        otheta = math.radians(obearing) if obearing is not None else 0.0
-        cos_o = math.cos(otheta)
-        sin_o = math.sin(otheta)
-        for lx, ly in obstacle_edge_samples_local:
-            wx = ox + lx * cos_o - ly * sin_o
-            wy = oy + lx * sin_o + ly * cos_o
-            sample_points_world.append((wx, wy))
-
-    for wx, wy in sample_points_world:
-        dx = wx - cx
-        dy = wy - cy
-        x_robot = dx * cos_t + dy * sin_t
-        y_robot = -dx * sin_t + dy * cos_t
-
-        if x_robot > 0 and abs(y_robot) <= half_band and x_robot <= max_range:
-            dist = x_robot - robot_half
-            direction = "front"
-        elif x_robot < 0 and abs(y_robot) <= half_band and -x_robot <= max_range:
-            dist = -x_robot - robot_half
-            direction = "rear"
-        elif y_robot > 0 and abs(x_robot) <= half_band and y_robot <= max_range:
-            dist = y_robot - robot_half
-            direction = "left"
-        elif y_robot < 0 and abs(x_robot) <= half_band and -y_robot <= max_range:
-            dist = -y_robot - robot_half
-            direction = "right"
+        if abs(radar_dist - wall_dist) <= abs(float(wall_match_tolerance)):
+            predicted[direction] = max_range
         else:
-            continue
-
-        if dist <= max_range:
-            prev = predicted.get(direction)
-            if prev is None or dist < prev:
-                predicted[direction] = dist
+            predicted[direction] = max(0.0, min(max_range, radar_dist))
 
     sim_time = _read_time_seconds(TIME_FILE)
     if sim_time is None:
@@ -2320,6 +2238,7 @@ def _sync_ros_topic_state(
     visible_balls_json: str,
     sim_time_seconds: float,
     waypoint_status: str,
+    radar_sensor_text: str = "",
 ) -> None:
     """Mirror ROS topic values into SIM_DATA_CACHE so mode handlers can run."""
     balls = _parse_visible_balls_from_topic(visible_balls_json)
@@ -2338,6 +2257,7 @@ def _sync_ros_topic_state(
             "visible_balls": balls_text,
             "time": f"{float(sim_time_seconds):.6f}",
             "waypoint_status": (waypoint_status or "going").strip().lower() or "going",
+            "radar_sensor": (radar_sensor_text or "").strip(),
         }
     )
 
@@ -2375,6 +2295,7 @@ def decide_from_ros_state(
     current_y: float,
     current_theta: float,
     visible_balls_json: str,
+    radar_sensor_text: str,
     sim_time_seconds: float,
     waypoint_status: str = 'going',
     mode: str = 'mode_improved_nearest_v3_5',
@@ -2389,6 +2310,7 @@ def decide_from_ros_state(
         current_y=current_y,
         current_theta=current_theta,
         visible_balls_json=visible_balls_json,
+        radar_sensor_text=radar_sensor_text,
         sim_time_seconds=sim_time_seconds,
         waypoint_status=waypoint_status,
     )

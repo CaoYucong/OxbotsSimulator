@@ -228,6 +228,7 @@ class WebBridgeNode(Node):
         self.pub_visible_balls = self.create_publisher(String, '/visible_balls', 10)
         self.pub_waypoint_status = self.create_publisher(String, '/waypoint_status', 10)
         self.pub_time = self.create_publisher(String, '/time', 10)
+        self.pub_radar_sensor = self.create_publisher(String, '/radar_sensor', 10)
         self.pub_front_camera = self.create_publisher(Image, self.camera_topic, 10)
 
         self._cv_bridge = CvBridge()
@@ -282,6 +283,7 @@ class WebBridgeNode(Node):
         visible_text = str(payload.get('visible_balls', '')).strip()
         waypoint_text = str(payload.get('waypoint_status', '')).strip()
         time_text = str(payload.get('time', '')).strip()
+        radar_text = str(payload.get('radar_sensor', '')).strip()
 
         if not self._pose_estimation_enabled:
             pose = self._parse_current_position(current_text)
@@ -312,6 +314,11 @@ class WebBridgeNode(Node):
             t_msg = String()
             t_msg.data = time_text
             self.pub_time.publish(t_msg)
+
+        if radar_text:
+            radar_msg = String()
+            radar_msg.data = radar_text
+            self.pub_radar_sensor.publish(radar_msg)
 
     def _poll_camera_once(self) -> None:
         url = f'http://{self.camera_remote_host}:{self.camera_remote_port}{self.camera_path}'
