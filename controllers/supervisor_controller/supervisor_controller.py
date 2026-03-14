@@ -505,6 +505,7 @@ DECISIONS_ENDPOINT = f"http://{DECISIONS_HOST}:{FIELD_VIEWER_PORT}/data/decision
 DECISION_MAKING_DATA_ENDPOINT = f"http://{DECISIONS_HOST}:{FIELD_VIEWER_PORT}/data/decision_making_data"
 DECISIONS_RETRY_SECONDS_ON_PI = 1.0
 DECISIONS_RETRY_SLEEP_SECONDS_ON_PI = 0.05
+DECISIONS_REFRESH_EVERY_FRAMES = 25
 DECISION_MAKING_DIR = _resolve_decision_making_dir(DEVELOP_BRANCH)
 DECISION_REAL_TIME_DIR = os.path.join(DECISION_MAKING_DIR, "real_time_data")
 RANDOM_SEED = _load_random_seed(RANDOM_SEED_FILE)
@@ -1436,7 +1437,6 @@ def _require_decision_value(key, allow_empty=False, retries=1, sleep_s=0.02):
     raise RuntimeError(f"Missing decisions data for '{key}' from {DECISIONS_ENDPOINT}.")
 
 def _get_decision_value(key):
-    _refresh_decisions_data()
     return DECISIONS_CACHE.get(key)
 
 def _append_ball_taken_history(path, taken_time_s, taken_count):
@@ -1589,6 +1589,9 @@ else:
 # Initialize waypoints history with new session header
 _append_history_header(WAYPOINTS_HISTORY_FILE)
 
+# Prime decisions cache before first reads.
+_refresh_decisions_data()
+
 # Load initial dynamic waypoint for main robot
 current_waypoint = _load_dynamic_waypoint()
 last_dynamic_waypoint = current_waypoint
@@ -1602,6 +1605,7 @@ if current_waypoint is not None:
 # To view the camera feed: right-click on 'front_camera' in Scene Tree and select 'View'
 
 frame_counter = 0
+decisions_frame_counter = 0
 ball_taken_180_logged = False
 
 # Mark supervisor status as running at initiation.
@@ -1613,6 +1617,10 @@ _write_supervisor_status(SUPERVISOR_STATUS_FILE, "runnung")
 # =============================================================================
 while supervisor.step(TIME_STEP) != -1:
     sim_time = supervisor.getTime()
+
+    decisions_frame_counter += 1
+    if decisions_frame_counter % DECISIONS_REFRESH_EVERY_FRAMES == 0:
+        _refresh_decisions_data()
 
     if (sim_time > 180.0) and (not ball_taken_180_logged):
         _append_ball_taken_history(BALL_TAKEN_HISTORY_FILE, 180.0, MAIN_BALL_TAKEN)

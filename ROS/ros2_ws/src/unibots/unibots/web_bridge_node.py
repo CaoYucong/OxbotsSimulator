@@ -247,6 +247,12 @@ class _MirrorState:
                 "has_data": False,
                 "seq": 0,
             },
+            "/data/processed_image": {
+                "body": b"",
+                "content_type": "image/jpeg",
+                "has_data": False,
+                "seq": 0,
+            },
             "/data/decisions": {
                 "body": default_speed_payload,
                 "content_type": "application/json; charset=utf-8",
@@ -485,6 +491,43 @@ def _build_handler(state: _MirrorState):
             if path == "/decision_making_data":
                 self._send_html_file(DECISION_MAKING_DATA_FILE)
                 return
+            if path == "/processed_image":
+                page = """<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>Processed Image</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #0f1115; color: #f3f4f6; margin: 0; }
+        .wrap { padding: 16px; }
+        .frame { max-width: 100%; aspect-ratio: 16 / 9; border: 1px solid #23262d; background: #151a21; }
+        .frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .meta { font-size: 12px; color: #9ca3af; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <div class=\"wrap\">
+        <h2>Processed Image</h2>
+        <div class=\"frame\"><img id=\"cam\" alt=\"processed image\" /></div>
+        <div class=\"meta\" id=\"meta\"></div>
+    </div>
+    <script>
+        const img = document.getElementById('cam');
+        const meta = document.getElementById('meta');
+        function refresh() {
+            const ts = Date.now();
+            img.src = `/data/processed_image?t=${ts}`;
+            meta.textContent = `Updated ${new Date(ts).toLocaleTimeString()}`;
+        }
+        refresh();
+        setInterval(refresh, 200);
+    </script>
+</body>
+</html>"""
+                self._send_text(page, 200, "text/html")
+                return
+
             if path == "/front_camera":
                 page = """<!doctype html>
 <html lang=\"en\">
@@ -602,6 +645,13 @@ def _build_handler(state: _MirrorState):
                 else:
                     self._send_text("no image", 404, "text/plain")
                 return
+            if path == "/data/processed_image":
+                item = state.get("/data/processed_image")
+                if item and item.get("has_data") and item.get("body"):
+                    self._send_bytes(item["body"], 200, item.get("content_type") or "image/jpeg")
+                else:
+                    self._send_text("no image", 404, "text/plain")
+                return
             if path == "/data/simulation-stream":
                 self._stream_json_payload("/data/simulation_data")
                 return
@@ -639,6 +689,7 @@ def _build_handler(state: _MirrorState):
                 "/data/decisions",
                 "/data/decision_making_data",
                 "/front_camera",
+                "/processed_image",
             ):
                 self.send_response(404)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -682,6 +733,38 @@ def _build_handler(state: _MirrorState):
                         return
                 else:
                     state.set("/data/front_camera", body, content_type)
+                self._send_text("ok", 200, "text/plain")
+                return
+
+            if path == "/processed_image":
+                if not body:
+                    self._send_text("empty payload", 400, "text/plain")
+                    return
+                content_type = self.headers.get("Content-Type", "application/octet-stream")
+                if content_type.startswith("application/json"):
+                    try:
+                        payload = json.loads(body.decode("utf-8", errors="ignore"))
+                        if not isinstance(payload, dict):
+                            raise ValueError("payload must be object")
+                        data_uri = payload.get("image")
+                        image_base64 = payload.get("image_base64")
+                        mime = payload.get("mime")
+                        if isinstance(data_uri, str) and data_uri.startswith("data:"):
+                            header, b64 = data_uri.split(",", 1)
+                            mime = header.split(";", 1)[0].split(":", 1)[1]
+                            image_bytes = base64.b64decode(b64)
+                            state.set("/data/processed_image", image_bytes, mime)
+                        elif isinstance(image_base64, str):
+                            image_bytes = base64.b64decode(image_base64)
+                            state.set("/data/processed_image", image_bytes, mime or "image/jpeg")
+                        else:
+                            self._send_text("invalid image payload", 400, "text/plain")
+                            return
+                    except Exception:
+                        self._send_text("invalid json", 400, "text/plain")
+                        return
+                else:
+                    state.set("/data/processed_image", body, content_type)
                 self._send_text("ok", 200, "text/plain")
                 return
 
@@ -795,6 +878,7 @@ class WebBridgeNode(Node):
         self.pub_radar_sensor = self.create_publisher(String, '/radar_sensor', 10)
         self.pub_front_camera = self.create_publisher(Image, self.camera_topic, 10)
         self.create_subscription(Image, self.camera_topic, self._on_front_camera_msg, 10)
+        self.create_subscription(Image, '/processed_image', self._on_processed_image_msg, 10)
 
         self._cv_bridge = CvBridge()
         self._camera_error_logged = False
@@ -956,6 +1040,16 @@ class WebBridgeNode(Node):
         if not ok:
             return
         self._state.set('/data/front_camera', encoded.tobytes(), 'image/jpeg')
+
+    def _on_processed_image_msg(self, msg: Image) -> None:
+        try:
+            image = self._cv_bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        except Exception:
+            return
+        ok, encoded = cv2.imencode('.jpg', image)
+        if not ok:
+            return
+        self._state.set('/data/processed_image', encoded.tobytes(), 'image/jpeg')
 
     def _on_decisions(self, msg: String) -> None:
         payload = self._parse_json_payload(msg.data)

@@ -119,12 +119,16 @@ def estimate_camera_world_position(
     dist_coeffs: np.ndarray,
     tag_world: dict[int, np.ndarray],
     cam_offset_x_robot: float,
+    detected: Optional[tuple[list[np.ndarray], Optional[np.ndarray]]] = None,
 ) -> Optional[dict]:
     timing_payload: Optional[dict] = None
     if PERF_METRICS_ENABLED:
         t_total_start = time.perf_counter()
         t_detect_start = time.perf_counter()
-    corners_list, ids = _detect_apriltag_corners(image)
+    if detected is None:
+        corners_list, ids = _detect_apriltag_corners(image)
+    else:
+        corners_list, ids = detected
     if PERF_METRICS_ENABLED:
         detect_ms = (time.perf_counter() - t_detect_start) * 1000.0
 
@@ -199,6 +203,8 @@ def estimate_camera_world_position(
             'y': robot_y,
             'heading_x0': float(heading_x0_deg),
         },
+        'tag_corners': corners_list,
+        'tag_ids': ids,
     }
 
 
@@ -266,6 +272,7 @@ class PoseEstimationNode(Node):
             self._perf_total_ms = 0.0
 
         self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
+        self._pub_processed_image = self.create_publisher(Image, '/processed_image', 10)
         self.create_subscription(Image, camera_topic, self._on_image, 10)
         if self.tick_hz > 0.0:
             self.create_timer(1.0 / self.tick_hz, self._on_tick)
@@ -313,18 +320,27 @@ class PoseEstimationNode(Node):
             self._perf_frames += 1
 
         try:
+            corners_list, ids = _detect_apriltag_corners(image)
             estimate = estimate_camera_world_position(
                 image=image,
                 K=self.K,
                 dist_coeffs=self.dist_coeffs,
                 tag_world=self.tag_world,
                 cam_offset_x_robot=self.camera_offset_x,
+                detected=(corners_list, ids),
             )
         except Exception as exc:
             if self._should_log(self._last_warn_log):
                 self._last_warn_log = time.monotonic()
                 self.get_logger().warn(f'pose estimation failed: {exc}')
             return
+
+        processed = self._render_processed_image(image, corners_list, ids, estimate)
+        if processed is not None:
+            msg_image = self._bridge.cv2_to_imgmsg(processed, encoding='bgr8')
+            msg_image.header.stamp = self.get_clock().now().to_msg()
+            msg_image.header.frame_id = 'camera'
+            self._pub_processed_image.publish(msg_image)
 
         if estimate is None:
             if self._should_log(self._last_warn_log):
@@ -394,6 +410,70 @@ class PoseEstimationNode(Node):
         msg_out.pose.orientation.z = math.sin(heading_rad * 0.5)
         msg_out.pose.orientation.w = math.cos(heading_rad * 0.5)
         self._pub_current_position.publish(msg_out)
+
+    def _render_processed_image(
+        self,
+        image: np.ndarray,
+        corners_list: list[np.ndarray],
+        ids: Optional[np.ndarray],
+        estimate: Optional[dict],
+    ) -> Optional[np.ndarray]:
+        if image is None:
+            return None
+        overlay = image.copy()
+        if hasattr(cv2, 'aruco') and ids is not None and len(ids) > 0:
+            try:
+                cv2.aruco.drawDetectedMarkers(overlay, corners_list, ids)
+            except Exception:
+                pass
+
+            # Draw world (x, y) coordinates near each corner
+            img_order = [2, 3, 0, 1]
+            world_order = [3, 2, 1, 0]
+            for marker_corners, marker_id_arr in zip(corners_list, ids):
+                tag_id = int(marker_id_arr[0])
+                if tag_id not in self.tag_world:
+                    continue
+                world_corners = self.tag_world[tag_id]  # shape (4, 3)
+                img_corners = marker_corners.reshape(4, 2)
+                for k in range(4):
+                    img_pt = img_corners[img_order[k]]
+                    world_pt = world_corners[world_order[k]]
+                    wx, wy = float(world_pt[0]), float(world_pt[1])
+                    px = int(img_pt[0]) + 4
+                    py = int(img_pt[1]) - 4
+                    cv2.putText(
+                        overlay,
+                        f'({wx:.2f},{wy:.2f})',
+                        (px, py),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.35,
+                        (0, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+        tag_count = int(len(ids)) if ids is not None else 0
+        if estimate is not None:
+            robot = estimate['robot_pose_world']
+            text = (
+                f"tags={tag_count} robot=({robot['x']:.2f}, {robot['y']:.2f}, "
+                f"{robot['heading_x0']:.0f}deg)"
+            )
+        else:
+            text = f"tags={tag_count} pose=unavailable"
+
+        cv2.putText(
+            overlay,
+            text,
+            (12, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        return overlay
 
 
 def main(args=None) -> None:
