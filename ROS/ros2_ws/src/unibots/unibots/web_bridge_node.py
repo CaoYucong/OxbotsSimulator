@@ -27,8 +27,6 @@ WHO_IS_DEV_JSON_FILE = os.path.join(PROJECT_ROOT, "config.json")
 FIELD_VIEWER_ASSETS_DIR = os.path.join(THIS_DIR, "field_viewer")
 INDEX_FILE = os.path.join(FIELD_VIEWER_ASSETS_DIR, "index.html")
 SIM_DATA_FILE = os.path.join(FIELD_VIEWER_ASSETS_DIR, "simulation_data.html")
-DECISIONS_FILE = os.path.join(FIELD_VIEWER_ASSETS_DIR, "decisions.html")
-DECISION_MAKING_DATA_FILE = os.path.join(FIELD_VIEWER_ASSETS_DIR, "decision_making_data.html")
 
 
 def _load_default_linear_velocity() -> float:
@@ -328,6 +326,12 @@ def _build_handler(state: _MirrorState):
             except Exception:
                 self._send_text("not found", 404, "text/plain")
 
+        def _redirect(self, location: str, status: int = 302):
+            self.send_response(status)
+            self.send_header("Location", location)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+
         def _get_current(self):
             payload = _state_payload(state, "/data/current_position")
             if not payload:
@@ -486,10 +490,10 @@ def _build_handler(state: _MirrorState):
                 self._send_html_file(SIM_DATA_FILE)
                 return
             if path == "/decisions":
-                self._send_html_file(DECISIONS_FILE)
+                self._redirect("/")
                 return
             if path == "/decision_making_data":
-                self._send_html_file(DECISION_MAKING_DATA_FILE)
+                self._redirect("/")
                 return
             if path == "/processed_image":
                 page = """<!doctype html>

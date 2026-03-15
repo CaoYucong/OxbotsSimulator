@@ -14,6 +14,7 @@ ROS2 Jazzy Python package providing:
 - Then serves mirrored data on local endpoints:
 	- `http://127.0.0.1:5003/simulation_data`
 	- `http://127.0.0.1:5003/data/simulation_data`
+- Field viewer main page also includes the live `decisions` and `decision_making_data` JSON views; `/decisions` and `/decision_making_data` now redirect to `/`.
 - Cache is updated only when upstream content changes.
 - Front camera JPEG is fetched from `/front_camera` and published to `/front_camera`.
 - Topics published by `web_bridge_node`:

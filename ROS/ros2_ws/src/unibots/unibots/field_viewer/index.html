@@ -25,8 +25,13 @@
         color: var(--ink);
         background: radial-gradient(circle at 20% 20%, var(--bg), var(--bg-2));
         min-height: 100vh;
+        padding: 20px 0 28px;
+      }
+      .page {
+        width: 100%;
         display: grid;
-        place-items: center;
+        justify-items: center;
+        gap: 18px;
       }
       .wrap {
         width: min(1100px, 96vw);
@@ -40,6 +45,15 @@
         padding: 16px;
         display: grid;
         justify-items: center;
+      }
+      .data-panel {
+        width: min(1100px, 96vw);
+        padding: 16px;
+      }
+      .data-stack {
+        width: min(1100px, 96vw);
+        display: grid;
+        gap: 18px;
       }
       .panel {
         background: rgba(255, 255, 255, 0.65);
@@ -105,6 +119,90 @@
         display: grid;
         justify-items: center;
       }
+      .media-panel {
+        width: min(1100px, 96vw);
+        padding: 16px;
+      }
+      .media-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 220px;
+        gap: 16px;
+        align-items: start;
+      }
+      .media-frame {
+        position: relative;
+        overflow: hidden;
+        border-radius: 14px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        background:
+          radial-gradient(circle at top left, rgba(228, 87, 46, 0.18), transparent 38%),
+          linear-gradient(135deg, rgba(29, 125, 122, 0.18), rgba(255, 255, 255, 0.88));
+        aspect-ratio: 16 / 9;
+        min-height: 220px;
+      }
+      .media-frame img {
+        width: 100%;
+        height: 100%;
+        display: block;
+        object-fit: contain;
+        background: rgba(17, 17, 17, 0.88);
+      }
+      .media-side {
+        display: grid;
+        gap: 8px;
+        align-content: start;
+      }
+      .media-title {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: 0.3px;
+      }
+      .media-copy {
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+      .media-meta {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .data-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: end;
+        margin-bottom: 10px;
+      }
+      .data-title {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: 0.3px;
+      }
+      .data-copy {
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+      .data-meta {
+        font-size: 12px;
+        color: var(--muted);
+        text-align: right;
+      }
+      .data-json {
+        margin: 0;
+        padding: 16px;
+        min-height: 220px;
+        overflow: auto;
+        border-radius: 12px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        background: rgba(255, 255, 255, 0.72);
+        color: #111111;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
       .radar-title {
         margin-top: 6px;
         font-size: 12px;
@@ -154,45 +252,94 @@
         .wrap {
           grid-template-columns: 1fr;
         }
+        .media-grid {
+          grid-template-columns: 1fr;
+        }
+        .media-frame {
+          min-height: 0;
+        }
+        .data-header {
+          grid-template-columns: 1fr;
+        }
+        .data-meta {
+          text-align: left;
+        }
       }
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <div class="panel canvas-panel">
-        <canvas id="field" width="800" height="800"></canvas>
-      </div>
-      <div class="panel hud">
-        <h1>Field Viewer</h1>
-        <div class="stat" id="simTimeStat">Simulation Time: --</div>
-        <div class="stat" id="waypointStatusStat">Waypoint Status: --</div>
-        <div class="stat" id="robotStat">Robot: --</div>
-        <div class="stat" id="ballStat">Balls: --</div>
-        <div class="stat" id="visibleStat">Visible: --</div>
-        <div class="stat" id="obsStat">Obstacles: --</div>
-        <div class="legend">
-          <div><span class="chip" style="background: var(--accent)"></span> Robot Front</div>
-          <div><span class="chip" style="background: var(--accent-2)"></span> Robot Rear</div>
-          <div><span class="chip" style="background: var(--ping)"></span> Ping</div>
-          <div><span class="chip" style="background: var(--metal)"></span> Metal</div>
-          <div><span class="chip" style="background: var(--visible)"></span> Visible Highlight</div>
+    <div class="page">
+      <div class="wrap">
+        <div class="panel canvas-panel">
+          <canvas id="field" width="800" height="800"></canvas>
         </div>
-        <div class="note">Range: x,y in [-1, 1] meters</div>
-        <div class="around-wrap">
-          <canvas id="around" width="220" height="220"></canvas>
-          <div class="around-title">robot around</div>
+        <div class="panel hud">
+          <h1>Field Viewer</h1>
+          <div class="stat" id="simTimeStat">Simulation Time: --</div>
+          <div class="stat" id="waypointStatusStat">Waypoint Status: --</div>
+          <div class="stat" id="robotStat">Robot: --</div>
+          <div class="stat" id="ballStat">Balls: --</div>
+          <div class="stat" id="visibleStat">Visible: --</div>
+          <div class="stat" id="obsStat">Obstacles: --</div>
+          <div class="legend">
+            <div><span class="chip" style="background: var(--accent)"></span> Robot Front</div>
+            <div><span class="chip" style="background: var(--accent-2)"></span> Robot Rear</div>
+            <div><span class="chip" style="background: var(--ping)"></span> Ping</div>
+            <div><span class="chip" style="background: var(--metal)"></span> Metal</div>
+            <div><span class="chip" style="background: var(--visible)"></span> Visible Highlight</div>
+          </div>
+          <div class="note">Range: x,y in [-1, 1] meters</div>
+          <div class="around-wrap">
+            <canvas id="around" width="220" height="220"></canvas>
+            <div class="around-title">robot around</div>
+          </div>
         </div>
       </div>
-    </div>
-    <div class="panel radar-panel">
-      <div class="radar-wrap">
-        <canvas id="radarHistory" width="1000" height="160"></canvas>
-        <div class="radar-title">radar last 2s</div>
-        <div class="radar-legend">
-          <div><span class="chip" style="background: #e4572e"></span> Front</div>
-          <div><span class="chip" style="background: #3d5a80"></span> Right</div>
-          <div><span class="chip" style="background: #1d7d7a"></span> Left</div>
-          <div><span class="chip" style="background: #6c757d"></span> Rear</div>
+      <div class="panel media-panel">
+        <div class="media-grid">
+          <div class="media-frame">
+            <img id="processedImage" alt="processed image feed" />
+          </div>
+          <div class="media-side">
+            <h2 class="media-title">Processed Image</h2>
+            <div class="media-copy">实时显示 `/data/processed_image`，方便对照场地状态和视觉处理结果。</div>
+            <div class="media-meta" id="processedImageMeta">Waiting for image...</div>
+          </div>
+        </div>
+      </div>
+      <div class="panel radar-panel">
+        <div class="radar-wrap">
+          <canvas id="radarHistory" width="1000" height="160"></canvas>
+          <div class="radar-title">radar last 2s</div>
+          <div class="radar-legend">
+            <div><span class="chip" style="background: #e4572e"></span> Front</div>
+            <div><span class="chip" style="background: #3d5a80"></span> Right</div>
+            <div><span class="chip" style="background: #1d7d7a"></span> Left</div>
+            <div><span class="chip" style="background: #6c757d"></span> Rear</div>
+          </div>
+        </div>
+      </div>
+      <div class="data-stack">
+        <div class="panel data-panel">
+          <div class="data-header">
+            <div>
+              <h2 class="data-title">Decisions</h2>
+              <div class="data-copy">原独立页面的实时 JSON 视图已并入主页面，直接订阅 `/data/decisions-stream`。</div>
+            </div>
+            <div class="data-meta" id="decisionsMeta">Waiting for data...</div>
+          </div>
+          <pre class="data-json" id="decisionsJson">Loading...</pre>
+        </div>
+
+        <div class="panel data-panel">
+          <div class="data-header">
+            <div>
+              <h2 class="data-title">Decision Making Data</h2>
+              <div class="data-copy">原独立页面的实时 JSON 视图已并入主页面，直接订阅 `/data/decision_making_data-stream`。</div>
+            </div>
+            <div class="data-meta" id="decisionMakingMeta">Waiting for data...</div>
+          </div>
+          <pre class="data-json" id="decisionMakingJson">Loading...</pre>
         </div>
       </div>
     </div>
@@ -211,6 +358,12 @@
       const obsStat = document.getElementById("obsStat");
       const simTimeStat = document.getElementById("simTimeStat");
       const waypointStatusStat = document.getElementById("waypointStatusStat");
+      const processedImage = document.getElementById("processedImage");
+      const processedImageMeta = document.getElementById("processedImageMeta");
+      const decisionsJson = document.getElementById("decisionsJson");
+      const decisionsMeta = document.getElementById("decisionsMeta");
+      const decisionMakingJson = document.getElementById("decisionMakingJson");
+      const decisionMakingMeta = document.getElementById("decisionMakingMeta");
 
       const COLORS = {
         robot: "#e4572e",
@@ -665,6 +818,98 @@
         return `${ball.x.toFixed(4)},${ball.y.toFixed(4)}`;
       }
 
+      let tickInFlight = false;
+      let tickQueued = false;
+
+      function scheduleTick() {
+        if (tickInFlight) {
+          tickQueued = true;
+          return;
+        }
+
+        tickInFlight = true;
+        tick()
+          .catch(() => {})
+          .finally(() => {
+            tickInFlight = false;
+            if (tickQueued) {
+              tickQueued = false;
+              scheduleTick();
+            }
+          });
+      }
+
+      function bindRealtimeRefresh(url) {
+        try {
+          const source = new EventSource(url);
+          source.onmessage = () => {
+            scheduleTick();
+          };
+          source.onerror = () => {
+            // Keep polling fallback alive if the stream disconnects.
+          };
+          return source;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function bindJsonView(url, preNode, metaNode) {
+        try {
+          const source = new EventSource(url);
+          source.onmessage = (event) => {
+            try {
+              const payload = JSON.parse(event.data);
+              preNode.textContent = JSON.stringify(payload, null, 2);
+              metaNode.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+            } catch (e) {
+              preNode.textContent = "Failed to parse data.";
+              metaNode.textContent = "Invalid payload";
+            }
+          };
+          source.onerror = () => {
+            metaNode.textContent = "Disconnected, waiting for stream...";
+          };
+          return source;
+        } catch (e) {
+          preNode.textContent = "Stream unavailable.";
+          metaNode.textContent = "EventSource not available";
+          return null;
+        }
+      }
+
+      let processedImageRequestActive = false;
+      let processedImageLastOkAt = 0;
+
+      function refreshProcessedImage() {
+        if (processedImageRequestActive) {
+          return;
+        }
+
+        processedImageRequestActive = true;
+        const stamp = Date.now();
+
+        const release = () => {
+          processedImageRequestActive = false;
+        };
+
+        processedImage.onload = () => {
+          processedImageLastOkAt = stamp;
+          processedImageMeta.textContent = `Updated ${new Date(stamp).toLocaleTimeString()}`;
+          release();
+        };
+
+        processedImage.onerror = () => {
+          const staleMs = processedImageLastOkAt ? stamp - processedImageLastOkAt : null;
+          processedImageMeta.textContent = staleMs === null
+            ? "Waiting for image..."
+            : `Image unavailable, last success ${Math.round(staleMs / 1000)}s ago`;
+          release();
+        };
+
+        processedImage.src = `/data/processed_image?t=${stamp}`;
+      }
+
       async function tick() {
         const [current, balls, visible, obstacles, waypoints, robotAround, radarHistory, tileSeenTime, ballTileMemory, unseenTileMemory, unseenRegions, textStatus, plannedPath] = await Promise.all([
           fetchJson("/data/current"),
@@ -747,8 +992,16 @@
         waypointStatusStat.textContent = `Waypoint Status: ${textStatus && textStatus.waypoint_status ? textStatus.waypoint_status : "--"}`;
       }
 
-      setInterval(tick, 120);
-      tick();
+      bindRealtimeRefresh("/data/simulation-stream");
+      bindRealtimeRefresh("/data/decisions-stream");
+      bindRealtimeRefresh("/data/decision_making_data-stream");
+      bindJsonView("/data/decisions-stream", decisionsJson, decisionsMeta);
+      bindJsonView("/data/decision_making_data-stream", decisionMakingJson, decisionMakingMeta);
+
+      setInterval(scheduleTick, 120);
+      setInterval(refreshProcessedImage, 220);
+      scheduleTick();
+      refreshProcessedImage();
     </script>
   </body>
 </html>
