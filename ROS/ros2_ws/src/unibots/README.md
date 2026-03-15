@@ -2,7 +2,9 @@
 
 ROS2 Jazzy Python package providing:
 
-- `web_bridge_node`: HTTP mirror bridge for simulation data + front camera publisher
+- `web_bridge_node`: HTTP mirror bridge for simulation data + web viewer endpoints
+- `radar_sensor_node`: standalone radar sensor fetcher/publisher (`/radar_sensor`)
+- `front_camera_node`: standalone front camera fetcher/publisher (`/front_camera`)
 - `decision_node`: decision node that consumes topics and publishes decisions
 - `pose_estimation`: optional pose estimation from front camera
 
@@ -16,10 +18,16 @@ ROS2 Jazzy Python package providing:
 	- `http://127.0.0.1:5003/data/simulation_data`
 - Field viewer main page also includes the live `decisions` and `decision_making_data` JSON views; `/decisions` and `/decision_making_data` now redirect to `/`.
 - Cache is updated only when upstream content changes.
-- Front camera JPEG is fetched from `/front_camera` and published to `/front_camera`.
+- Front camera JPEG is fetched by `front_camera_node` and published to `/front_camera`.
 - Topics published by `web_bridge_node`:
-	- `/visible_balls`, `/waypoint_status`, `/time`, `/front_camera`
+	- `/visible_balls`, `/waypoint_status`, `/time`
 	- `/current_position` only when `pose_estimation` is disabled
+	- (`/radar_sensor` publishing has been moved out to `radar_sensor_node`)
+	- (`/front_camera` publishing has been moved out to `front_camera_node`)
+- Topics published by `radar_sensor_node`:
+	- `/radar_sensor` (fetched from upstream `/data/simulation_data` field `radar_sensor`)
+- Topics published by `front_camera_node`:
+	- `/front_camera` (fetched from upstream camera endpoint)
 - Topics published by `pose_estimation`:
 	- `/current_position` when `pose_estimation` is enabled
 - Topics published by `decision_node`:

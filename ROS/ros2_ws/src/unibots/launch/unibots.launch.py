@@ -18,6 +18,20 @@ def generate_launch_description() -> LaunchDescription:
         ),
         Node(
             package='unibots',
+            executable='radar_sensor_node',
+            name='radar_sensor_node',
+            output='screen',
+            parameters=[params],
+        ),
+        Node(
+            package='unibots',
+            executable='front_camera_node',
+            name='front_camera_node',
+            output='screen',
+            parameters=[params],
+        ),
+        Node(
+            package='unibots',
             executable='decision_node',
             name='decision_node',
             output='screen',

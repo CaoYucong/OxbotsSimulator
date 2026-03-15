@@ -1298,7 +1298,7 @@ def robot_only_radar(
         if not math.isfinite(wall_dist):
             wall_dist = max_range
 
-        if abs(radar_dist - wall_dist) <= abs(float(wall_match_tolerance)):
+        if abs(wall_dist) <= 0.25:
             predicted[direction] = max_range
         else:
             predicted[direction] = max(0.0, min(max_range, radar_dist))
@@ -1338,33 +1338,12 @@ def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) ->
         return False
     _, _, _ = cur
 
-    radar_hits = radar_sensor()
-    if not radar_hits:
-        return False
-
-    predicted_wall_hits = wall_only_radar(current_file)
     collision_threshold = 0.05
-    tolerance_ratio = 0.10
 
-    filtered_hits: list[tuple[str, float]] = []
-    for direction, dist in radar_hits:
-        predicted = predicted_wall_hits.get(direction)
-
-        # No wall prediction for this direction => keep this radar hit.
-        if predicted is None or predicted > RADAR_MAX_RANGE:
-            filtered_hits.append((direction, dist))
-            continue
-
-        # If radar hit is within 10% of wall-only prediction, treat it as wall
-        # and exclude it from collision triggering.
-        baseline = max(abs(predicted), 1e-9)
-        if abs(dist - predicted) <= (tolerance_ratio * baseline):
-            # print(f"[waypoints_cruise] ignoring radar hit in {direction} direction as it matches wall prediction (predicted: {predicted:.3f}, actual: {dist:.3f})", file=sys.stderr)
-            continue
-
-        filtered_hits.append((direction, dist))
-
-    if any(dist < collision_threshold for _, dist in filtered_hits):
+    # Keep radar/memory pipelines updated, then trigger purely from robot-only radar.
+    radar_sensor()
+    robot_only_hits = robot_only_radar(current_file=current_file)
+    if any(dist < collision_threshold for dist in robot_only_hits.values()):
         return True
 
     return False
@@ -2097,19 +2076,20 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
         return 0
 
+    cur = _read_current_position(current_file)
+    cx, cy, bearing = cur if cur is not None else (0.0, 0.0, None)
+
     sim_time = _read_time_seconds(TIME_FILE)
-    if sim_time is not None and sim_time > 170.0:
+    if sim_time is not None and sim_time > 180 - 2 * next_point_time_cost((cx, cy), bearing, (-0.9, 0.0), None):
         goto(-0.9, 0.0, 180.0)
         return 0
 
-    cur = _read_current_position(current_file)
 
     status = _read_status(status_file)
 
     if cur is None:
         return 0
     bx = _read_visible_ball_positions(visible_balls_file)
-    cx, cy, bearing = cur
     if not bx:
         
         rows = len(FIELD_TILES)

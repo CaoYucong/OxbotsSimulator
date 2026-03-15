@@ -10,7 +10,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import cv2
-import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
@@ -189,6 +188,22 @@ def _read_text_value(payload: dict, key: str) -> str:
     return str(value)
 
 
+def _parse_radar_sensor_text(text: str):
+    parts = [p.strip() for p in (text or "").split(",")]
+    if len(parts) < 5:
+        return None
+    try:
+        return {
+            "time": float(parts[0]),
+            "front": float(parts[1]),
+            "right": float(parts[2]),
+            "left": float(parts[3]),
+            "rear": float(parts[4]),
+        }
+    except Exception:
+        return None
+
+
 def _state_payload(state: "_MirrorState", path: str) -> dict:
     item = state.get(path)
     if not item or not item.get("has_data"):
@@ -234,6 +249,12 @@ class _MirrorState:
                 "seq": 0,
             },
             "/data/time": {
+                "body": b"{}",
+                "content_type": "application/json; charset=utf-8",
+                "has_data": False,
+                "seq": 0,
+            },
+            "/data/radar_sensor": {
                 "body": b"{}",
                 "content_type": "application/json; charset=utf-8",
                 "has_data": False,
@@ -532,43 +553,6 @@ def _build_handler(state: _MirrorState):
                 self._send_text(page, 200, "text/html")
                 return
 
-            if path == "/front_camera":
-                page = """<!doctype html>
-<html lang=\"en\">
-<head>
-    <meta charset=\"utf-8\" />
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>Front Camera</title>
-    <style>
-        body { font-family: Arial, sans-serif; background: #0f1115; color: #f3f4f6; margin: 0; }
-        .wrap { padding: 16px; }
-        .frame { max-width: 100%; aspect-ratio: 16 / 9; border: 1px solid #23262d; background: #151a21; }
-        .frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
-        .meta { font-size: 12px; color: #9ca3af; margin-top: 8px; }
-    </style>
-</head>
-<body>
-    <div class=\"wrap\">
-        <h2>Front Camera</h2>
-        <div class=\"frame\"><img id=\"cam\" alt=\"front camera\" /></div>
-        <div class=\"meta\" id=\"meta\"></div>
-    </div>
-    <script>
-        const img = document.getElementById('cam');
-        const meta = document.getElementById('meta');
-        function refresh() {
-            const ts = Date.now();
-            img.src = `/data/front_camera?t=${ts}`;
-            meta.textContent = `Updated ${new Date(ts).toLocaleTimeString()}`;
-        }
-        refresh();
-        setInterval(refresh, 200);
-    </script>
-</body>
-</html>"""
-                self._send_text(page, 200, "text/html")
-                return
-
             sim_payload = _state_payload(state, "/data/simulation_data")
             decisions_payload = _state_payload(state, "/data/decisions")
             decision_making_payload = _state_payload(state, "/data/decision_making_data")
@@ -709,35 +693,7 @@ def _build_handler(state: _MirrorState):
             body = self.rfile.read(length) if length > 0 else b""
 
             if path == "/front_camera":
-                if not body:
-                    self._send_text("empty payload", 400, "text/plain")
-                    return
-                content_type = self.headers.get("Content-Type", "application/octet-stream")
-                if content_type.startswith("application/json"):
-                    try:
-                        payload = json.loads(body.decode("utf-8", errors="ignore"))
-                        if not isinstance(payload, dict):
-                            raise ValueError("payload must be object")
-                        data_uri = payload.get("image")
-                        image_base64 = payload.get("image_base64")
-                        mime = payload.get("mime")
-                        if isinstance(data_uri, str) and data_uri.startswith("data:"):
-                            header, b64 = data_uri.split(",", 1)
-                            mime = header.split(";", 1)[0].split(":", 1)[1]
-                            image_bytes = base64.b64decode(b64)
-                            state.set("/data/front_camera", image_bytes, mime)
-                        elif isinstance(image_base64, str):
-                            image_bytes = base64.b64decode(image_base64)
-                            state.set("/data/front_camera", image_bytes, mime or "image/jpeg")
-                        else:
-                            self._send_text("invalid image payload", 400, "text/plain")
-                            return
-                    except Exception:
-                        self._send_text("invalid json", 400, "text/plain")
-                        return
-                else:
-                    state.set("/data/front_camera", body, content_type)
-                self._send_text("ok", 200, "text/plain")
+                self._send_text("front camera upload disabled", 200, "text/plain")
                 return
 
             if path == "/processed_image":
@@ -811,12 +767,7 @@ class WebBridgeNode(Node):
         self.declare_parameter('local_port', 5003)
         self.declare_parameter('poll_hz', 10.0)
         self.declare_parameter('request_timeout', 1.0)
-        self.declare_parameter('camera_remote_host', '192.168.50.1')
-        self.declare_parameter('camera_remote_port', 5003)
-        self.declare_parameter('camera_path', '/data/front_camera')
         self.declare_parameter('camera_topic', '/front_camera')
-        self.declare_parameter('camera_poll_hz', 10.0)
-        self.declare_parameter('camera_request_timeout', 1.0)
         self.declare_parameter('pose_estimation', False)
         self.declare_parameter('web_debug', False)
 
@@ -826,14 +777,7 @@ class WebBridgeNode(Node):
         self.local_port = int(self.get_parameter('local_port').get_parameter_value().integer_value)
         poll_hz = float(self.get_parameter('poll_hz').get_parameter_value().double_value)
         self.request_timeout = float(self.get_parameter('request_timeout').get_parameter_value().double_value)
-        self.camera_remote_host = self.get_parameter('camera_remote_host').get_parameter_value().string_value
-        self.camera_remote_port = int(self.get_parameter('camera_remote_port').get_parameter_value().integer_value)
-        self.camera_path = self.get_parameter('camera_path').get_parameter_value().string_value
         self.camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
-        camera_poll_hz = float(self.get_parameter('camera_poll_hz').get_parameter_value().double_value)
-        self.camera_request_timeout = float(
-            self.get_parameter('camera_request_timeout').get_parameter_value().double_value
-        )
         self._pose_estimation_enabled = bool(
             self.get_parameter('pose_estimation').get_parameter_value().bool_value
         )
@@ -845,8 +789,6 @@ class WebBridgeNode(Node):
 
         if self.request_timeout <= 0.0:
             self.request_timeout = 1.0
-        if self.camera_request_timeout <= 0.0:
-            self.camera_request_timeout = 1.0
 
         self.remote_targets = (
             {
@@ -871,6 +813,7 @@ class WebBridgeNode(Node):
         self.create_subscription(String, '/visible_balls', self._on_visible_balls_topic, 10)
         self.create_subscription(String, '/waypoint_status', self._on_waypoint_status_topic, 10)
         self.create_subscription(String, '/time', self._on_time_topic, 10)
+        self.create_subscription(String, '/radar_sensor', self._on_radar_sensor_topic, 10)
         self.create_subscription(String, '/decisions', self._on_decisions, 10)
         self.create_subscription(String, '/decision_making_data', self._on_decision_making_data, 10)
 
@@ -879,26 +822,17 @@ class WebBridgeNode(Node):
         self.pub_visible_balls = self.create_publisher(String, '/visible_balls', 10)
         self.pub_waypoint_status = self.create_publisher(String, '/waypoint_status', 10)
         self.pub_time = self.create_publisher(String, '/time', 10)
-        self.pub_radar_sensor = self.create_publisher(String, '/radar_sensor', 10)
-        self.pub_front_camera = self.create_publisher(Image, self.camera_topic, 10)
         self.create_subscription(Image, self.camera_topic, self._on_front_camera_msg, 10)
         self.create_subscription(Image, '/processed_image', self._on_processed_image_msg, 10)
 
         self._cv_bridge = CvBridge()
-        self._camera_error_logged = False
 
         period = 0.1 if poll_hz <= 0.0 else (1.0 / poll_hz)
         self.create_timer(period, self._poll_once)
-        camera_period = 0.1 if camera_poll_hz <= 0.0 else (1.0 / camera_poll_hz)
-        self.create_timer(camera_period, self._poll_camera_once)
 
         self.get_logger().info(
             f'web_bridge_node started; upstream={self.remote_host}:{self.remote_port}, '
             f'local_mirror=http://{self.local_host}:{self.local_port}, poll_hz={poll_hz}'
-        )
-        self.get_logger().info(
-            f'front_camera bridge enabled; upstream={self.camera_remote_host}:{self.camera_remote_port}'
-            f'{self.camera_path}, topic={self.camera_topic}, poll_hz={camera_poll_hz}'
         )
 
     def _poll_once(self) -> None:
@@ -927,7 +861,6 @@ class WebBridgeNode(Node):
         visible_text = str(payload.get('visible_balls', '')).strip()
         waypoint_text = str(payload.get('waypoint_status', '')).strip()
         time_text = str(payload.get('time', '')).strip()
-        radar_text = str(payload.get('radar_sensor', '')).strip()
 
         if not self._pose_estimation_enabled:
             pose = self._parse_current_position(current_text)
@@ -958,11 +891,6 @@ class WebBridgeNode(Node):
             t_msg = String()
             t_msg.data = time_text
             self.pub_time.publish(t_msg)
-
-        if radar_text:
-            radar_msg = String()
-            radar_msg.data = radar_text
-            self.pub_radar_sensor.publish(radar_msg)
 
     def _on_simulation_data(self, msg: String) -> None:
         payload = self._parse_json_payload(msg.data)
@@ -1003,37 +931,11 @@ class WebBridgeNode(Node):
         canonical = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
         self._state.set('/data/time', canonical, 'application/json; charset=utf-8')
 
-    def _poll_camera_once(self) -> None:
-        url = f'http://{self.camera_remote_host}:{self.camera_remote_port}{self.camera_path}'
-        try:
-            with urllib.request.urlopen(url, timeout=self.camera_request_timeout) as res:
-                content_type = (res.headers.get_content_type() or '').lower()
-                body = res.read()
-        except Exception as exc:
-            if not self._camera_error_logged:
-                self.get_logger().warn(f'front camera fetch failed for {url}: {exc}')
-                self._camera_error_logged = True
-            return
-
-        self._camera_error_logged = False
-        if not body:
-            return
-        if content_type and not content_type.startswith('image/'):
-            self.get_logger().warn(
-                f'front camera upstream returned non-image content-type: {content_type}; '
-                f'check camera_path={self.camera_path}'
-            )
-            return
-
-        image = cv2.imdecode(np.frombuffer(body, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if image is None:
-            self.get_logger().warn('front camera payload could not be decoded')
-            return
-
-        msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'front_camera'
-        self.pub_front_camera.publish(msg)
+    def _on_radar_sensor_topic(self, msg: String) -> None:
+        parsed = _parse_radar_sensor_text(msg.data if msg.data else "")
+        payload = parsed if parsed is not None else {}
+        canonical = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        self._state.set('/data/radar_sensor', canonical, 'application/json; charset=utf-8')
 
     def _on_front_camera_msg(self, msg: Image) -> None:
         try:

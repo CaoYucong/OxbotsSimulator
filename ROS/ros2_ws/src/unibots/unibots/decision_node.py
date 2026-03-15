@@ -23,9 +23,9 @@ class DecisionNode(Node):
         self._mode_param = self.get_parameter('mode').get_parameter_value().string_value
         self._default_speed = float(self.get_parameter('default_speed').get_parameter_value().double_value)
 
-        self._current_x: Optional[float] = None
-        self._current_y: Optional[float] = None
-        self._current_theta: Optional[float] = None
+        self._current_x: Optional[float] = 0.0
+        self._current_y: Optional[float] = 0.0
+        self._current_theta: Optional[float] = 0.0
         self._visible_balls_text = ''
         self._radar_sensor_text = ''
         self._waypoint_status = 'going'

@@ -16,6 +16,26 @@ web_bridge_node:
     poll_hz: 10.0
     # HTTP timeout for upstream simulation data requests (sec).
     request_timeout: 1.0
+    # ROS topic subscribed by web bridge for front camera mirroring.
+    camera_topic: /front_camera
+    # Mirror the pose_estimation flag into web_bridge_node behavior.
+    pose_estimation: true
+    # When true, post decisions/decision_making_data to web endpoints.
+    web_debug: true
+
+radar_sensor_node:
+  ros__parameters:
+    # Upstream simulator host for radar sensor extraction.
+    remote_host: 192.168.50.1
+    # Upstream simulator port for radar sensor extraction.
+    remote_port: 5003
+    # Poll rate for fetching upstream simulation data (Hz).
+    poll_hz: 10.0
+    # HTTP timeout for upstream simulation data requests (sec).
+    request_timeout: 1.0
+
+front_camera_node:
+  ros__parameters:
     # Upstream host for front camera JPEG.
     camera_remote_host: 192.168.50.1
     # Upstream port for front camera JPEG.
@@ -28,10 +48,6 @@ web_bridge_node:
     camera_poll_hz: 10.0
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
-    # Mirror the pose_estimation flag into web_bridge_node behavior.
-    pose_estimation: true
-    # When true, post decisions/decision_making_data to web endpoints.
-    web_debug: true
 
 decision_node:
   ros__parameters:
