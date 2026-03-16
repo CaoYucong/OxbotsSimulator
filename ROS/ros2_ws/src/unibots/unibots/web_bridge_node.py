@@ -13,6 +13,7 @@ import cv2
 import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
@@ -255,6 +256,12 @@ class _MirrorState:
                 "seq": 0,
             },
             "/data/radar_sensor": {
+                "body": b"{}",
+                "content_type": "application/json; charset=utf-8",
+                "has_data": False,
+                "seq": 0,
+            },
+            "/data/pose_history": {
                 "body": b"{}",
                 "content_type": "application/json; charset=utf-8",
                 "has_data": False,
@@ -586,6 +593,9 @@ def _build_handler(state: _MirrorState):
             if path == "/data/radar-history":
                 self._send_json({"history": self._get_radar_history(decision_making_payload)})
                 return
+            if path == "/data/pose_history":
+                self._send_json(_state_payload(state, "/data/pose_history"))
+                return
             if path == "/data/tile-seen-time":
                 self._send_json({"tiles": self._get_tiles(decision_making_payload, "tile_seen_time")})
                 return
@@ -797,6 +807,11 @@ class WebBridgeNode(Node):
                 "content_type": "application/json; charset=utf-8",
             },
         )
+        self._simulation_data_urls = [
+            f'http://{self.remote_host}:{self.remote_port}/data/simulation_data',
+            f'http://{self.remote_host}:{self.remote_port}/simulation_data',
+        ]
+        self._simulation_data_url_index = 0
 
         self._state = _MirrorState()
         self._server = ThreadingHTTPServer((self.local_host, self.local_port), _build_handler(self._state))
@@ -814,6 +829,7 @@ class WebBridgeNode(Node):
         self.create_subscription(String, '/waypoint_status', self._on_waypoint_status_topic, 10)
         self.create_subscription(String, '/time', self._on_time_topic, 10)
         self.create_subscription(String, '/radar_sensor', self._on_radar_sensor_topic, 10)
+        self.create_subscription(Path, '/pose_history', self._on_pose_history_topic, 10)
         self.create_subscription(String, '/decisions', self._on_decisions, 10)
         self.create_subscription(String, '/decision_making_data', self._on_decision_making_data, 10)
 
@@ -821,7 +837,6 @@ class WebBridgeNode(Node):
         self.pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
         self.pub_visible_balls = self.create_publisher(String, '/visible_balls', 10)
         self.pub_waypoint_status = self.create_publisher(String, '/waypoint_status', 10)
-        self.pub_time = self.create_publisher(String, '/time', 10)
         self.create_subscription(Image, self.camera_topic, self._on_front_camera_msg, 10)
         self.create_subscription(Image, '/processed_image', self._on_processed_image_msg, 10)
 
@@ -838,10 +853,8 @@ class WebBridgeNode(Node):
     def _poll_once(self) -> None:
         for target in self.remote_targets:
             path = target["path"]
-            url = target["url"]
             try:
-                with urllib.request.urlopen(url, timeout=self.request_timeout) as res:
-                    body = res.read()
+                body, active_url = self._fetch_simulation_data_body()
                 payload = json.loads(body.decode('utf-8', errors='ignore'))
                 if not isinstance(payload, dict):
                     raise ValueError('simulation_data payload must be a JSON object')
@@ -852,15 +865,37 @@ class WebBridgeNode(Node):
                 self._error_logged[path] = False
             except Exception as exc:
                 if not self._error_logged[path]:
-                    self.get_logger().warn(f'upstream fetch failed for {url}: {exc}')
+                    self.get_logger().warn(
+                        f'upstream fetch failed for {self._simulation_data_urls}: {exc}'
+                    )
                     self._error_logged[path] = True
+
+    def _fetch_simulation_data_body(self) -> tuple[bytes, str]:
+        first_error: Exception | None = None
+        total = len(self._simulation_data_urls)
+        for offset in range(total):
+            idx = (self._simulation_data_url_index + offset) % total
+            url = self._simulation_data_urls[idx]
+            try:
+                req = urllib.request.Request(url, headers={'Connection': 'close'})
+                with urllib.request.urlopen(req, timeout=self.request_timeout) as res:
+                    body = res.read()
+                self._simulation_data_url_index = idx
+                return body, url
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+                continue
+
+        if first_error is None:
+            raise RuntimeError('no simulation_data urls configured')
+        raise first_error
 
     def _publish_sim_topics_from_payload(self, payload: dict) -> None:
 
         current_text = str(payload.get('current_position', '')).strip()
         visible_text = str(payload.get('visible_balls', '')).strip()
         waypoint_text = str(payload.get('waypoint_status', '')).strip()
-        time_text = str(payload.get('time', '')).strip()
 
         if not self._pose_estimation_enabled:
             pose = self._parse_current_position(current_text)
@@ -886,11 +921,6 @@ class WebBridgeNode(Node):
         wp_msg = String()
         wp_msg.data = waypoint_text
         self.pub_waypoint_status.publish(wp_msg)
-
-        if time_text:
-            t_msg = String()
-            t_msg.data = time_text
-            self.pub_time.publish(t_msg)
 
     def _on_simulation_data(self, msg: String) -> None:
         payload = self._parse_json_payload(msg.data)
@@ -936,6 +966,34 @@ class WebBridgeNode(Node):
         payload = parsed if parsed is not None else {}
         canonical = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
         self._state.set('/data/radar_sensor', canonical, 'application/json; charset=utf-8')
+
+    def _on_pose_history_topic(self, msg: Path) -> None:
+        poses = []
+        for p in msg.poses:
+            qx = float(p.pose.orientation.x)
+            qy = float(p.pose.orientation.y)
+            qz = float(p.pose.orientation.z)
+            qw = float(p.pose.orientation.w)
+            siny_cosp = 2.0 * (qw * qz + qx * qy)
+            cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+            yaw_rad = math.atan2(siny_cosp, cosy_cosp)
+            stamp_sec = float(p.header.stamp.sec) + float(p.header.stamp.nanosec) * 1e-9
+            poses.append(
+                {
+                    "stamp": stamp_sec,
+                    "x": float(p.pose.position.x),
+                    "y": float(p.pose.position.y),
+                    "bearing": math.degrees(yaw_rad),
+                }
+            )
+
+        payload = {
+            "frame_id": msg.header.frame_id if msg.header.frame_id else "map",
+            "count": len(poses),
+            "poses": poses,
+        }
+        canonical = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        self._state.set('/data/pose_history', canonical, 'application/json; charset=utf-8')
 
     def _on_front_camera_msg(self, msg: Image) -> None:
         try:

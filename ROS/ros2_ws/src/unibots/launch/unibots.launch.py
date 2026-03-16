@@ -49,4 +49,18 @@ def generate_launch_description() -> LaunchDescription:
             output='screen',
             parameters=[params, {'use_real_sensor': use_real_sensor}],
         ),
+        Node(
+            package='unibots',
+            executable='motion_control_node',
+            name='motion_control_node',
+            output='screen',
+            parameters=[params],
+        ),
+        Node(
+            package='unibots',
+            executable='timer_node',
+            name='timer',
+            output='screen',
+            parameters=[params],
+        ),
     ])

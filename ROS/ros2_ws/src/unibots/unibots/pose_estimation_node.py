@@ -2,6 +2,7 @@ import json
 import math
 import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path as PathMsg
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 
@@ -238,6 +240,7 @@ class PoseEstimationNode(Node):
         self.declare_parameter('pose_estimation', False)
         self.declare_parameter('allow_legacy_opencv', False)
         self.declare_parameter('use_real_sensor', False)
+        self.declare_parameter('pose_history_window_sec', 10.0)
 
         camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
@@ -250,6 +253,9 @@ class PoseEstimationNode(Node):
             self.get_parameter('allow_legacy_opencv').get_parameter_value().bool_value
         )
         self._use_real_sensor = bool(self.get_parameter('use_real_sensor').get_parameter_value().bool_value)
+        self._pose_history_window_sec = float(
+            self.get_parameter('pose_history_window_sec').get_parameter_value().double_value
+        )
 
         if self._enabled:
             ok_runtime, reason = _opencv_apriltag_runtime_supported()
@@ -275,16 +281,51 @@ class PoseEstimationNode(Node):
             intrinsic_path = Path(default_intrinsic_real if self._use_real_sensor else default_intrinsic_sim)
         tag_map_path = Path(tag_map_path_raw) if tag_map_path_raw else Path(default_tag_map)
 
-        self.K, self.dist_coeffs = _load_intrinsics(intrinsic_path)
-        self.tag_world = _load_tag_world_map(tag_map_path)
+        try:
+            self.K, self.dist_coeffs = _load_intrinsics(intrinsic_path)
+        except Exception as exc:
+            self.get_logger().error(
+                f'failed to load intrinsics from {intrinsic_path}: {exc}; disabling pose_estimation'
+            )
+            self.K = np.eye(3, dtype=np.float64)
+            self.dist_coeffs = np.zeros((5, 1), dtype=np.float64)
+            self._enabled = False
+
+        try:
+            self.tag_world = _load_tag_world_map(tag_map_path)
+        except Exception as exc:
+            self.get_logger().error(
+                f'failed to load tag map from {tag_map_path}: {exc}; disabling pose_estimation'
+            )
+            self.tag_world = {}
+            self._enabled = False
 
         if not self.tag_world:
-            raise RuntimeError(f'No tag map entries loaded from {tag_map_path}')
+            self.get_logger().error(f'no tag map entries loaded from {tag_map_path}; disabling pose_estimation')
+            self._enabled = False
 
         self._bridge = CvBridge()
         self._last_pose_log = 0.0
         self._last_warn_log = 0.0
+        self._last_placeholder_log = 0.0
+        self._last_image_time = 0.0
         self._latest_image: Optional[np.ndarray] = None
+        self._pose_history: deque[tuple[int, PoseStamped]] = deque()
+        self._kf = cv2.KalmanFilter(5, 3)
+        self._kf.measurementMatrix = np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        self._kf.processNoiseCov = np.diag([1e-3, 1e-3, 5e-2, 5e-2, 2e-2]).astype(np.float32)
+        self._kf.measurementNoiseCov = np.diag([2e-2, 2e-2, 1.5]).astype(np.float32)
+        self._kf.errorCovPost = np.eye(5, dtype=np.float32)
+        self._kf_initialized = False
+        self._kf_last_update_ns: Optional[int] = None
+        self._placeholder_image = self._build_placeholder_image()
         if PERF_METRICS_ENABLED:
             self._perf_window_start = time.monotonic()
             self._perf_frames = 0
@@ -295,10 +336,12 @@ class PoseEstimationNode(Node):
             self._perf_total_ms = 0.0
 
         self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
+        self._pub_pose_history = self.create_publisher(PathMsg, '/pose_history', 10)
         self._pub_processed_image = self.create_publisher(Image, '/processed_image', 10)
         self.create_subscription(Image, camera_topic, self._on_image, 10)
         if self.tick_hz > 0.0:
             self.create_timer(1.0 / self.tick_hz, self._on_tick)
+        self.create_timer(0.5, self._publish_placeholder_if_stale)
 
         state = 'enabled' if self._enabled else 'disabled'
         tick_hz_text = f'{self.tick_hz:.3f}Hz' if self.tick_hz > 0.0 else 'image-rate'
@@ -323,7 +366,10 @@ class PoseEstimationNode(Node):
             if self._should_log(self._last_warn_log):
                 self._last_warn_log = time.monotonic()
                 self.get_logger().warn(f'failed to decode image: {exc}')
+            self._publish_placeholder_processed_image()
             return
+
+        self._last_image_time = time.monotonic()
 
         if self.tick_hz > 0.0:
             self._latest_image = image
@@ -335,8 +381,118 @@ class PoseEstimationNode(Node):
         if not self._enabled or self.tick_hz <= 0.0:
             return
         if self._latest_image is None:
+            self._publish_placeholder_processed_image()
             return
         self._process_image(self._latest_image)
+
+    def _publish_placeholder_if_stale(self) -> None:
+        if not self._enabled:
+            return
+        if (time.monotonic() - self._last_image_time) < 1.0:
+            return
+        self._publish_placeholder_processed_image()
+
+    def _build_placeholder_image(self) -> np.ndarray:
+        image = np.zeros((240, 320, 3), dtype=np.uint8)
+        image[:] = (32, 32, 32)
+        cv2.putText(
+            image,
+            'image not found',
+            (64, 126),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        return image
+
+    def _publish_placeholder_processed_image(self) -> None:
+        now = time.monotonic()
+        if self._should_log(self._last_placeholder_log):
+            self._last_placeholder_log = now
+            self.get_logger().warn('no camera image available, publishing placeholder processed image')
+
+        msg_image = self._bridge.cv2_to_imgmsg(self._placeholder_image, encoding='bgr8')
+        msg_image.header.stamp = self.get_clock().now().to_msg()
+        msg_image.header.frame_id = 'camera'
+        self._pub_processed_image.publish(msg_image)
+
+    @staticmethod
+    def _normalize_heading_deg(angle_deg: float) -> float:
+        wrapped = (angle_deg + 180.0) % 360.0 - 180.0
+        if wrapped == -180.0:
+            return 180.0
+        return wrapped
+
+    @staticmethod
+    def _unwrap_heading_near(reference_deg: float, measured_deg: float) -> float:
+        out = measured_deg
+        while (out - reference_deg) > 180.0:
+            out -= 360.0
+        while (out - reference_deg) < -180.0:
+            out += 360.0
+        return out
+
+    def _kalman_update_pose(
+        self,
+        measured_x: float,
+        measured_y: float,
+        measured_heading_deg: float,
+        now_ns: int,
+        num_tags_used: int,
+    ) -> tuple[float, float, float]:
+        if not self._kf_initialized:
+            self._kf.transitionMatrix = np.array(
+                [
+                    [1.0, 0.0, 1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 1.0],
+                ],
+                dtype=np.float32,
+            )
+            self._kf.statePost = np.array(
+                [[measured_x], [measured_y], [0.0], [0.0], [measured_heading_deg]], dtype=np.float32
+            )
+            self._kf_initialized = True
+            self._kf_last_update_ns = now_ns
+            return measured_x, measured_y, self._normalize_heading_deg(measured_heading_deg)
+
+        dt = 0.1
+        if self._kf_last_update_ns is not None:
+            dt = max(1e-3, min(1.0, (now_ns - self._kf_last_update_ns) * 1e-9))
+
+        self._kf.transitionMatrix = np.array(
+            [
+                [1.0, 0.0, dt, 0.0, 0.0],
+                [0.0, 1.0, 0.0, dt, 0.0],
+                [0.0, 0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+
+        pos_noise = 2e-2
+        heading_noise = 1.5
+        if num_tags_used <= 1:
+            pos_noise = 6e-2
+            heading_noise = 4.0
+        self._kf.measurementNoiseCov = np.diag([pos_noise, pos_noise, heading_noise]).astype(np.float32)
+
+        pred = self._kf.predict()
+        predicted_heading = float(pred[4, 0])
+        unwrapped_heading = self._unwrap_heading_near(predicted_heading, measured_heading_deg)
+        measurement = np.array([[measured_x], [measured_y], [unwrapped_heading]], dtype=np.float32)
+        corrected = self._kf.correct(measurement)
+        self._kf_last_update_ns = now_ns
+
+        x_f = float(corrected[0, 0])
+        y_f = float(corrected[1, 0])
+        h_f = self._normalize_heading_deg(float(corrected[4, 0]))
+        return x_f, y_f, h_f
 
     def _process_image(self, image: np.ndarray) -> None:
         if PERF_METRICS_ENABLED:
@@ -421,18 +577,50 @@ class PoseEstimationNode(Node):
                 )
 
         robot = estimate['robot_pose_world']
-        heading_rad = math.radians(float(robot['heading_x0']))
+        now_time = self.get_clock().now()
+        now_ns = now_time.nanoseconds
+        measured_x = float(robot['x'])
+        measured_y = float(robot['y'])
+        measured_heading_deg = float(robot['heading_x0'])
+        filtered_x, filtered_y, filtered_heading_deg = self._kalman_update_pose(
+            measured_x=measured_x,
+            measured_y=measured_y,
+            measured_heading_deg=measured_heading_deg,
+            now_ns=now_ns,
+            num_tags_used=used_tags,
+        )
+        heading_rad = math.radians(filtered_heading_deg)
         msg_out = PoseStamped()
-        msg_out.header.stamp = self.get_clock().now().to_msg()
+        msg_out.header.stamp = now_time.to_msg()
         msg_out.header.frame_id = 'map'
-        msg_out.pose.position.x = float(robot['x'])
-        msg_out.pose.position.y = float(robot['y'])
+        msg_out.pose.position.x = filtered_x
+        msg_out.pose.position.y = filtered_y
         msg_out.pose.position.z = 0.0
         msg_out.pose.orientation.x = 0.0
         msg_out.pose.orientation.y = 0.0
         msg_out.pose.orientation.z = math.sin(heading_rad * 0.5)
         msg_out.pose.orientation.w = math.cos(heading_rad * 0.5)
         self._pub_current_position.publish(msg_out)
+
+        history_pose = PoseStamped()
+        history_pose.header.stamp = msg_out.header.stamp
+        history_pose.header.frame_id = 'map'
+        history_pose.pose = msg_out.pose
+        self._pose_history.append((now_ns, history_pose))
+
+        if self._pose_history_window_sec > 0.0:
+            window_ns = int(self._pose_history_window_sec * 1e9)
+            while self._pose_history and (now_ns - self._pose_history[0][0]) > window_ns:
+                self._pose_history.popleft()
+        else:
+            self._pose_history.clear()
+            self._pose_history.append((now_ns, history_pose))
+
+        msg_history = PathMsg()
+        msg_history.header.stamp = now_time.to_msg()
+        msg_history.header.frame_id = 'map'
+        msg_history.poses = [pose for _, pose in self._pose_history]
+        self._pub_pose_history.publish(msg_history)
 
     def _render_processed_image(
         self,

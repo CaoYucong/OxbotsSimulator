@@ -415,6 +415,17 @@
           </div>
           <pre class="data-json" id="decisionMakingJson">Loading...</pre>
         </div>
+
+        <div class="panel data-panel">
+          <div class="data-header">
+            <div>
+              <h2 class="data-title">Pose History</h2>
+              <div class="data-copy">显示 `/data/pose_history`（来自 `/pose_history` 话题），每个点包含独立时间戳与位姿。</div>
+            </div>
+            <div class="data-meta" id="poseHistoryMeta">Waiting for data...</div>
+          </div>
+          <pre class="data-json" id="poseHistoryJson">Loading...</pre>
+        </div>
       </div>
     </div>
 
@@ -438,6 +449,8 @@
       const decisionsMeta = document.getElementById("decisionsMeta");
       const decisionMakingJson = document.getElementById("decisionMakingJson");
       const decisionMakingMeta = document.getElementById("decisionMakingMeta");
+      const poseHistoryJson = document.getElementById("poseHistoryJson");
+      const poseHistoryMeta = document.getElementById("poseHistoryMeta");
       const radarRobotSensorCanvas = document.getElementById("radarRobotSensor");
       const radarRobotOnlyCanvas = document.getElementById("radarRobotOnly");
       const radarRobotWallOnlyCanvas = document.getElementById("radarRobotWallOnly");
@@ -1105,7 +1118,7 @@
       }
 
       async function tick() {
-        const [current, balls, visible, obstacles, waypoints, robotAround, radarHistory, tileSeenTime, ballTileMemory, unseenTileMemory, unseenRegions, textStatus, plannedPath, radarSensorLive, decisionMakingData] = await Promise.all([
+        const [current, balls, visible, obstacles, waypoints, robotAround, radarHistory, tileSeenTime, ballTileMemory, unseenTileMemory, unseenRegions, textStatus, plannedPath, radarSensorLive, decisionMakingData, poseHistory] = await Promise.all([
           fetchJson("/data/current"),
           fetchJson("/data/balls"),
           fetchJson("/data/visible"),
@@ -1120,7 +1133,8 @@
           fetchJson("/data/text-status"),
           fetchJson("/data/all-ball-path"),
           fetchJson("/data/radar_sensor"),
-          fetchJson("/data/decision_making_data")
+          fetchJson("/data/decision_making_data"),
+          fetchJson("/data/pose_history")
         ]);
 
         const robot = current && current.current ? current.current : null;
@@ -1219,6 +1233,14 @@
         obsStat.textContent = `Obstacles: ${obstacleList.length}`;
         simTimeStat.textContent = `Simulation Time: ${textStatus && textStatus.simulation_time !== undefined && textStatus.simulation_time !== null && textStatus.simulation_time !== "" ? `${Number(textStatus.simulation_time).toFixed(3)} s` : "--"}`;
         waypointStatusStat.textContent = `Waypoint Status: ${textStatus && textStatus.waypoint_status ? textStatus.waypoint_status : "--"}`;
+
+        if (poseHistory && Array.isArray(poseHistory.poses)) {
+          poseHistoryJson.textContent = JSON.stringify(poseHistory, null, 2);
+          poseHistoryMeta.textContent = `Updated ${new Date().toLocaleTimeString()} · count=${poseHistory.count ?? poseHistory.poses.length}`;
+        } else {
+          poseHistoryJson.textContent = "{}";
+          poseHistoryMeta.textContent = "No data";
+        }
       }
 
       bindRealtimeRefresh("/data/simulation-stream");

@@ -8,6 +8,7 @@ LOCAL_WS_DEFAULT="$SCRIPT_DIR/ros2_ws"
 
 PI_USER="${PI_USER:-caoyucong}"
 PI_IP="${PI_IP:-192.168.50.2}"
+PI_PASSWORD="${PI_PASSWORD:-041003}"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 REMOTE_WS="${REMOTE_WS:-~/OxbotsSimulator/ROS/ros2_ws}"
 LOCAL_WS="${LOCAL_WS:-$LOCAL_WS_DEFAULT}"
@@ -38,7 +39,7 @@ Options:
   -h, --help    Show this help
 
 Environment overrides:
-  PI_USER, PI_IP, ROS_DISTRO, REMOTE_WS, LOCAL_WS, LOCAL_CONFIG,
+  PI_USER, PI_IP, PI_PASSWORD, ROS_DISTRO, REMOTE_WS, LOCAL_WS, LOCAL_CONFIG,
   REMOTE_PROJECT_ROOT, REMOTE_CONFIG, LAUNCH_PACKAGE, LAUNCH_FILE,
   PREFER_SOURCE_CV_BRIDGE, REMOTE_OFFLINE_ROOT, REMOTE_VISION_OPENCV_ARCHIVE,
   REMOTE_VISION_OPENCV_SRC_DIR
@@ -93,19 +94,45 @@ SSH_COMMON_OPTS=(
   -o ControlPath="$SSH_CONTROL_PATH"
 )
 
+if command -v sshpass >/dev/null 2>&1; then
+  USE_SSHPASS="1"
+  PASS_ESCAPED="$(printf '%q' "$PI_PASSWORD")"
+  RSYNC_SSH_CMD="sshpass -p $PASS_ESCAPED ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH"
+else
+  USE_SSHPASS="0"
+  RSYNC_SSH_CMD="ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH"
+  echo "[WARN] sshpass not found, SSH may prompt for password interactively."
+fi
+
+run_ssh() {
+  if [[ "$USE_SSHPASS" == "1" ]]; then
+    sshpass -p "$PI_PASSWORD" ssh "${SSH_COMMON_OPTS[@]}" "$@"
+  else
+    ssh "${SSH_COMMON_OPTS[@]}" "$@"
+  fi
+}
+
+run_ssh_tty() {
+  if [[ "$USE_SSHPASS" == "1" ]]; then
+    sshpass -p "$PI_PASSWORD" ssh -t "${SSH_COMMON_OPTS[@]}" "$@"
+  else
+    ssh -t "${SSH_COMMON_OPTS[@]}" "$@"
+  fi
+}
+
 mkdir -p "$(dirname "$SSH_CONTROL_PATH")"
 
 cleanup() {
-  ssh "${SSH_COMMON_OPTS[@]}" -O exit "$PI_USER@$PI_IP" >/dev/null 2>&1 || true
+  run_ssh -O exit "$PI_USER@$PI_IP" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 echo "[1/8] Test SSH connectivity: $PI_USER@$PI_IP"
-ssh "${SSH_COMMON_OPTS[@]}" -MNf "$PI_USER@$PI_IP"
-ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "echo '[OK] SSH connected to ' \"\$(hostname)\""
+run_ssh -MNf "$PI_USER@$PI_IP"
+run_ssh "$PI_USER@$PI_IP" "echo '[OK] SSH connected to ' \"\$(hostname)\""
 
 echo "[2/8] Ensure remote directories exist"
-ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "mkdir -p $REMOTE_PROJECT_ROOT $REMOTE_WS"
+run_ssh "$PI_USER@$PI_IP" "mkdir -p $REMOTE_PROJECT_ROOT $REMOTE_WS"
 
 echo "[3/8] Sync local workspace to Raspberry Pi"
 rsync -avz --delete \
@@ -114,19 +141,19 @@ rsync -avz --delete \
   --exclude 'install' \
   --exclude 'log' \
   --exclude 'src/vision_opencv-rolling' \
-  -e "ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH" \
+  -e "$RSYNC_SSH_CMD" \
   "$LOCAL_WS/" "$PI_USER@$PI_IP:$REMOTE_WS/"
 
 echo "[4/8] Sync config.json to Raspberry Pi"
 rsync -avz \
-  -e "ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=$SSH_CONTROL_PATH" \
+  -e "$RSYNC_SSH_CMD" \
   "$LOCAL_CONFIG" "$PI_USER@$PI_IP:$REMOTE_CONFIG"
 
 echo "[5/8] Verify remote package path"
-ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "test -d $REMOTE_WS/src/$LAUNCH_PACKAGE"
+run_ssh "$PI_USER@$PI_IP" "test -d $REMOTE_WS/src/$LAUNCH_PACKAGE"
 
 echo "[6/8] Ensure Python OpenCV runtime exists on Raspberry Pi"
-ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '
+run_ssh "$PI_USER@$PI_IP" "bash -lc '
   if python3 -c \"import cv2\" >/dev/null 2>&1; then
     echo \"[OK] python3-opencv already available\"
   else
@@ -137,7 +164,7 @@ ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '
 '"
 
 echo "[7/8] Ensure ROS cv_bridge runtime exists on Raspberry Pi"
-ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '
+run_ssh "$PI_USER@$PI_IP" "bash -lc '
   source /opt/ros/$ROS_DISTRO/setup.bash
   if [[ \"$PREFER_SOURCE_CV_BRIDGE\" == \"1\" ]]; then
     if [[ ! -d $REMOTE_VISION_OPENCV_SRC_DIR ]]; then
@@ -180,11 +207,11 @@ if [[ "$MODE" == "detach" ]]; then
   LOG_FILE='~/unibots_ros.log'
   REMOTE_CMD+=" && nohup ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE > $LOG_FILE 2>&1 & echo [OK] launched in background, log: $LOG_FILE"
   echo "[8/8] Build and launch (background)"
-  ssh "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
+  run_ssh "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
   echo "Done. To view logs: ssh $PI_USER@$PI_IP 'tail -f ~/unibots_ros.log'"
 else
   REMOTE_CMD+=" && ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE"
   echo "[8/8] Build and launch (foreground)"
   echo "Press Ctrl+C to stop launch on Raspberry Pi."
-  ssh -t "${SSH_COMMON_OPTS[@]}" "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
+  run_ssh_tty "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
 fi

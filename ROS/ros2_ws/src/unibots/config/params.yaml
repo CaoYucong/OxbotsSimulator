@@ -15,7 +15,7 @@ web_bridge_node:
     # Poll rate for fetching upstream simulation data (Hz).
     poll_hz: 10.0
     # HTTP timeout for upstream simulation data requests (sec).
-    request_timeout: 1.0
+    request_timeout: 3.0
     # ROS topic subscribed by web bridge for front camera mirroring.
     camera_topic: /front_camera
     # Mirror the pose_estimation flag into web_bridge_node behavior.
@@ -32,14 +32,14 @@ radar_sensor_node:
     # Poll rate for fetching upstream simulation data (Hz).
     poll_hz: 10.0
     # HTTP timeout for upstream simulation data requests (sec).
-    request_timeout: 1.0
+    request_timeout: 3.0
 
 front_camera_node:
   ros__parameters:
     # Use local USB camera when true; use web upstream camera when false.
     use_real_sensor: true
-    # Preferred USB camera device path (stable symlink). Empty = use index.
-    usb_camera_device: /dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera-video-index0
+    # Preferred USB camera device path. Empty = use index (better when USB port changed).
+    usb_camera_device: ''
     # Fallback USB camera index when usb_camera_device is empty/unavailable.
     usb_camera_index: 0
     # Upstream host for front camera JPEG.
@@ -54,6 +54,11 @@ front_camera_node:
     camera_poll_hz: 10.0
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
+
+timer:
+  ros__parameters:
+    # Timer publish rate for /time topic (Hz).
+    publish_hz: 10.0
 
 decision_node:
   ros__parameters:
@@ -83,3 +88,8 @@ pose_estimation:
     log_every_sec: 0.05
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
     allow_legacy_opencv: true
+
+motion_control_node:
+  ros__parameters:
+    # Motor control tick rate (Hz).
+    control_hz: 10.0
