@@ -36,6 +36,12 @@ radar_sensor_node:
 
 front_camera_node:
   ros__parameters:
+    # Use local USB camera when true; use web upstream camera when false.
+    use_real_sensor: true
+    # Preferred USB camera device path (stable symlink). Empty = use index.
+    usb_camera_device: /dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera-video-index0
+    # Fallback USB camera index when usb_camera_device is empty/unavailable.
+    usb_camera_index: 0
     # Upstream host for front camera JPEG.
     camera_remote_host: 192.168.50.1
     # Upstream port for front camera JPEG.
