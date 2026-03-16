@@ -93,3 +93,12 @@ motion_control_node:
   ros__parameters:
     # Motor control tick rate (Hz).
     control_hz: 10.0
+    # Position input topic consumed by motion controller.
+    position_topic: /current_position
+    # Speed command topic consumed by motion controller.
+    speed_topic: /speed
+    # Angle closed-loop target heading (degrees).
+    target_heading_deg: 10.0
+    # Stop rotating when heading is within this inclusive band (degrees).
+    heading_deadband_min_deg: 9.0
+    heading_deadband_max_deg: 11.0

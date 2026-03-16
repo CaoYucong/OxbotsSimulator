@@ -32,6 +32,8 @@ ROS2 Jazzy Python package providing:
 	- `/current_position` when `pose_estimation` is enabled
 - Topics published by `decision_node`:
 	- `/decisions`, `/decision_making_data`
+- Topics subscribed by `motion_control_node`:
+	- `/current_position`, `/speed`, `/time`
 
 ## Troubleshooting: `cv_bridge` fails with NumPy 2.x
 
