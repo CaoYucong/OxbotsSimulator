@@ -70,8 +70,8 @@ pose_estimation:
     pose_estimation: true
     # Input camera topic for pose estimation.
     camera_topic: /front_camera
-    # Override intrinsic JSON path (empty = use package default config/camera_intrinsic.json,
-    # copied from pose_estimation/camera_intrinsic.json).
+    # Override intrinsic JSON path (empty = use package default config/simulation_camera_intrinsic.json,
+    # copied from pose_estimation/simulation_camera_intrinsic.json).
     intrinsic_path: ''
     # Override tag map JSON path (empty = use package default).
     tag_map_path: ''

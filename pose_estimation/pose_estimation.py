@@ -327,7 +327,7 @@ def main() -> None:
 	parser.add_argument(
 		"--intrinsic",
 		type=Path,
-		default=Path(__file__).with_name("camera_intrinsic.json"),
+		default=Path(__file__).with_name("simulation_camera_intrinsic.json"),
 		help="Path to camera intrinsic JSON",
 	)
 	parser.add_argument(

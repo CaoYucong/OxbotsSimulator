@@ -1,4 +1,7 @@
 import urllib.request
+from datetime import datetime
+from pathlib import Path
+import time
 
 import cv2
 import numpy as np
@@ -11,6 +14,7 @@ from sensor_msgs.msg import Image
 class FrontCameraNode(Node):
     def __init__(self) -> None:
         super().__init__('front_camera_node')
+        default_snapshot_dir = str(Path.home() / 'Desktop' / 'front_camera_snapshots')
 
         self.declare_parameter('use_real_sensor', False)
         self.declare_parameter('usb_camera_device', '')
@@ -21,6 +25,8 @@ class FrontCameraNode(Node):
         self.declare_parameter('camera_topic', '/front_camera')
         self.declare_parameter('camera_poll_hz', 10.0)
         self.declare_parameter('camera_request_timeout', 1.0)
+        self.declare_parameter('snapshot_save_dir', default_snapshot_dir)
+        self.declare_parameter('snapshot_interval_sec', 1.0)
 
         self.use_real_sensor = self.get_parameter('use_real_sensor').get_parameter_value().bool_value
         self.usb_camera_device = self.get_parameter('usb_camera_device').get_parameter_value().string_value.strip()
@@ -33,9 +39,19 @@ class FrontCameraNode(Node):
         self.camera_request_timeout = float(
             self.get_parameter('camera_request_timeout').get_parameter_value().double_value
         )
+        self.snapshot_save_dir = self.get_parameter('snapshot_save_dir').get_parameter_value().string_value.strip()
+        self.snapshot_interval_sec = float(
+            self.get_parameter('snapshot_interval_sec').get_parameter_value().double_value
+        )
 
         if self.camera_request_timeout <= 0.0:
             self.camera_request_timeout = 1.0
+        if not self.snapshot_save_dir:
+            self.snapshot_save_dir = default_snapshot_dir
+        if self.snapshot_interval_sec <= 0.0:
+            self.snapshot_interval_sec = 1.0
+
+        self.snapshot_save_dir = str(Path(self.snapshot_save_dir).expanduser().resolve())
 
         self._url = f'http://{self.camera_remote_host}:{self.camera_remote_port}{self.camera_path}'
         self._pub_front_camera = self.create_publisher(Image, self.camera_topic, 10)
@@ -44,6 +60,14 @@ class FrontCameraNode(Node):
         self._usb_camera_error_logged = False
         self._usb_capture = None
         self._usb_capture_source = ''
+        self._snapshot_dir = Path(self.snapshot_save_dir)
+        self._snapshot_last_save_ts = 0.0
+        self._snapshot_error_logged = False
+
+        try:
+            self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self.get_logger().warn(f'failed to create snapshot_save_dir={self._snapshot_dir}: {exc}')
 
         if self.use_real_sensor:
             if self.usb_camera_device:
@@ -78,12 +102,31 @@ class FrontCameraNode(Node):
         if self.use_real_sensor:
             self.get_logger().info(
                 f'front_camera_node started; source=usb_camera({self._usb_capture_source or "unavailable"}), '
-                f'topic={self.camera_topic}, poll_hz={camera_poll_hz}'
+                f'topic={self.camera_topic}, poll_hz={camera_poll_hz}, '
+                f'snapshot_dir={self._snapshot_dir}, snapshot_interval_sec={self.snapshot_interval_sec}'
             )
         else:
             self.get_logger().info(
-                f'front_camera_node started; source=web, upstream={self._url}, topic={self.camera_topic}, poll_hz={camera_poll_hz}'
+                f'front_camera_node started; source=web, upstream={self._url}, topic={self.camera_topic}, poll_hz={camera_poll_hz}, '
+                f'snapshot_dir={self._snapshot_dir}, snapshot_interval_sec={self.snapshot_interval_sec}'
             )
+
+    def _save_snapshot_if_due(self, image: np.ndarray) -> None:
+        now = time.time()
+        if (now - self._snapshot_last_save_ts) < self.snapshot_interval_sec:
+            return
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        image_path = self._snapshot_dir / f'front_camera_{timestamp}.jpg'
+        ok = cv2.imwrite(str(image_path), image)
+        if not ok:
+            if not self._snapshot_error_logged:
+                self.get_logger().warn(f'failed to save front camera snapshot to {image_path}')
+                self._snapshot_error_logged = True
+            return
+
+        self._snapshot_last_save_ts = now
+        self._snapshot_error_logged = False
 
     def _poll_camera_once(self) -> None:
         if self.use_real_sensor:
@@ -100,11 +143,15 @@ class FrontCameraNode(Node):
                     self._usb_camera_error_logged = True
                 return
 
+            # image = cv2.flip(image, 0)
+
             self._usb_camera_error_logged = False
             msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
             msg.header.stamp = self.get_clock().now().to_msg()
             msg.header.frame_id = 'front_camera'
             self._pub_front_camera.publish(msg)
+            # Snapshot auto-save disabled (no longer needed).
+            # self._save_snapshot_if_due(image)
             return
 
         try:
@@ -136,6 +183,8 @@ class FrontCameraNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'front_camera'
         self._pub_front_camera.publish(msg)
+        # Snapshot auto-save disabled (no longer needed).
+        # self._save_snapshot_if_due(image)
 
 
 def main(args=None) -> None:

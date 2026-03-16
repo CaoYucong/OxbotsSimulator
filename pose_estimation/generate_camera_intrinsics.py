@@ -69,7 +69,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).with_name("camera_intrinsic.json"),
+        default=Path(__file__).with_name("simulation_camera_intrinsic.json"),
         help="Output camera intrinsic JSON file",
     )
     args = parser.parse_args()

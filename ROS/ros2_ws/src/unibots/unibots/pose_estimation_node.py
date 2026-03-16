@@ -8,6 +8,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import rclpy
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
@@ -18,8 +19,24 @@ PERF_METRICS_ENABLED = True
 
 
 def _load_intrinsics(intrinsic_path: Path) -> tuple[np.ndarray, np.ndarray]:
+    suffix = intrinsic_path.suffix.lower()
     with intrinsic_path.open('r', encoding='utf-8') as f:
-        payload = json.load(f)
+        if suffix in ('.yaml', '.yml'):
+            payload = yaml.safe_load(f)
+        else:
+            payload = json.load(f)
+
+    if isinstance(payload, dict) and 'camera_matrix' in payload and 'distortion_coefficients' in payload:
+        cm = payload.get('camera_matrix', {}).get('data', [])
+        if len(cm) != 9:
+            raise RuntimeError(f'Invalid camera_matrix in {intrinsic_path}: expected 9 values, got {len(cm)}')
+        K = np.array(cm, dtype=np.float64).reshape(3, 3)
+
+        dist = payload.get('distortion_coefficients', {}).get('data', [])
+        if not dist:
+            dist = [0.0, 0.0, 0.0, 0.0, 0.0]
+        dist_coeffs = np.array(dist, dtype=np.float64).reshape(-1, 1)
+        return K, dist_coeffs
 
     intr = payload.get('intrinsics', {})
     fx = float(intr['fx'])
@@ -220,6 +237,7 @@ class PoseEstimationNode(Node):
         self.declare_parameter('log_every_sec', 1.0)
         self.declare_parameter('pose_estimation', False)
         self.declare_parameter('allow_legacy_opencv', False)
+        self.declare_parameter('use_real_sensor', False)
 
         camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
@@ -231,6 +249,7 @@ class PoseEstimationNode(Node):
         self._allow_legacy_opencv = bool(
             self.get_parameter('allow_legacy_opencv').get_parameter_value().bool_value
         )
+        self._use_real_sensor = bool(self.get_parameter('use_real_sensor').get_parameter_value().bool_value)
 
         if self._enabled:
             ok_runtime, reason = _opencv_apriltag_runtime_supported()
@@ -246,10 +265,14 @@ class PoseEstimationNode(Node):
                     self._enabled = False
 
         pkg_share = get_package_share_directory('unibots')
-        default_intrinsic = os.path.join(pkg_share, 'config', 'camera_intrinsic.json')
+        default_intrinsic_sim = os.path.join(pkg_share, 'config', 'simulation_camera_intrinsic.json')
+        default_intrinsic_real = os.path.join(pkg_share, 'config', 'real_camera_intrinsic.yaml')
         default_tag_map = os.path.join(pkg_share, 'config', 'tag_world_map.json')
 
-        intrinsic_path = Path(intrinsic_path_raw) if intrinsic_path_raw else Path(default_intrinsic)
+        if intrinsic_path_raw:
+            intrinsic_path = Path(intrinsic_path_raw)
+        else:
+            intrinsic_path = Path(default_intrinsic_real if self._use_real_sensor else default_intrinsic_sim)
         tag_map_path = Path(tag_map_path_raw) if tag_map_path_raw else Path(default_tag_map)
 
         self.K, self.dist_coeffs = _load_intrinsics(intrinsic_path)
@@ -439,12 +462,12 @@ class PoseEstimationNode(Node):
                 for k in range(4):
                     img_pt = img_corners[img_order[k]]
                     world_pt = world_corners[world_order[k]]
-                    wx, wy = float(world_pt[0]), float(world_pt[1])
+                    wx, wy, wz = float(world_pt[0]), float(world_pt[1]), float(world_pt[2])
                     px = int(img_pt[0]) + 4
                     py = int(img_pt[1]) - 4
                     cv2.putText(
                         overlay,
-                        f'({wx:.2f},{wy:.2f})',
+                        f'({wx:.2f},{wy:.2f},{wz:.2f})',
                         (px, py),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.35,
@@ -456,12 +479,15 @@ class PoseEstimationNode(Node):
         tag_count = int(len(ids)) if ids is not None else 0
         if estimate is not None:
             robot = estimate['robot_pose_world']
+            camera = estimate['camera_position_world']
             text = (
                 f"tags={tag_count} robot=({robot['x']:.2f}, {robot['y']:.2f}, "
                 f"{robot['heading_x0']:.0f}deg)"
             )
+            camera_text = f"camera=({camera['x']:.2f}, {camera['y']:.2f}, {camera['z']:.2f})"
         else:
             text = f"tags={tag_count} pose=unavailable"
+            camera_text = ''
 
         cv2.putText(
             overlay,
@@ -473,6 +499,17 @@ class PoseEstimationNode(Node):
             2,
             cv2.LINE_AA,
         )
+        if camera_text:
+            cv2.putText(
+                overlay,
+                camera_text,
+                (12, 58),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
         return overlay
 
 

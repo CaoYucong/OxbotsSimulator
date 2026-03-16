@@ -14,7 +14,8 @@ setup(
             'share/' + package_name + '/config',
             [
                 'config/params.yaml',
-                'config/camera_intrinsic.json',
+                'config/real_camera_intrinsic.yaml',
+                'config/simulation_camera_intrinsic.json',
                 'config/tag_world_map.json',
             ],
         ),
