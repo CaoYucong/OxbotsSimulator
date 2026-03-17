@@ -132,6 +132,25 @@ def _rotation_matrix_to_euler_zyx_deg(R: np.ndarray) -> tuple[float, float, floa
     return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
 
 
+def _euler_zyx_deg_to_quaternion(roll_deg: float, pitch_deg: float, yaw_deg: float) -> tuple[float, float, float, float]:
+    roll = math.radians(roll_deg)
+    pitch = math.radians(pitch_deg)
+    yaw = math.radians(yaw_deg)
+
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+
+    qw = cy * cp * cr + sy * sp * sr
+    qx = cy * cp * sr - sy * sp * cr
+    qy = cy * sp * cr + sy * cp * sr
+    qz = sy * cp * cr - cy * sp * sr
+    return qx, qy, qz, qw
+
+
 def estimate_camera_world_position(
     image: np.ndarray,
     K: np.ndarray,
@@ -336,6 +355,7 @@ class PoseEstimationNode(Node):
             self._perf_total_ms = 0.0
 
         self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
+        self._pub_camera_pose = self.create_publisher(PoseStamped, '/camera_pose', 10)
         self._pub_pose_history = self.create_publisher(PathMsg, '/pose_history', 10)
         self._pub_processed_image = self.create_publisher(Image, '/processed_image', 10)
         self.create_subscription(Image, camera_topic, self._on_image, 10)
@@ -553,14 +573,14 @@ class PoseEstimationNode(Node):
                 avg_detect_ms = self._perf_detect_ms / max(1, self._perf_success)
                 avg_pnp_ms = self._perf_pnp_ms / max(1, self._perf_success)
                 avg_total_ms = self._perf_total_ms / max(1, self._perf_success)
-                self.get_logger().info(
-                    'Estimated pose '
-                    f"robot=({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.0f}deg), "
-                    f"camera=({cam['x']:.2f}, {cam['y']:.2f}, {cam['z']:.2f}), "
-                    f'tags={used_tags}, points={used_points}, '
-                    f'proc_hz={proc_hz:.2f}, solve_hz={solve_hz:.2f}, tags_per_sec={tags_per_sec:.2f}, '
-                    f'detect_ms={avg_detect_ms:.2f}, pnp_ms={avg_pnp_ms:.2f}, total_ms={avg_total_ms:.2f}'
-                )
+                # self.get_logger().info(
+                #     'Estimated pose '
+                #     f"robot=({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.0f}deg), "
+                #     f"camera=({cam['x']:.2f}, {cam['y']:.2f}, {cam['z']:.2f}), "
+                #     f'tags={used_tags}, points={used_points}, '
+                #     f'proc_hz={proc_hz:.2f}, solve_hz={solve_hz:.2f}, tags_per_sec={tags_per_sec:.2f}, '
+                #     f'detect_ms={avg_detect_ms:.2f}, pnp_ms={avg_pnp_ms:.2f}, total_ms={avg_total_ms:.2f}'
+                # )
                 self._perf_window_start = now
                 self._perf_frames = 0
                 self._perf_success = 0
@@ -569,16 +589,37 @@ class PoseEstimationNode(Node):
                 self._perf_pnp_ms = 0.0
                 self._perf_total_ms = 0.0
             else:
-                self.get_logger().info(
-                    'Estimated pose '
-                    f"robot=({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.2f}deg), "
-                    f"camera=({cam['x']:.2f}, {cam['y']:.2f}, {cam['z']:.2f}), "
-                    f'tags={used_tags}, points={used_points}'
-                )
+                pass
+                # self.get_logger().info(
+                #     'Estimated pose '
+                #     f"robot=({robot['x']:.2f}, {robot['y']:.2f}, {robot['heading_x0']:.2f}deg), "
+                #     f"camera=({cam['x']:.2f}, {cam['y']:.2f}, {cam['z']:.2f}), "
+                #     f'tags={used_tags}, points={used_points}'
+                # )
 
         robot = estimate['robot_pose_world']
+        camera = estimate['camera_position_world']
+        camera_rpy = estimate['camera_orientation_world_deg']
         now_time = self.get_clock().now()
         now_ns = now_time.nanoseconds
+
+        cam_qx, cam_qy, cam_qz, cam_qw = _euler_zyx_deg_to_quaternion(
+            roll_deg=float(camera_rpy['roll']),
+            pitch_deg=float(camera_rpy['pitch']),
+            yaw_deg=float(camera_rpy['yaw']),
+        )
+        msg_camera = PoseStamped()
+        msg_camera.header.stamp = now_time.to_msg()
+        msg_camera.header.frame_id = 'map'
+        msg_camera.pose.position.x = float(camera['x'])
+        msg_camera.pose.position.y = float(camera['y'])
+        msg_camera.pose.position.z = float(camera['z'])
+        msg_camera.pose.orientation.x = cam_qx
+        msg_camera.pose.orientation.y = cam_qy
+        msg_camera.pose.orientation.z = cam_qz
+        msg_camera.pose.orientation.w = cam_qw
+        self._pub_camera_pose.publish(msg_camera)
+
         measured_x = float(robot['x'])
         measured_y = float(robot['y'])
         measured_heading_deg = float(robot['heading_x0'])

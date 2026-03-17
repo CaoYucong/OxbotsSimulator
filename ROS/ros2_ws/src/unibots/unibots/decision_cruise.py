@@ -710,6 +710,10 @@ def _parse_ball_lines(text: str):
         line = raw.strip()
         if not line:
             continue
+        if line.lower().startswith('visible_balls:'):
+            line = line[len('visible_balls:') :].strip()
+            if not line:
+                continue
         if line.startswith("(") and line.endswith(")"):
             line = line[1:-1]
         parts = [p.strip() for p in line.split(",")]

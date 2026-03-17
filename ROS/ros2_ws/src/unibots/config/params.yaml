@@ -65,6 +65,10 @@ ball_detection_node:
     ball_pose_topic: /ball_pose
     # Topic publishing all detected balls JSON payload.
     ball_detections_topic: /ball_detections
+    # Robot pose topic used to convert camera-relative ball positions to world coordinates.
+    current_position_topic: /current_position
+    # Text topic mirroring absolute ball positions for decision module.
+    visible_balls_topic: /visible_balls
     # Local Roboflow Inference server base URL on Raspberry Pi.
     local_inference_url: http://127.0.0.1:9001
     # Local model route in inference server (usually dataset/version).
@@ -74,9 +78,26 @@ ball_detection_node:
     # HTTP timeout for Roboflow inference request (sec).
     request_timeout_sec: 1.0
     # Inference loop frequency (Hz).
-    infer_hz: 0.1
+    infer_hz: 1.0
     # Filter out detections below this confidence.
     min_confidence: 0.25
+    # Real camera intrinsic YAML path; empty = auto-detect package config/real_camera_intrinsic.yaml.
+    camera_intrinsic_path: ''
+    # Ball physical diameter (meters), used to estimate depth from bbox size.
+    ball_diameter_m: 0.043
+    # Ping-pong ball physical diameter (meters).
+    ping_ball_diameter_m: 0.040
+    # Metal ball physical diameter (meters).
+    metal_ball_diameter_m: 0.020
+    # Camera optical center height in world/ground frame (meters).
+    camera_height_m: 0.210
+    # Ping-pong ball center height in world/ground frame (meters).
+    ping_ball_center_height_m: 0.020
+    # Metal ball center height in world/ground frame (meters).
+    metal_ball_center_height_m: 0.010
+    # Camera offset in robot frame (meters), where +x is forward and +y is left.
+    camera_offset_x_robot: 0.105
+    camera_offset_y_robot: 0.0
 
 timer:
   ros__parameters:
@@ -95,7 +116,7 @@ decision_node:
 pose_estimation:
   ros__parameters:
     # Enable pose_estimation node and publish /current_position.
-    pose_estimation: false
+    pose_estimation: true
     # Input camera topic for pose estimation.
     camera_topic: /front_camera
     # Override intrinsic JSON path (empty = use package default config/simulation_camera_intrinsic.json,
@@ -110,7 +131,7 @@ pose_estimation:
     # Throttle pose logs to once per N seconds.
     log_every_sec: 0.05
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
-    allow_legacy_opencv: false
+    allow_legacy_opencv: true
 
 motion_control_node:
   ros__parameters:

@@ -406,14 +406,7 @@ def _build_handler(state: _MirrorState):
             return out
 
         def _get_obstacles(self, sim_payload: dict):
-            out = []
-            for line in _read_lines_from_text(_read_text_value(sim_payload, "obstacle_robot")):
-                item = _parse_xy_bearing(line)
-                if item is None:
-                    continue
-                x, y, bearing = item
-                out.append({"x": x, "y": y, "bearing": bearing})
-            return out
+            return []
 
         def _get_dynamic_waypoint(self, decisions_payload: dict):
             for line in _read_lines_from_text(_read_text_value(decisions_payload, "dynamic_waypoints")):
@@ -1016,10 +1009,6 @@ class WebBridgeNode(Node):
                 msg.pose.orientation.w = math.cos(theta * 0.5)
                 self.pub_current_position.publish(msg)
 
-        vis_msg = String()
-        vis_msg.data = visible_text
-        self.pub_visible_balls.publish(vis_msg)
-
         wp_msg = String()
         wp_msg.data = waypoint_text
         self.pub_waypoint_status.publish(wp_msg)
@@ -1184,9 +1173,12 @@ def main(args=None) -> None:
     node = WebBridgeNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
