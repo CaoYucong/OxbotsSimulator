@@ -1,4 +1,5 @@
 import base64
+import errno
 import json
 import math
 import os
@@ -274,6 +275,12 @@ class _MirrorState:
                 "seq": 0,
             },
             "/data/processed_image": {
+                "body": b"",
+                "content_type": "image/jpeg",
+                "has_data": False,
+                "seq": 0,
+            },
+            "/data/ball_detection_image": {
                 "body": b"",
                 "content_type": "image/jpeg",
                 "has_data": False,
@@ -559,6 +566,42 @@ def _build_handler(state: _MirrorState):
 </html>"""
                 self._send_text(page, 200, "text/html")
                 return
+            if path == "/ball_detection_image":
+                page = """<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>Ball Detection Image</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #0f1115; color: #f3f4f6; margin: 0; }
+        .wrap { padding: 16px; }
+        .frame { max-width: 100%; aspect-ratio: 16 / 9; border: 1px solid #23262d; background: #151a21; }
+        .frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .meta { font-size: 12px; color: #9ca3af; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <div class=\"wrap\">
+        <h2>Ball Detection Image</h2>
+        <div class=\"frame\"><img id=\"cam\" alt=\"ball detection image\" /></div>
+        <div class=\"meta\" id=\"meta\"></div>
+    </div>
+    <script>
+        const img = document.getElementById('cam');
+        const meta = document.getElementById('meta');
+        function refresh() {
+            const ts = Date.now();
+            img.src = `/data/ball_detection_image?t=${ts}`;
+            meta.textContent = `Updated ${new Date(ts).toLocaleTimeString()}`;
+        }
+        refresh();
+        setInterval(refresh, 200);
+    </script>
+</body>
+</html>"""
+                self._send_text(page, 200, "text/html")
+                return
 
             sim_payload = _state_payload(state, "/data/simulation_data")
             decisions_payload = _state_payload(state, "/data/decisions")
@@ -650,6 +693,13 @@ def _build_handler(state: _MirrorState):
                 else:
                     self._send_text("no image", 404, "text/plain")
                 return
+            if path == "/data/ball_detection_image":
+                item = state.get("/data/ball_detection_image")
+                if item and item.get("has_data") and item.get("body"):
+                    self._send_bytes(item["body"], 200, item.get("content_type") or "image/jpeg")
+                else:
+                    self._send_text("no image", 404, "text/plain")
+                return
             if path == "/data/simulation-stream":
                 self._stream_json_payload("/data/simulation_data")
                 return
@@ -688,6 +738,7 @@ def _build_handler(state: _MirrorState):
                 "/data/decision_making_data",
                 "/front_camera",
                 "/processed_image",
+                "/ball_detection_image",
             ):
                 self.send_response(404)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -738,6 +789,38 @@ def _build_handler(state: _MirrorState):
                 self._send_text("ok", 200, "text/plain")
                 return
 
+            if path == "/ball_detection_image":
+                if not body:
+                    self._send_text("empty payload", 400, "text/plain")
+                    return
+                content_type = self.headers.get("Content-Type", "application/octet-stream")
+                if content_type.startswith("application/json"):
+                    try:
+                        payload = json.loads(body.decode("utf-8", errors="ignore"))
+                        if not isinstance(payload, dict):
+                            raise ValueError("payload must be object")
+                        data_uri = payload.get("image")
+                        image_base64 = payload.get("image_base64")
+                        mime = payload.get("mime")
+                        if isinstance(data_uri, str) and data_uri.startswith("data:"):
+                            header, b64 = data_uri.split(",", 1)
+                            mime = header.split(";", 1)[0].split(":", 1)[1]
+                            image_bytes = base64.b64decode(b64)
+                            state.set("/data/ball_detection_image", image_bytes, mime)
+                        elif isinstance(image_base64, str):
+                            image_bytes = base64.b64decode(image_base64)
+                            state.set("/data/ball_detection_image", image_bytes, mime or "image/jpeg")
+                        else:
+                            self._send_text("invalid image payload", 400, "text/plain")
+                            return
+                    except Exception:
+                        self._send_text("invalid json", 400, "text/plain")
+                        return
+                else:
+                    state.set("/data/ball_detection_image", body, content_type)
+                self._send_text("ok", 200, "text/plain")
+                return
+
             if not body:
                 body = b"{}"
             try:
@@ -775,6 +858,7 @@ class WebBridgeNode(Node):
         self.declare_parameter('remote_port', 5003)
         self.declare_parameter('local_host', '127.0.0.1')
         self.declare_parameter('local_port', 5003)
+        self.declare_parameter('allow_local_port_fallback', True)
         self.declare_parameter('poll_hz', 10.0)
         self.declare_parameter('request_timeout', 1.0)
         self.declare_parameter('camera_topic', '/front_camera')
@@ -785,6 +869,9 @@ class WebBridgeNode(Node):
         self.remote_port = int(self.get_parameter('remote_port').get_parameter_value().integer_value)
         self.local_host = self.get_parameter('local_host').get_parameter_value().string_value
         self.local_port = int(self.get_parameter('local_port').get_parameter_value().integer_value)
+        self.allow_local_port_fallback = bool(
+            self.get_parameter('allow_local_port_fallback').get_parameter_value().bool_value
+        )
         poll_hz = float(self.get_parameter('poll_hz').get_parameter_value().double_value)
         self.request_timeout = float(self.get_parameter('request_timeout').get_parameter_value().double_value)
         self.camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
@@ -814,7 +901,21 @@ class WebBridgeNode(Node):
         self._simulation_data_url_index = 0
 
         self._state = _MirrorState()
-        self._server = ThreadingHTTPServer((self.local_host, self.local_port), _build_handler(self._state))
+        handler = _build_handler(self._state)
+        requested_local_port = self.local_port
+        try:
+            self._server = ThreadingHTTPServer((self.local_host, requested_local_port), handler)
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE and self.allow_local_port_fallback:
+                self.get_logger().warn(
+                    f'local mirror port {requested_local_port} is already in use; '
+                    'falling back to an ephemeral available port'
+                )
+                self._server = ThreadingHTTPServer((self.local_host, 0), handler)
+            else:
+                raise
+
+        self.local_port = int(self._server.server_address[1])
         self._server_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._server_thread.start()
 
@@ -839,6 +940,7 @@ class WebBridgeNode(Node):
         self.pub_waypoint_status = self.create_publisher(String, '/waypoint_status', 10)
         self.create_subscription(Image, self.camera_topic, self._on_front_camera_msg, 10)
         self.create_subscription(Image, '/processed_image', self._on_processed_image_msg, 10)
+        self.create_subscription(Image, '/ball_detection_image', self._on_ball_detection_image_msg, 10)
 
         self._cv_bridge = CvBridge()
 
@@ -1014,6 +1116,16 @@ class WebBridgeNode(Node):
         if not ok:
             return
         self._state.set('/data/processed_image', encoded.tobytes(), 'image/jpeg')
+
+    def _on_ball_detection_image_msg(self, msg: Image) -> None:
+        try:
+            image = self._cv_bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        except Exception:
+            return
+        ok, encoded = cv2.imencode('.jpg', image)
+        if not ok:
+            return
+        self._state.set('/data/ball_detection_image', encoded.tobytes(), 'image/jpeg')
 
     def _on_decisions(self, msg: String) -> None:
         payload = self._parse_json_payload(msg.data)

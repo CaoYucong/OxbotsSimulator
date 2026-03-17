@@ -55,6 +55,29 @@ front_camera_node:
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
 
+ball_detection_node:
+  ros__parameters:
+    # Input topic consumed by Roboflow detector.
+    front_camera_topic: /front_camera
+    # Always-published visualization topic from ball detection node.
+    ball_detection_image_topic: /ball_detection_image
+    # Topic publishing best detected ball 2D pose (normalized image x/y) and confidence.
+    ball_pose_topic: /ball_pose
+    # Topic publishing all detected balls JSON payload.
+    ball_detections_topic: /ball_detections
+    # Local Roboflow Inference server base URL on Raspberry Pi.
+    local_inference_url: http://127.0.0.1:9001
+    # Local model route in inference server (usually dataset/version).
+    local_model_id: unibot-ball-detection/1
+    # Roboflow API key for local inference server (optional; required only when server enforces auth).
+    roboflow_api_key: ''
+    # HTTP timeout for Roboflow inference request (sec).
+    request_timeout_sec: 1.0
+    # Inference loop frequency (Hz).
+    infer_hz: 0.1
+    # Filter out detections below this confidence.
+    min_confidence: 0.25
+
 timer:
   ros__parameters:
     # Timer publish rate for /time topic (Hz).
@@ -72,7 +95,7 @@ decision_node:
 pose_estimation:
   ros__parameters:
     # Enable pose_estimation node and publish /current_position.
-    pose_estimation: true
+    pose_estimation: false
     # Input camera topic for pose estimation.
     camera_topic: /front_camera
     # Override intrinsic JSON path (empty = use package default config/simulation_camera_intrinsic.json,
@@ -87,7 +110,7 @@ pose_estimation:
     # Throttle pose logs to once per N seconds.
     log_every_sec: 0.05
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
-    allow_legacy_opencv: true
+    allow_legacy_opencv: false
 
 motion_control_node:
   ros__parameters:

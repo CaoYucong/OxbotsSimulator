@@ -12,6 +12,11 @@ def generate_launch_description() -> LaunchDescription:
         params_payload = yaml.safe_load(f) or {}
     front_camera_params = params_payload.get('front_camera_node', {}).get('ros__parameters', {})
     use_real_sensor = bool(front_camera_params.get('use_real_sensor', False))
+    roboflow_api_key = os.getenv('ROBOFLOW_API_KEY', '').strip()
+
+    ball_detection_parameters = [params]
+    if roboflow_api_key:
+        ball_detection_parameters.append({'roboflow_api_key': roboflow_api_key})
 
     return LaunchDescription([
         Node(
@@ -34,6 +39,13 @@ def generate_launch_description() -> LaunchDescription:
             name='front_camera_node',
             output='screen',
             parameters=[params],
+        ),
+        Node(
+            package='unibots',
+            executable='ball_detection_node',
+            name='ball_detection_node',
+            output='screen',
+            parameters=ball_detection_parameters,
         ),
         Node(
             package='unibots',

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -21,6 +22,14 @@ PREFER_SOURCE_CV_BRIDGE="${PREFER_SOURCE_CV_BRIDGE:-1}"
 REMOTE_OFFLINE_ROOT="${REMOTE_OFFLINE_ROOT:-~/offline_pkgs}"
 REMOTE_VISION_OPENCV_ARCHIVE="${REMOTE_VISION_OPENCV_ARCHIVE:-$REMOTE_OFFLINE_ROOT/src/vision_opencv-rolling.tar.gz}"
 REMOTE_VISION_OPENCV_SRC_DIR="${REMOTE_VISION_OPENCV_SRC_DIR:-$REMOTE_WS/src/vision_opencv-rolling}"
+START_LOCAL_INFERENCE="${START_LOCAL_INFERENCE:-1}"
+INFERENCE_HOST="${INFERENCE_HOST:-127.0.0.1}"
+INFERENCE_PORT="${INFERENCE_PORT:-9001}"
+INFERENCE_READY_TIMEOUT="${INFERENCE_READY_TIMEOUT:-30}"
+INFERENCE_IMAGE_REF="${INFERENCE_IMAGE_REF:-roboflow/roboflow-inference-server-cpu:latest}"
+REMOTE_INFERENCE_IMAGE_ARCHIVE="${REMOTE_INFERENCE_IMAGE_ARCHIVE:-/home/${PI_USER}/roboflow-inference-server-cpu-latest-arm64.tar.gz}"
+REMOTE_INFERENCE_START_CMD="${REMOTE_INFERENCE_START_CMD:-docker run -d --restart unless-stopped --name unibots-roboflow-inference -p ${INFERENCE_PORT}:9001 ${INFERENCE_IMAGE_REF}}"
+ROBOFLOW_API_KEY="${ROBOFLOW_API_KEY:-}"
 
 CONTROL_PATH_DEFAULT="$HOME/.ssh/cm-%C"
 SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-$CONTROL_PATH_DEFAULT}"
@@ -42,7 +51,9 @@ Environment overrides:
   PI_USER, PI_IP, PI_PASSWORD, ROS_DISTRO, REMOTE_WS, LOCAL_WS, LOCAL_CONFIG,
   REMOTE_PROJECT_ROOT, REMOTE_CONFIG, LAUNCH_PACKAGE, LAUNCH_FILE,
   PREFER_SOURCE_CV_BRIDGE, REMOTE_OFFLINE_ROOT, REMOTE_VISION_OPENCV_ARCHIVE,
-  REMOTE_VISION_OPENCV_SRC_DIR
+  REMOTE_VISION_OPENCV_SRC_DIR, START_LOCAL_INFERENCE, INFERENCE_HOST,
+  INFERENCE_PORT, INFERENCE_READY_TIMEOUT, INFERENCE_IMAGE_REF,
+  REMOTE_INFERENCE_IMAGE_ARCHIVE, REMOTE_INFERENCE_START_CMD, ROBOFLOW_API_KEY
 
 Examples:
   ./ROS/deploy_and_run_ros_pi.sh
@@ -87,6 +98,32 @@ if [[ ! -f "$LOCAL_CONFIG" ]]; then
   exit 1
 fi
 
+if [[ -z "$ROBOFLOW_API_KEY" ]] && command -v python3 >/dev/null 2>&1; then
+  ROBOFLOW_API_KEY="$(python3 - "$LOCAL_CONFIG" <<'PY'
+import json
+import sys
+
+config_path = sys.argv[1]
+try:
+    with open(config_path, 'r', encoding='utf-8') as f:
+        payload = json.load(f)
+except Exception:
+    print('', end='')
+    raise SystemExit(0)
+
+key = payload.get('roboflow_api_key', '')
+if isinstance(key, str):
+    print(key.strip(), end='')
+PY
+)"
+fi
+
+if [[ -n "$ROBOFLOW_API_KEY" ]]; then
+  echo "[INFO] Roboflow API key detected"
+else
+  echo "[WARN] ROBOFLOW_API_KEY is empty; Roboflow model endpoint may return 401."
+fi
+
 SSH_COMMON_OPTS=(
   -o ConnectTimeout=5
   -o ControlMaster=auto
@@ -127,14 +164,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/8] Test SSH connectivity: $PI_USER@$PI_IP"
+echo "[1/9] Test SSH connectivity: $PI_USER@$PI_IP"
 run_ssh -MNf "$PI_USER@$PI_IP"
 run_ssh "$PI_USER@$PI_IP" "echo '[OK] SSH connected to ' \"\$(hostname)\""
 
-echo "[2/8] Ensure remote directories exist"
+echo "[2/9] Ensure remote directories exist"
 run_ssh "$PI_USER@$PI_IP" "mkdir -p $REMOTE_PROJECT_ROOT $REMOTE_WS"
 
-echo "[3/8] Sync local workspace to Raspberry Pi"
+echo "[3/9] Sync local workspace to Raspberry Pi"
 rsync -avz --delete \
   --exclude '.git' \
   --exclude 'build' \
@@ -144,15 +181,15 @@ rsync -avz --delete \
   -e "$RSYNC_SSH_CMD" \
   "$LOCAL_WS/" "$PI_USER@$PI_IP:$REMOTE_WS/"
 
-echo "[4/8] Sync config.json to Raspberry Pi"
+echo "[4/9] Sync config.json to Raspberry Pi"
 rsync -avz \
   -e "$RSYNC_SSH_CMD" \
   "$LOCAL_CONFIG" "$PI_USER@$PI_IP:$REMOTE_CONFIG"
 
-echo "[5/8] Verify remote package path"
+echo "[5/9] Verify remote package path"
 run_ssh "$PI_USER@$PI_IP" "test -d $REMOTE_WS/src/$LAUNCH_PACKAGE"
 
-echo "[6/8] Ensure Python OpenCV runtime exists on Raspberry Pi"
+echo "[6/9] Ensure Python OpenCV runtime exists on Raspberry Pi"
 run_ssh "$PI_USER@$PI_IP" "bash -lc '
   if python3 -c \"import cv2\" >/dev/null 2>&1; then
     echo \"[OK] python3-opencv already available\"
@@ -163,7 +200,7 @@ run_ssh "$PI_USER@$PI_IP" "bash -lc '
   fi
 '"
 
-echo "[7/8] Ensure ROS cv_bridge runtime exists on Raspberry Pi"
+echo "[7/9] Ensure ROS cv_bridge runtime exists on Raspberry Pi"
 run_ssh "$PI_USER@$PI_IP" "bash -lc '
   source /opt/ros/$ROS_DISTRO/setup.bash
   if [[ \"$PREFER_SOURCE_CV_BRIDGE\" == \"1\" ]]; then
@@ -197,21 +234,142 @@ run_ssh "$PI_USER@$PI_IP" "bash -lc '
 
 REMOTE_CMD="source /opt/ros/$ROS_DISTRO/setup.bash && cd $REMOTE_WS"
 
+if [[ -n "$ROBOFLOW_API_KEY" ]]; then
+  REMOTE_CMD="export ROBOFLOW_API_KEY=$(printf '%q' "$ROBOFLOW_API_KEY") && $REMOTE_CMD"
+fi
+
 if [[ "$SKIP_BUILD" != "1" ]]; then
   REMOTE_CMD+=" && colcon build --symlink-install"
 fi
 
 REMOTE_CMD+=" && source install/setup.bash"
 
+if [[ "$START_LOCAL_INFERENCE" == "1" ]]; then
+  echo "[8/9] Ensure local AI inference service exists on Raspberry Pi"
+  REMOTE_INFERENCE_START_CMD_B64="$(printf '%s' "$REMOTE_INFERENCE_START_CMD" | base64 | tr -d '\n')"
+  run_ssh "$PI_USER@$PI_IP" \
+    INFERENCE_HOST="$INFERENCE_HOST" \
+    INFERENCE_PORT="$INFERENCE_PORT" \
+    INFERENCE_READY_TIMEOUT="$INFERENCE_READY_TIMEOUT" \
+    INFERENCE_IMAGE_REF="$INFERENCE_IMAGE_REF" \
+    REMOTE_INFERENCE_IMAGE_ARCHIVE="$REMOTE_INFERENCE_IMAGE_ARCHIVE" \
+    ROBOFLOW_API_KEY="$ROBOFLOW_API_KEY" \
+    REMOTE_INFERENCE_START_CMD_B64="$REMOTE_INFERENCE_START_CMD_B64" \
+    "bash -s" <<'REMOTE_INFERENCE_SCRIPT'
+REMOTE_INFERENCE_START_CMD="$(printf '%s' "${REMOTE_INFERENCE_START_CMD_B64}" | base64 -d)"
+
+check_inference_port() {
+  python3 - <<'PY'
+import os
+import socket
+
+host = os.environ.get('INFERENCE_HOST', '127.0.0.1')
+port = int(os.environ.get('INFERENCE_PORT', '9001'))
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(0.5)
+try:
+    sock.connect((host, port))
+except Exception:
+    raise SystemExit(1)
+finally:
+    sock.close()
+raise SystemExit(0)
+PY
+}
+
+if check_inference_port; then
+  echo "[OK] Local inference already available at ${INFERENCE_HOST}:${INFERENCE_PORT}"
+  exit 0
+fi
+
+echo "[INFO] Local inference not detected, starting service"
+
+if ! command -v docker >/dev/null 2>&1; then
+  if echo "${REMOTE_INFERENCE_START_CMD}" | grep -qi "docker"; then
+    echo "[ERROR] docker command not found on Raspberry Pi."
+    echo "[ERROR] Install Docker or override REMOTE_INFERENCE_START_CMD with a non-docker start command."
+    exit 1
+  fi
+fi
+
+if [[ -f "${REMOTE_INFERENCE_IMAGE_ARCHIVE}" ]]; then
+  echo "[INFO] Found offline inference image archive: ${REMOTE_INFERENCE_IMAGE_ARCHIVE}"
+  if gzip -t "${REMOTE_INFERENCE_IMAGE_ARCHIVE}"; then
+    echo "[OK] Offline image archive integrity check passed"
+    if ! docker image inspect "${INFERENCE_IMAGE_REF}" >/dev/null 2>&1; then
+      echo "[INFO] Loading inference image from offline archive"
+      gunzip -c "${REMOTE_INFERENCE_IMAGE_ARCHIVE}" | docker load
+    else
+      echo "[OK] Inference image already present: ${INFERENCE_IMAGE_REF}"
+    fi
+  else
+    echo "[ERROR] Offline image archive is corrupted or incomplete: ${REMOTE_INFERENCE_IMAGE_ARCHIVE}"
+    echo "[ERROR] Please re-transfer the archive to Raspberry Pi."
+    exit 1
+  fi
+else
+  echo "[WARN] Offline image archive not found: ${REMOTE_INFERENCE_IMAGE_ARCHIVE}"
+  echo "[WARN] Will rely on online pull when starting container."
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -qx 'unibots-roboflow-inference'; then
+  if ! docker ps --format '{{.Names}}' | grep -qx 'unibots-roboflow-inference'; then
+    echo "[INFO] Starting existing container: unibots-roboflow-inference"
+    docker start unibots-roboflow-inference >/dev/null
+  fi
+else
+  eval "${REMOTE_INFERENCE_START_CMD}"
+fi
+
+if [[ -n "${ROBOFLOW_API_KEY:-}" ]] && echo "${REMOTE_INFERENCE_START_CMD}" | grep -q "docker run"; then
+  if ! docker inspect unibots-roboflow-inference --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Fx "ROBOFLOW_API_KEY=${ROBOFLOW_API_KEY}" >/dev/null 2>&1; then
+    echo "[INFO] Recreating inference container with ROBOFLOW_API_KEY"
+    docker rm -f unibots-roboflow-inference >/dev/null 2>&1 || true
+    REMOTE_INFERENCE_START_CMD_WITH_KEY="${REMOTE_INFERENCE_START_CMD/docker run/docker run -e ROBOFLOW_API_KEY=\"${ROBOFLOW_API_KEY}\"}"
+    eval "${REMOTE_INFERENCE_START_CMD_WITH_KEY}"
+  fi
+fi
+
+python3 - <<'PY'
+import os
+import socket
+import time
+
+host = os.environ.get('INFERENCE_HOST', '127.0.0.1')
+port = int(os.environ.get('INFERENCE_PORT', '9001'))
+timeout_sec = int(os.environ.get('INFERENCE_READY_TIMEOUT', '30'))
+
+deadline = time.monotonic() + max(1, timeout_sec)
+while time.monotonic() < deadline:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.5)
+    try:
+        sock.connect((host, port))
+        print(f"[OK] Local inference ready at {host}:{port}")
+        raise SystemExit(0)
+    except Exception:
+        time.sleep(1.0)
+    finally:
+        sock.close()
+
+print(f"[ERROR] Local inference did not become ready within {timeout_sec}s")
+raise SystemExit(1)
+PY
+REMOTE_INFERENCE_SCRIPT
+else
+  echo "[8/9] Skip local AI inference startup (START_LOCAL_INFERENCE=0)"
+fi
+
 if [[ "$MODE" == "detach" ]]; then
   LOG_FILE='~/unibots_ros.log'
   REMOTE_CMD+=" && nohup ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE > $LOG_FILE 2>&1 & echo [OK] launched in background, log: $LOG_FILE"
-  echo "[8/8] Build and launch (background)"
+  echo "[9/9] Build and launch (background)"
   run_ssh "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
   echo "Done. To view logs: ssh $PI_USER@$PI_IP 'tail -f ~/unibots_ros.log'"
 else
   REMOTE_CMD+=" && ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE"
-  echo "[8/8] Build and launch (foreground)"
+  echo "[9/9] Build and launch (foreground)"
   echo "Press Ctrl+C to stop launch on Raspberry Pi."
   run_ssh_tty "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
 fi

@@ -349,6 +349,18 @@
       <div class="panel media-panel">
         <div class="media-grid">
           <div class="media-frame">
+            <img id="ballDetectionImage" alt="ball detection image feed" />
+          </div>
+          <div class="media-side">
+            <h2 class="media-title">Ball Detection Image</h2>
+            <div class="media-copy">实时显示 `/data/ball_detection_image`，方便查看球检测输出画面。</div>
+            <div class="media-meta" id="ballDetectionImageMeta">Waiting for image...</div>
+          </div>
+        </div>
+      </div>
+      <div class="panel media-panel">
+        <div class="media-grid">
+          <div class="media-frame">
             <img id="processedImage" alt="processed image feed" />
           </div>
           <div class="media-side">
@@ -443,6 +455,8 @@
       const obsStat = document.getElementById("obsStat");
       const simTimeStat = document.getElementById("simTimeStat");
       const waypointStatusStat = document.getElementById("waypointStatusStat");
+      const ballDetectionImage = document.getElementById("ballDetectionImage");
+      const ballDetectionImageMeta = document.getElementById("ballDetectionImageMeta");
       const processedImage = document.getElementById("processedImage");
       const processedImageMeta = document.getElementById("processedImageMeta");
       const decisionsJson = document.getElementById("decisionsJson");
@@ -1087,34 +1101,70 @@
 
       let processedImageRequestActive = false;
       let processedImageLastOkAt = 0;
+      let ballDetectionImageRequestActive = false;
+      let ballDetectionImageLastOkAt = 0;
 
-      function refreshProcessedImage() {
-        if (processedImageRequestActive) {
+      function refreshImageFeed(imageNode, metaNode, dataPath, state) {
+        if (state.requestActive) {
           return;
         }
 
-        processedImageRequestActive = true;
+        state.requestActive = true;
         const stamp = Date.now();
 
         const release = () => {
-          processedImageRequestActive = false;
+          state.requestActive = false;
         };
 
-        processedImage.onload = () => {
-          processedImageLastOkAt = stamp;
-          processedImageMeta.textContent = `Updated ${new Date(stamp).toLocaleTimeString()}`;
+        imageNode.onload = () => {
+          state.lastOkAt = stamp;
+          metaNode.textContent = `Updated ${new Date(stamp).toLocaleTimeString()}`;
           release();
         };
 
-        processedImage.onerror = () => {
-          const staleMs = processedImageLastOkAt ? stamp - processedImageLastOkAt : null;
-          processedImageMeta.textContent = staleMs === null
+        imageNode.onerror = () => {
+          const staleMs = state.lastOkAt ? stamp - state.lastOkAt : null;
+          metaNode.textContent = staleMs === null
             ? "Waiting for image..."
             : `Image unavailable, last success ${Math.round(staleMs / 1000)}s ago`;
           release();
         };
 
-        processedImage.src = `/data/processed_image?t=${stamp}`;
+        imageNode.src = `${dataPath}?t=${stamp}`;
+      }
+
+      function refreshBallDetectionImage() {
+        refreshImageFeed(ballDetectionImage, ballDetectionImageMeta, "/data/ball_detection_image", {
+          get requestActive() {
+            return ballDetectionImageRequestActive;
+          },
+          set requestActive(value) {
+            ballDetectionImageRequestActive = value;
+          },
+          get lastOkAt() {
+            return ballDetectionImageLastOkAt;
+          },
+          set lastOkAt(value) {
+            ballDetectionImageLastOkAt = value;
+          }
+        });
+      }
+
+      function refreshProcessedImage() {
+        refreshImageFeed(processedImage, processedImageMeta, "/data/processed_image", {
+          get requestActive() {
+            return processedImageRequestActive;
+          },
+          set requestActive(value) {
+            processedImageRequestActive = value;
+          },
+          get lastOkAt() {
+            return processedImageLastOkAt;
+          },
+          set lastOkAt(value) {
+            processedImageLastOkAt = value;
+          }
+        });
       }
 
       async function tick() {
@@ -1250,8 +1300,10 @@
       bindJsonView("/data/decision_making_data-stream", decisionMakingJson, decisionMakingMeta);
 
       setInterval(scheduleTick, 120);
+      setInterval(refreshBallDetectionImage, 220);
       setInterval(refreshProcessedImage, 220);
       scheduleTick();
+      refreshBallDetectionImage();
       refreshProcessedImage();
     </script>
   </body>

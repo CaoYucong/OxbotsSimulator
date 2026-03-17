@@ -1,6 +1,7 @@
+import math
+import time
 from typing import Dict, Tuple
 
-import math
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
@@ -79,6 +80,8 @@ class MotionControlNode(Node):
         self._heading_deadband_max_deg = float(self.get_parameter('heading_deadband_max_deg').get_parameter_value().double_value)
 
         self._sim_time_seconds: float | None = None
+        self._start_mono_seconds = time.monotonic()
+        self._warned_missing_time = False
         self._current_x: float | None = None
         self._current_y: float | None = None
         self._current_heading_deg: float | None = None
@@ -141,6 +144,7 @@ class MotionControlNode(Node):
     def _on_time(self, msg: String) -> None:
         try:
             self._sim_time_seconds = float(msg.data)
+            self._warned_missing_time = False
         except Exception:
             pass
 
@@ -188,27 +192,24 @@ class MotionControlNode(Node):
         return (angle_deg + 180.0) % 360.0 - 180.0
 
     def _tick(self) -> None:
+        pass
+        # sim_time = self._sim_time_seconds
+        # if sim_time is None:
+        #     sim_time = time.monotonic() - self._start_mono_seconds
+        #     if not self._warned_missing_time:
+        #         self.get_logger().warn('No /time message received yet; falling back to local monotonic clock for rotation sequence.')
+        #         self._warned_missing_time = True
 
-    #     if self._current_heading_deg is None:
-    #         self._stop()
-    #         return
+        # if sim_time < 20.0:
+        #     if sim_time % 4.0 < 2.0:
+        #         self._clock_rotate()
+        #     else:
+        #         self._anticlock_rotate()
+        # else:
+        #     self._stop()
 
-    #     heading_deg = self._normalize_angle_deg(self._current_heading_deg)
-    #     if self._heading_deadband_min_deg <= heading_deg <= self._heading_deadband_max_deg:
-    #         self._stop()
-    #         return
-
-    #     angle_error_deg = self._normalize_angle_deg(self._target_heading_deg - heading_deg)
-    #     if angle_error_deg > 0.0:
-    #         self._clock_rotate()
-    #     else:
-    #         self._anticlock_rotate()
-
-    # def shutdown_motors(self) -> None:
-    #     if hasattr(self, '_devices'):
-    #         apply_pattern(self._devices, self._stop_pattern)
-    #         close_devices(self._devices)
-        self._stop()
+    def shutdown_motors(self) -> None:
+        close_devices(self._devices)
 
 def main(args=None) -> None:
     rclpy.init(args=args)

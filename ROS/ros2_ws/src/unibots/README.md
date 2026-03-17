@@ -5,6 +5,7 @@ ROS2 Jazzy Python package providing:
 - `web_bridge_node`: HTTP mirror bridge for simulation data + web viewer endpoints
 - `radar_sensor_node`: standalone radar sensor fetcher/publisher (`/radar_sensor`)
 - `front_camera_node`: standalone front camera fetcher/publisher (`/front_camera`)
+- `ball_detection_node`: Roboflow ball detector + processed image overlay
 - `decision_node`: decision node that consumes topics and publishes decisions
 - `pose_estimation`: optional pose estimation from front camera
 
@@ -18,6 +19,7 @@ ROS2 Jazzy Python package providing:
 	- `http://127.0.0.1:5003/data/simulation_data`
 - Field viewer main page also includes the live `decisions` and `decision_making_data` JSON views; `/decisions` and `/decision_making_data` now redirect to `/`.
 - Cache is updated only when upstream content changes.
+- If local mirror port `5003` is occupied, `web_bridge_node` falls back to an available local port by default (`allow_local_port_fallback: true`).
 - Front camera JPEG is fetched by `front_camera_node` and published to `/front_camera`.
 - Topics published by `web_bridge_node`:
 	- `/visible_balls`, `/waypoint_status`, `/time`
@@ -28,6 +30,15 @@ ROS2 Jazzy Python package providing:
 	- `/radar_sensor` (fetched from upstream `/data/simulation_data` field `radar_sensor`)
 - Topics published by `front_camera_node`:
 	- `/front_camera` (fetched from upstream camera endpoint)
+- Topics published by `ball_detection_node`:
+	- `/ball_detection_image` (always published; detections overlay on success, low-res error image on failure/no camera)
+	- `/ball_pose` (best detected ball 2D pose in normalized image coordinates)
+	- `/ball_detections` (all detections JSON, includes confidence)
+
+### Ball detection inference location
+
+- Ball detection uses local inference on Raspberry Pi only.
+- Default endpoint is `http://127.0.0.1:9001` with model route `unibot-ball-detection-instant-1/1`.
 - Topics published by `pose_estimation`:
 	- `/current_position` when `pose_estimation` is enabled
 - Topics published by `decision_node`:
@@ -60,3 +71,11 @@ Then rebuild and relaunch:
 - `colcon build --packages-select unibots --symlink-install`
 - `source install/setup.bash`
 - `ros2 launch unibots unibots.launch.py`
+
+## Troubleshooting: `Address already in use` on `web_bridge_node`
+
+If `web_bridge_node` logs `OSError: [Errno 98] Address already in use`, another process is already listening on `local_port` (default `5003`).
+
+- Default behavior is to auto-fallback to a free local port.
+- To force strict binding and fail instead, set `allow_local_port_fallback: false` in `config/params.yaml`.
+- To keep using `5003`, stop the process currently bound to that port before relaunching.
