@@ -501,6 +501,9 @@ class BallDetectionNode(Node):
         self._latest_detections = detections
         publish_topics_ms = 0.0
         publish_image_ms = 0.0
+        t_publish_image = time.perf_counter()
+        self._publish_detection_image(image, detections)
+        publish_image_ms = (time.perf_counter() - t_publish_image) * 1000.0
         if not detections:
             self._debug_throttled('no_detection_publish', 'skip publish: no valid detections in this tick')
             tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
@@ -522,10 +525,6 @@ class BallDetectionNode(Node):
         t_publish_topics = time.perf_counter()
         self._publish_detection_topics(detections, image.shape[1], image.shape[0])
         publish_topics_ms = (time.perf_counter() - t_publish_topics) * 1000.0
-
-        t_publish_image = time.perf_counter()
-        self._publish_detection_image(image, detections)
-        publish_image_ms = (time.perf_counter() - t_publish_image) * 1000.0
 
         tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
         self._perf_throttled(
@@ -816,10 +815,9 @@ class BallDetectionNode(Node):
     def _publish_detection_image(self, image: np.ndarray, detections: list[dict]) -> None:
         if image is None:
             return
-        if not detections:
-            return
-
-        output = self._draw_detections(image, detections)
+        output = image.copy()
+        if detections:
+            output = self._draw_detections(output, detections)
         self._last_success_detection_image = output.copy()
         msg = self._bridge.cv2_to_imgmsg(output, encoding='bgr8')
         msg.header.stamp = self.get_clock().now().to_msg()
