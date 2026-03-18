@@ -2042,7 +2042,7 @@ def update_ball_memory_v2(memory_tile_file: str = BALL_MEMORY_FILE,
                     has_ball_in_tile = True
                     break
 
-            if not has_ball_in_tile:
+            if not has_ball_in_tile and memory[r][c] < 176.0:
                 memory[r][c] = 0.0
 
     for bx, by in new_visible_balls:

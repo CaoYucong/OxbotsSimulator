@@ -30,6 +30,16 @@ INFERENCE_IMAGE_REF="${INFERENCE_IMAGE_REF:-roboflow/roboflow-inference-server-c
 REMOTE_INFERENCE_IMAGE_ARCHIVE="${REMOTE_INFERENCE_IMAGE_ARCHIVE:-/home/${PI_USER}/roboflow-inference-server-cpu-latest-arm64.tar.gz}"
 REMOTE_INFERENCE_START_CMD="${REMOTE_INFERENCE_START_CMD:-docker run -d --restart unless-stopped --name unibots-roboflow-inference -p ${INFERENCE_PORT}:9001 ${INFERENCE_IMAGE_REF}}"
 ROBOFLOW_API_KEY="${ROBOFLOW_API_KEY:-}"
+INIT_TOF_ON_DEPLOY="${INIT_TOF_ON_DEPLOY:-1}"
+TOF_FRONT_XSHUT_GPIO="${TOF_FRONT_XSHUT_GPIO:-21}"
+TOF_LEFT_XSHUT_GPIO="${TOF_LEFT_XSHUT_GPIO:-26}"
+TOF_RIGHT_XSHUT_GPIO="${TOF_RIGHT_XSHUT_GPIO:-16}"
+TOF_REAR_XSHUT_GPIO="${TOF_REAR_XSHUT_GPIO:-20}"
+TOF_FRONT_ADDR="${TOF_FRONT_ADDR:-0x33}"
+TOF_LEFT_ADDR="${TOF_LEFT_ADDR:-0x30}"
+TOF_RIGHT_ADDR="${TOF_RIGHT_ADDR:-0x31}"
+TOF_REAR_ADDR="${TOF_REAR_ADDR:-0x32}"
+TOF_BOOT_DELAY_MS="${TOF_BOOT_DELAY_MS:-80}"
 
 CONTROL_PATH_DEFAULT="$HOME/.ssh/cm-%C"
 SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-$CONTROL_PATH_DEFAULT}"
@@ -53,7 +63,10 @@ Environment overrides:
   PREFER_SOURCE_CV_BRIDGE, REMOTE_OFFLINE_ROOT, REMOTE_VISION_OPENCV_ARCHIVE,
   REMOTE_VISION_OPENCV_SRC_DIR, START_LOCAL_INFERENCE, INFERENCE_HOST,
   INFERENCE_PORT, INFERENCE_READY_TIMEOUT, INFERENCE_IMAGE_REF,
-  REMOTE_INFERENCE_IMAGE_ARCHIVE, REMOTE_INFERENCE_START_CMD, ROBOFLOW_API_KEY
+  REMOTE_INFERENCE_IMAGE_ARCHIVE, REMOTE_INFERENCE_START_CMD, ROBOFLOW_API_KEY,
+  INIT_TOF_ON_DEPLOY, TOF_FRONT_XSHUT_GPIO, TOF_LEFT_XSHUT_GPIO,
+  TOF_RIGHT_XSHUT_GPIO, TOF_REAR_XSHUT_GPIO, TOF_FRONT_ADDR, TOF_LEFT_ADDR,
+  TOF_RIGHT_ADDR, TOF_REAR_ADDR, TOF_BOOT_DELAY_MS
 
 Examples:
   ./ROS/deploy_and_run_ros_pi.sh
@@ -164,14 +177,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/9] Test SSH connectivity: $PI_USER@$PI_IP"
+echo "[1/10] Test SSH connectivity: $PI_USER@$PI_IP"
 run_ssh -MNf "$PI_USER@$PI_IP"
 run_ssh "$PI_USER@$PI_IP" "echo '[OK] SSH connected to ' \"\$(hostname)\""
 
-echo "[2/9] Ensure remote directories exist"
+echo "[2/10] Ensure remote directories exist"
 run_ssh "$PI_USER@$PI_IP" "mkdir -p $REMOTE_PROJECT_ROOT $REMOTE_WS"
 
-echo "[3/9] Sync local workspace to Raspberry Pi"
+echo "[3/10] Sync local workspace to Raspberry Pi"
 rsync -avz --delete \
   --exclude '.git' \
   --exclude 'build' \
@@ -181,15 +194,15 @@ rsync -avz --delete \
   -e "$RSYNC_SSH_CMD" \
   "$LOCAL_WS/" "$PI_USER@$PI_IP:$REMOTE_WS/"
 
-echo "[4/9] Sync config.json to Raspberry Pi"
+echo "[4/10] Sync config.json to Raspberry Pi"
 rsync -avz \
   -e "$RSYNC_SSH_CMD" \
   "$LOCAL_CONFIG" "$PI_USER@$PI_IP:$REMOTE_CONFIG"
 
-echo "[5/9] Verify remote package path"
+echo "[5/10] Verify remote package path"
 run_ssh "$PI_USER@$PI_IP" "test -d $REMOTE_WS/src/$LAUNCH_PACKAGE"
 
-echo "[6/9] Ensure Python OpenCV runtime exists on Raspberry Pi"
+echo "[6/10] Ensure Python OpenCV runtime exists on Raspberry Pi"
 run_ssh "$PI_USER@$PI_IP" "bash -lc '
   if python3 -c \"import cv2\" >/dev/null 2>&1; then
     echo \"[OK] python3-opencv already available\"
@@ -200,7 +213,7 @@ run_ssh "$PI_USER@$PI_IP" "bash -lc '
   fi
 '"
 
-echo "[7/9] Ensure ROS cv_bridge runtime exists on Raspberry Pi"
+echo "[7/10] Ensure ROS cv_bridge runtime exists on Raspberry Pi"
 run_ssh "$PI_USER@$PI_IP" "bash -lc '
   source /opt/ros/$ROS_DISTRO/setup.bash
   if [[ \"$PREFER_SOURCE_CV_BRIDGE\" == \"1\" ]]; then
@@ -232,6 +245,137 @@ run_ssh "$PI_USER@$PI_IP" "bash -lc '
   fi
 '"
 
+echo "[8/10] Ensure ToF runtime and initialize I2C addresses on Raspberry Pi"
+set +e
+TOF_STEP_OUTPUT="$(run_ssh "$PI_USER@$PI_IP" \
+  INIT_TOF_ON_DEPLOY="$INIT_TOF_ON_DEPLOY" \
+  TOF_FRONT_XSHUT_GPIO="$TOF_FRONT_XSHUT_GPIO" \
+  TOF_LEFT_XSHUT_GPIO="$TOF_LEFT_XSHUT_GPIO" \
+  TOF_RIGHT_XSHUT_GPIO="$TOF_RIGHT_XSHUT_GPIO" \
+  TOF_REAR_XSHUT_GPIO="$TOF_REAR_XSHUT_GPIO" \
+  TOF_FRONT_ADDR="$TOF_FRONT_ADDR" \
+  TOF_LEFT_ADDR="$TOF_LEFT_ADDR" \
+  TOF_RIGHT_ADDR="$TOF_RIGHT_ADDR" \
+  TOF_REAR_ADDR="$TOF_REAR_ADDR" \
+  TOF_BOOT_DELAY_MS="$TOF_BOOT_DELAY_MS" \
+  "bash -s" <<'REMOTE_TOF_SCRIPT' 2>&1
+if ! python3 -m pip install --break-system-packages --user --disable-pip-version-check -q smbus2 gpiozero; then
+  echo "[ERROR] Failed to install ToF Python dependencies"
+  exit 1
+fi
+if ! python3 -c "import smbus2, gpiozero" >/dev/null 2>&1; then
+  echo "[ERROR] ToF runtime import check failed (smbus2/gpiozero)"
+  exit 1
+fi
+
+if [[ "${INIT_TOF_ON_DEPLOY}" == "1" ]]; then
+  timeout 30s python3 -u - <<'PY'
+import os
+import time
+import smbus2
+from gpiozero import OutputDevice
+
+VL53L0X_DEFAULT_ADDR = 0x29
+VL53L0X_ADDR_REG = 0x8A
+I2C_BUS = 1
+
+boot_delay = max(10, int(os.environ.get('TOF_BOOT_DELAY_MS', '80'))) / 1000.0
+order = [
+    ('front', int(os.environ.get('TOF_FRONT_XSHUT_GPIO', '26')), int(os.environ.get('TOF_FRONT_ADDR', '0x30'), 0)),
+    ('left', int(os.environ.get('TOF_LEFT_XSHUT_GPIO', '16')), int(os.environ.get('TOF_LEFT_ADDR', '0x31'), 0)),
+    ('right', int(os.environ.get('TOF_RIGHT_XSHUT_GPIO', '20')), int(os.environ.get('TOF_RIGHT_ADDR', '0x32'), 0)),
+    ('rear', int(os.environ.get('TOF_REAR_XSHUT_GPIO', '21')), int(os.environ.get('TOF_REAR_ADDR', '0x33'), 0)),
+]
+
+pins = {}
+for name, gpio, _ in order:
+    try:
+        pins[name] = OutputDevice(gpio, active_high=True, initial_value=False)
+    except Exception as exc:
+        raise SystemExit(
+            f'[ERROR] failed to claim XSHUT GPIO{gpio} for {name}: {exc}. '
+            'This GPIO may be busy/reserved. Kill stale python3 and ensure no GPIO conflict.'
+        )
+time.sleep(0.1)
+
+bus = smbus2.SMBus(I2C_BUS)
+
+def i2c_scan():
+    found = []
+    for addr in range(0x03, 0x78):
+        try:
+            bus.read_byte(addr)
+            found.append(addr)
+        except OSError:
+            pass
+    return sorted(found)
+
+print('[INFO] ToF init: all XSHUT LOW, begin one-by-one address assignment')
+print(f'[INFO] initial I2C scan: {[hex(x) for x in i2c_scan()]}', flush=True)
+
+for name, gpio, target in order:
+    pins[name].on()
+    time.sleep(boot_delay)
+
+    before = i2c_scan()
+    print(f'[INFO] assigning {name} (GPIO{gpio}) -> 0x{target:02X}  |  scan before: {[hex(x) for x in before]}', flush=True)
+
+    if VL53L0X_DEFAULT_ADDR not in before:
+        raise SystemExit(
+            f'[ERROR] {name}: sensor not found at 0x{VL53L0X_DEFAULT_ADDR:02X} after XSHUT HIGH. '
+            'Check XSHUT wiring or increase TOF_BOOT_DELAY_MS.'
+        )
+
+    try:
+        bus.write_byte_data(VL53L0X_DEFAULT_ADDR, VL53L0X_ADDR_REG, target & 0x7F)
+    except OSError as exc:
+        raise SystemExit(
+            f'[ERROR] {name}: I2C write to 0x{VL53L0X_DEFAULT_ADDR:02X} reg 0x{VL53L0X_ADDR_REG:02X} failed: {exc}. '
+            'Check XSHUT wiring/power.'
+        )
+
+    time.sleep(0.02)
+    after = i2c_scan()
+    print(f'[OK] {name}: 0x{VL53L0X_DEFAULT_ADDR:02X} -> 0x{target:02X}  |  scan after: {[hex(x) for x in after]}', flush=True)
+
+addresses = i2c_scan()
+target_set = {target for (_, _, target) in order}
+print('[INFO] I2C scan after init:', ' '.join(f'0x{x:02X}' for x in addresses))
+missing = [f'0x{x:02X}' for x in sorted(target_set) if x not in addresses]
+if missing:
+    raise SystemExit('[ERROR] Missing ToF addresses after init: ' + ', '.join(missing))
+
+for pin in pins.values():
+    pin.close()
+bus.close()
+print('[OK] ToF initialization complete')
+PY
+  rc=$?
+  if [[ "$rc" -eq 124 ]]; then
+    echo "[ERROR] ToF initialization timed out after 30s."
+    exit 1
+  elif [[ "$rc" -ne 0 ]]; then
+    exit "$rc"
+  fi
+else
+  echo "[INFO] Skip ToF initialization (INIT_TOF_ON_DEPLOY=0)"
+fi
+REMOTE_TOF_SCRIPT
+)"
+TOF_STEP_RC=$?
+set -e
+
+echo "$TOF_STEP_OUTPUT"
+
+if [[ "$TOF_STEP_RC" -ne 0 ]]; then
+  if printf '%s' "$TOF_STEP_OUTPUT" | grep -qiE 'failed to claim XSHUT GPIO|GPIO busy'; then
+    echo "[WARN] ToF init skipped: XSHUT GPIO is busy (likely already held by running radar_sensor_node)."
+    echo "[INFO] Hint: set INIT_TOF_ON_DEPLOY=0 to skip step 8 intentionally."
+  else
+    exit "$TOF_STEP_RC"
+  fi
+fi
+
 REMOTE_CMD="source /opt/ros/$ROS_DISTRO/setup.bash && cd $REMOTE_WS"
 
 if [[ -n "$ROBOFLOW_API_KEY" ]]; then
@@ -245,7 +389,7 @@ fi
 REMOTE_CMD+=" && source install/setup.bash"
 
 if [[ "$START_LOCAL_INFERENCE" == "1" ]]; then
-  echo "[8/9] Ensure local AI inference service exists on Raspberry Pi"
+  echo "[9/10] Ensure local AI inference service exists on Raspberry Pi"
   REMOTE_INFERENCE_START_CMD_B64="$(printf '%s' "$REMOTE_INFERENCE_START_CMD" | base64 | tr -d '\n')"
   run_ssh "$PI_USER@$PI_IP" \
     INFERENCE_HOST="$INFERENCE_HOST" \
@@ -358,18 +502,18 @@ raise SystemExit(1)
 PY
 REMOTE_INFERENCE_SCRIPT
 else
-  echo "[8/9] Skip local AI inference startup (START_LOCAL_INFERENCE=0)"
+  echo "[9/10] Skip local AI inference startup (START_LOCAL_INFERENCE=0)"
 fi
 
 if [[ "$MODE" == "detach" ]]; then
   LOG_FILE='~/unibots_ros.log'
   REMOTE_CMD+=" && nohup ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE > $LOG_FILE 2>&1 & echo [OK] launched in background, log: $LOG_FILE"
-  echo "[9/9] Build and launch (background)"
+  echo "[10/10] Build and launch (background)"
   run_ssh "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
   echo "Done. To view logs: ssh $PI_USER@$PI_IP 'tail -f ~/unibots_ros.log'"
 else
   REMOTE_CMD+=" && ros2 launch $LAUNCH_PACKAGE $LAUNCH_FILE"
-  echo "[9/9] Build and launch (foreground)"
+  echo "[10/10] Build and launch (foreground)"
   echo "Press Ctrl+C to stop launch on Raspberry Pi."
   run_ssh_tty "$PI_USER@$PI_IP" "bash -lc '$REMOTE_CMD'"
 fi

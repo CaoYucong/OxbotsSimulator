@@ -523,19 +523,19 @@ class BallDetectionNode(Node):
         if not detections:
             self._debug_throttled('no_detection_publish', 'skip publish: no valid detections in this tick')
             tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
-            self._perf_throttled(
-                'infer_tick',
-                'stage_ms '
-                f"encode={infer_timing.get('encode_ms', 0.0):.1f}, "
-                f"request={infer_timing.get('request_ms', 0.0):.1f}, "
-                f"extract={infer_timing.get('extract_ms', 0.0):.1f}, "
-                f"filter={infer_timing.get('filter_ms', 0.0):.1f}, "
-                f"infer_total={infer_timing.get('total_ms', 0.0):.1f}, "
-                f'publish_topics={publish_topics_ms:.1f}, '
-                f'publish_image={publish_image_ms:.1f}, '
-                f'tick_total={tick_total_ms:.1f}, '
-                f'detections={len(detections)}',
-            )
+            # self._perf_throttled(
+            #     'infer_tick',
+            #     'stage_ms '
+            #     f"encode={infer_timing.get('encode_ms', 0.0):.1f}, "
+            #     f"request={infer_timing.get('request_ms', 0.0):.1f}, "
+            #     f"extract={infer_timing.get('extract_ms', 0.0):.1f}, "
+            #     f"filter={infer_timing.get('filter_ms', 0.0):.1f}, "
+            #     f"infer_total={infer_timing.get('total_ms', 0.0):.1f}, "
+            #     f'publish_topics={publish_topics_ms:.1f}, '
+            #     f'publish_image={publish_image_ms:.1f}, '
+            #     f'tick_total={tick_total_ms:.1f}, '
+            #     f'detections={len(detections)}',
+            # )
             return
 
         t_publish_topics = time.perf_counter()
@@ -543,19 +543,19 @@ class BallDetectionNode(Node):
         publish_topics_ms = (time.perf_counter() - t_publish_topics) * 1000.0
 
         tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
-        self._perf_throttled(
-            'infer_tick',
-            'stage_ms '
-            f"encode={infer_timing.get('encode_ms', 0.0):.1f}, "
-            f"request={infer_timing.get('request_ms', 0.0):.1f}, "
-            f"extract={infer_timing.get('extract_ms', 0.0):.1f}, "
-            f"filter={infer_timing.get('filter_ms', 0.0):.1f}, "
-            f"infer_total={infer_timing.get('total_ms', 0.0):.1f}, "
-            f'publish_topics={publish_topics_ms:.1f}, '
-            f'publish_image={publish_image_ms:.1f}, '
-            f'tick_total={tick_total_ms:.1f}, '
-            f'detections={len(detections)}',
-        )
+        # self._perf_throttled(
+        #     'infer_tick',
+        #     'stage_ms '
+        #     f"encode={infer_timing.get('encode_ms', 0.0):.1f}, "
+        #     f"request={infer_timing.get('request_ms', 0.0):.1f}, "
+        #     f"extract={infer_timing.get('extract_ms', 0.0):.1f}, "
+        #     f"filter={infer_timing.get('filter_ms', 0.0):.1f}, "
+        #     f"infer_total={infer_timing.get('total_ms', 0.0):.1f}, "
+        #     f'publish_topics={publish_topics_ms:.1f}, '
+        #     f'publish_image={publish_image_ms:.1f}, '
+        #     f'tick_total={tick_total_ms:.1f}, '
+        #     f'detections={len(detections)}',
+        # )
 
     def _infer_with_roboflow(self, image: np.ndarray) -> tuple[list[dict], dict[str, float]]:
         timing = {

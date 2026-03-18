@@ -25,6 +25,8 @@ web_bridge_node:
 
 radar_sensor_node:
   ros__parameters:
+    # Use real ToF sensors when true; fetch upstream radar text when false.
+    use_real_sensor: true
     # Upstream simulator host for radar sensor extraction.
     remote_host: 192.168.50.1
     # Upstream simulator port for radar sensor extraction.
@@ -33,6 +35,31 @@ radar_sensor_node:
     poll_hz: 10.0
     # HTTP timeout for upstream simulation data requests (sec).
     request_timeout: 3.0
+    # Time topic used to stamp radar payload first field (t).
+    time_topic: /time
+    # ToF I2C addresses after deploy-time allocation.
+    tof_front_addr: 51
+    tof_right_addr: 49
+    tof_left_addr: 48
+    tof_rear_addr: 50
+    # ToF XSHUT GPIO mapping (BCM) for startup address allocation/hold.
+    tof_front_xshut_gpio: 21
+    tof_left_xshut_gpio: 26
+    tof_right_xshut_gpio: 16
+    tof_rear_xshut_gpio: 20
+    # Delay after pulling each XSHUT high before writing address.
+    tof_boot_delay_ms: 80
+    # Clamp/fail policy for real ToF readings.
+    tof_min_range_m: 0.02
+    tof_max_range_m: 0.80
+    tof_read_fail_value_m: 0.80
+    # Diagnostic output for real ToF mode.
+    tof_debug_enabled: true
+    tof_debug_interval_sec: 1.0
+    # Retry sensor constructor this many times during startup/reinit.
+    tof_init_retries: 5
+    # When all 4 directions fail consecutively, auto reinitialize ToF readers.
+    tof_reinit_after_fail_count: 8
 
 front_camera_node:
   ros__parameters:
@@ -58,7 +85,7 @@ front_camera_node:
 ball_detection_node:
   ros__parameters:
     # Master switch for ball detection inference/publishing loop.
-    ball_detection_enabled: false
+    ball_detection_enabled: true
     # Input topic consumed by Roboflow detector.
     front_camera_topic: /front_camera
     # Always-published visualization topic from ball detection node.

@@ -31,7 +31,7 @@ def generate_launch_description() -> LaunchDescription:
             executable='radar_sensor_node',
             name='radar_sensor_node',
             output='screen',
-            parameters=[params],
+            parameters=[params, {'use_real_sensor': use_real_sensor}],
         ),
         Node(
             package='unibots',
