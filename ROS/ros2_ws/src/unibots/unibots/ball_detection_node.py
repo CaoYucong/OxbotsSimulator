@@ -25,6 +25,7 @@ class BallDetectionNode(Node):
         super().__init__('ball_detection_node')
 
         self.declare_parameter('front_camera_topic', '/front_camera')
+        self.declare_parameter('ball_detection_enabled', True)
         self.declare_parameter('ball_detection_image_topic', '/ball_detection_image')
         self.declare_parameter('ball_pose_topic', '/ball_pose')
         self.declare_parameter('ball_detections_topic', '/ball_detections')
@@ -51,6 +52,9 @@ class BallDetectionNode(Node):
         self.declare_parameter('camera_offset_y_robot', 0.0)
 
         front_camera_topic = self.get_parameter('front_camera_topic').get_parameter_value().string_value
+        self._ball_detection_enabled = bool(
+            self.get_parameter('ball_detection_enabled').get_parameter_value().bool_value
+        )
         ball_detection_image_topic = (
             self.get_parameter('ball_detection_image_topic').get_parameter_value().string_value
         )
@@ -155,6 +159,7 @@ class BallDetectionNode(Node):
             'ball_detection_node started; '
             f'front_camera_topic={front_camera_topic}, '
             f'ball_detection_image_topic={ball_detection_image_topic}, '
+            f'ball_detection_enabled={self._ball_detection_enabled}, '
             f'mode=local, model_id={self._local_model_id}, '
             f'infer_hz={self._infer_hz:.2f}, min_confidence={self._min_confidence:.2f}, '
             f'crop_y_start={self._crop_y_start}, '
@@ -492,6 +497,17 @@ class BallDetectionNode(Node):
 
     def _infer_tick(self) -> None:
         tick_start = time.perf_counter()
+        if not self._ball_detection_enabled:
+            self._latest_detections = []
+            self._publish_sticky_detection_image_or_fallback('ball detection disabled')
+            if self._latest_front_image is not None:
+                image_h, image_w = self._latest_front_image.shape[:2]
+            else:
+                image_w, image_h = 0, 0
+            self._publish_detection_topics([], image_w, image_h)
+            self._debug_throttled('ball_detection_disabled', 'infer tick skipped: ball_detection_enabled=false')
+            return
+
         if self._latest_front_image is None:
             self._debug_throttled('no_front_image', 'infer tick skipped: no front camera image yet')
             return

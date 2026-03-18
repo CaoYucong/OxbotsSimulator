@@ -57,6 +57,8 @@ front_camera_node:
 
 ball_detection_node:
   ros__parameters:
+    # Master switch for ball detection inference/publishing loop.
+    ball_detection_enabled: false
     # Input topic consumed by Roboflow detector.
     front_camera_topic: /front_camera
     # Always-published visualization topic from ball detection node.

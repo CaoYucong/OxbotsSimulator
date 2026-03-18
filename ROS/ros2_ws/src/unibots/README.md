@@ -39,6 +39,7 @@ ROS2 Jazzy Python package providing:
 
 - Ball detection uses local inference on Raspberry Pi only.
 - Default endpoint is `http://127.0.0.1:9001` with model route `unibot-ball-detection-instant-1/1`.
+- Set `ball_detection_enabled: false` in `config/params.yaml` to disable ball detection loop.
 - Topics published by `pose_estimation`:
 	- `/current_position` when `pose_estimation` is enabled
 - Topics published by `decision_node`:
