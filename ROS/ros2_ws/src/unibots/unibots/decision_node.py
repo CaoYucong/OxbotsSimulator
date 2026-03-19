@@ -16,10 +16,12 @@ class DecisionNode(Node):
         super().__init__('decision_node')
 
         self.declare_parameter('tick_hz', 10.0)
+        self.declare_parameter('fallback_tick_hz', 1.0)
         self.declare_parameter('mode', '')
         self.declare_parameter('default_speed', 0.3)
 
-        tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)
+        tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)  # kept for launch-file compat, unused
+        fallback_tick_hz = float(self.get_parameter('fallback_tick_hz').get_parameter_value().double_value)
         self._mode_param = self.get_parameter('mode').get_parameter_value().string_value
         self._default_speed = float(self.get_parameter('default_speed').get_parameter_value().double_value)
 
@@ -43,11 +45,11 @@ class DecisionNode(Node):
         self._pub_collision_avoiding_waypoint = self.create_publisher(String, '/collision_avoiding_waypoint', 10)
 
         self._mode_warned = False
-        period = 0.1 if tick_hz <= 0.0 else (1.0 / tick_hz)
-        self.create_timer(period, self._tick)
+        fallback_period = 1.0 if fallback_tick_hz <= 0.0 else (1.0 / fallback_tick_hz)
+        self.create_timer(fallback_period, self._tick)
 
         self.get_logger().info(
-            f'decision_node started, tick_hz={tick_hz}, input_source=topics'
+            f'decision_node started, tick_hz={fallback_tick_hz} (fixed), input_source=topics'
         )
 
     def _on_current_position(self, msg: PoseStamped) -> None:

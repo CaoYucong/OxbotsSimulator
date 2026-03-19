@@ -388,7 +388,7 @@ FIELD_VIEWER_PATH = os.path.abspath(
 HTML_PORT_FILE = os.path.join(THIS_DIR, "html_port.txt")
 FIELD_VIEWER_PORT = _load_html_port(HTML_PORT_FILE)
 SIM_DATA_ENDPOINT = f"http://localhost:{FIELD_VIEWER_PORT}/data/simulation_data"
-DEFAULT_PI_IP = "192.168.50.2"
+DEFAULT_PI_IP = "10.26.243.139"
 DECISIONS_CACHE = {}
 DECISIONS_SEQ = 0
 
@@ -1626,10 +1626,10 @@ while supervisor.step(TIME_STEP) != -1:
         _append_ball_taken_history(BALL_TAKEN_HISTORY_FILE, 180.0, MAIN_BALL_TAKEN)
         ball_taken_180_logged = True
 
-    if sim_time > 185.0:
-        print("[Supervisor] Simulation time exceeded 185s. Stopping simulation.")
-        _write_supervisor_status(SUPERVISOR_STATUS_FILE, "exited")
-        break
+    # if sim_time > 185.0:
+    #     print("[Supervisor] Simulation time exceeded 185s. Stopping simulation.")
+    #     _write_supervisor_status(SUPERVISOR_STATUS_FILE, "exited")
+    #     break
 
     # ==== Update main robot (single waypoint navigation) ====
     # Check if dynamic_waypoints has changed (web-only)

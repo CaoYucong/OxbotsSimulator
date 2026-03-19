@@ -2068,7 +2068,8 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     update_ball_memory_v2(visible_balls_file=visible_balls_file)
 
     status = _read_status(status_file)
-    if status == "going":
+    dynamic_waypoint_type = _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)
+    if status == "going" and dynamic_waypoint_type == "ball":
         return 0
 
     # if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
@@ -2077,10 +2078,10 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     cur = _read_current_position(current_file)
     cx, cy, bearing = cur if cur is not None else (0.0, 0.0, None)
 
-    sim_time = _read_time_seconds(TIME_FILE)
-    if sim_time is not None and sim_time > 180 - 2 * next_point_time_cost((cx, cy), bearing, (-0.9, 0.0), None):
-        goto(-0.9, 0.0, 180.0)
-        return 0
+    # sim_time = _read_time_seconds(TIME_FILE)
+    # if sim_time is not None and sim_time > 160:
+    #     goto(-0.9, 0.0, 0.0)
+    #     return 0
 
 
     status = _read_status(status_file)
@@ -2155,7 +2156,7 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
 
     target_x, target_y = best
     heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
-    ok = goto(target_x, target_y, heading_deg)
+    ok = goto(target_x, target_y, heading_deg, waypoint_type="ball")
     return 0 if ok else 1
 
 def parse_args() -> argparse.Namespace:

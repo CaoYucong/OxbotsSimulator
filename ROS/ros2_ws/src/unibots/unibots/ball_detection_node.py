@@ -15,6 +15,7 @@ import rclpy
 import yaml
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path as PathMsg
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
@@ -30,6 +31,7 @@ class BallDetectionNode(Node):
         self.declare_parameter('ball_pose_topic', '/ball_pose')
         self.declare_parameter('ball_detections_topic', '/ball_detections')
         self.declare_parameter('camera_pose_topic', '/camera_pose')
+        self.declare_parameter('camera_pose_history_topic', '/camera_pose_history')
         self.declare_parameter('visible_balls_topic', '/visible_balls')
         self.declare_parameter('local_inference_url', 'http://127.0.0.1:9001')
         self.declare_parameter('local_model_id', 'unibot-ball-detection/1')
@@ -64,6 +66,9 @@ class BallDetectionNode(Node):
             self.get_parameter('ball_detections_topic').get_parameter_value().string_value
         )
         self._camera_pose_topic = self.get_parameter('camera_pose_topic').get_parameter_value().string_value
+        self._camera_pose_history_topic = (
+            self.get_parameter('camera_pose_history_topic').get_parameter_value().string_value
+        )
         self._visible_balls_topic = self.get_parameter('visible_balls_topic').get_parameter_value().string_value
         self._local_inference_url = (
             self.get_parameter('local_inference_url').get_parameter_value().string_value.rstrip('/')
@@ -111,7 +116,7 @@ class BallDetectionNode(Node):
         self._camera_offset_y_robot = float(
             self.get_parameter('camera_offset_y_robot').get_parameter_value().double_value
         )
-        self._crop_y_start = 150
+        self._crop_y_start = 10
 
         if self._request_timeout_sec <= 0.0:
             self._request_timeout_sec = 1.0
@@ -146,6 +151,11 @@ class BallDetectionNode(Node):
         self._last_success_detection_image: Optional[np.ndarray] = None
         self._camera_intrinsics = self._load_camera_intrinsics(self._camera_intrinsic_path)
         self._current_camera_pose: Optional[tuple[np.ndarray, np.ndarray]] = None
+        self._camera_pose_history_entries: list[tuple[int, np.ndarray, np.ndarray]] = []
+        # Buffer of recent cropped front images keyed by stamp_ns (2-second rolling window).
+        self._front_image_buffer: dict[int, np.ndarray] = {}
+        # A matched (image, cam_world, r_wc) pair ready for the next infer tick.
+        self._pending_infer_item: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None
 
         self._pub_ball_detection_image = self.create_publisher(Image, ball_detection_image_topic, 10)
         self._pub_ball_pose = self.create_publisher(PoseStamped, self._ball_pose_topic, 10)
@@ -154,6 +164,7 @@ class BallDetectionNode(Node):
 
         self.create_subscription(Image, front_camera_topic, self._on_front_image, 10)
         self.create_subscription(PoseStamped, self._camera_pose_topic, self._on_camera_pose, 10)
+        self.create_subscription(PathMsg, self._camera_pose_history_topic, self._on_camera_pose_history, 10)
 
         self.create_timer(1.0 / self._infer_hz, self._infer_tick)
 
@@ -210,11 +221,20 @@ class BallDetectionNode(Node):
             self._latest_front_stamp = msg.header.stamp
             full_h, full_w = full_image.shape[:2]
             if full_h > self._crop_y_start:
-                self._latest_front_image = full_image[self._crop_y_start :, :].copy()
+                cropped = full_image[self._crop_y_start :, :].copy()
             else:
-                self._latest_front_image = full_image
+                cropped = full_image
+            self._latest_front_image = cropped
 
-            cropped_h, cropped_w = self._latest_front_image.shape[:2]
+            # Buffer image by stamp for exact matching with camera pose.
+            stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+            self._front_image_buffer[stamp_ns] = cropped
+            cutoff_ns = stamp_ns - 2_000_000_000
+            self._front_image_buffer = {
+                k: v for k, v in self._front_image_buffer.items() if k >= cutoff_ns
+            }
+
+            cropped_h, cropped_w = cropped.shape[:2]
             self._debug_throttled(
                 'front_image',
                 f'received front image: {full_w}x{full_h}, '
@@ -256,6 +276,33 @@ class BallDetectionNode(Node):
         r_wc = self._quaternion_to_rotation_matrix(qx, qy, qz, qw)
         self._current_camera_pose = (cam_world, r_wc)
 
+        # Try to find the exact front camera image that produced this pose.
+        pose_stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        image = self._front_image_buffer.get(pose_stamp_ns)
+        if image is None and self._front_image_buffer:
+            best_ns = min(self._front_image_buffer.keys(), key=lambda k: abs(k - pose_stamp_ns))
+            if abs(best_ns - pose_stamp_ns) <= 100_000_000:  # within 100 ms
+                image = self._front_image_buffer[best_ns]
+        if image is not None:
+            self._pending_infer_item = (image, cam_world, r_wc)
+
+    def _on_camera_pose_history(self, msg: PathMsg) -> None:
+        entries: list[tuple[int, np.ndarray, np.ndarray]] = []
+        for p in msg.poses:
+            stamp_ns = int(p.header.stamp.sec) * 1_000_000_000 + int(p.header.stamp.nanosec)
+            cam_world = np.array(
+                [float(p.pose.position.x), float(p.pose.position.y), float(p.pose.position.z)],
+                dtype=np.float64,
+            )
+            r_wc = self._quaternion_to_rotation_matrix(
+                float(p.pose.orientation.x),
+                float(p.pose.orientation.y),
+                float(p.pose.orientation.z),
+                float(p.pose.orientation.w),
+            )
+            entries.append((stamp_ns, cam_world, r_wc))
+        self._camera_pose_history_entries = entries
+
     @staticmethod
     def _to_ball_type(detection_class: str) -> str:
         text = (detection_class or '').strip().lower()
@@ -277,6 +324,12 @@ class BallDetectionNode(Node):
             except Exception:
                 continue
             if abs(x) > 0.9 or abs(y) > 0.9:
+                continue
+            try:
+                camera_range_m = float(detection.get('camera_range_m', 0.0))
+            except Exception:
+                camera_range_m = 0.0
+            if camera_range_m > 1.2:
                 continue
             ball_type = self._to_ball_type(str(detection.get('class', 'PING')))
             lines.append(f'({x:.6f}, {y:.6f}, {ball_type})')
@@ -544,29 +597,42 @@ class BallDetectionNode(Node):
             return
 
         image = self._latest_front_image
-        detections, infer_timing = self._infer_with_roboflow(image)
+
+        # Use the exact (image, camera_pose) pair matched by stamp if available.
+        if self._pending_infer_item is not None:
+            image, cam_world, r_wc = self._pending_infer_item
+            self._pending_infer_item = None
+            self._current_camera_pose = (cam_world, r_wc)
+        elif self._camera_pose_history_entries and self._latest_front_stamp is not None:
+            # Fallback: best-match from camera pose history.
+            front_ns = (
+                int(self._latest_front_stamp.sec) * 1_000_000_000
+                + int(self._latest_front_stamp.nanosec)
+            )
+            best = min(self._camera_pose_history_entries, key=lambda e: abs(e[0] - front_ns))
+            self._current_camera_pose = (best[1], best[2])
+
+        detections, infer_timing, infer_ok = self._infer_with_roboflow(image)
         self._latest_detections = detections
         publish_topics_ms = 0.0
         publish_image_ms = 0.0
         t_publish_image = time.perf_counter()
         self._publish_detection_image(image, detections)
         publish_image_ms = (time.perf_counter() - t_publish_image) * 1000.0
+        if not infer_ok:
+            self._debug_throttled('infer_failed', 'skip publish: roboflow inference failed')
+            return
         if not detections:
             self._debug_throttled('no_detection_publish', 'skip publish: no valid detections in this tick')
             tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
-            # self._perf_throttled(
-            #     'infer_tick',
-            #     'stage_ms '
-            #     f"encode={infer_timing.get('encode_ms', 0.0):.1f}, "
-            #     f"request={infer_timing.get('request_ms', 0.0):.1f}, "
-            #     f"extract={infer_timing.get('extract_ms', 0.0):.1f}, "
-            #     f"filter={infer_timing.get('filter_ms', 0.0):.1f}, "
-            #     f"infer_total={infer_timing.get('total_ms', 0.0):.1f}, "
-            #     f'publish_topics={publish_topics_ms:.1f}, '
-            #     f'publish_image={publish_image_ms:.1f}, '
-            #     f'tick_total={tick_total_ms:.1f}, '
-            #     f'detections={len(detections)}',
-            # )
+            self.get_logger().info(
+                '[infer_time] '
+                f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
+                f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
+                f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
+                f'tick_total={tick_total_ms:.1f}ms, '
+                f'detections=0'
+            )
             return
 
         t_publish_topics = time.perf_counter()
@@ -574,21 +640,17 @@ class BallDetectionNode(Node):
         publish_topics_ms = (time.perf_counter() - t_publish_topics) * 1000.0
 
         tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
-        # self._perf_throttled(
-        #     'infer_tick',
-        #     'stage_ms '
-        #     f"encode={infer_timing.get('encode_ms', 0.0):.1f}, "
-        #     f"request={infer_timing.get('request_ms', 0.0):.1f}, "
-        #     f"extract={infer_timing.get('extract_ms', 0.0):.1f}, "
-        #     f"filter={infer_timing.get('filter_ms', 0.0):.1f}, "
-        #     f"infer_total={infer_timing.get('total_ms', 0.0):.1f}, "
-        #     f'publish_topics={publish_topics_ms:.1f}, '
-        #     f'publish_image={publish_image_ms:.1f}, '
-        #     f'tick_total={tick_total_ms:.1f}, '
-        #     f'detections={len(detections)}',
-        # )
+        self.get_logger().info(
+            '[infer_time] '
+            f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
+            f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
+            f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
+            f'publish_topics={publish_topics_ms:.1f}ms, '
+            f'tick_total={tick_total_ms:.1f}ms, '
+            f'detections={len(detections)}'
+        )
 
-    def _infer_with_roboflow(self, image: np.ndarray) -> tuple[list[dict], dict[str, float]]:
+    def _infer_with_roboflow(self, image: np.ndarray) -> tuple[list[dict], dict[str, float], bool]:
         timing = {
             'encode_ms': 0.0,
             'request_ms': 0.0,
@@ -604,7 +666,7 @@ class BallDetectionNode(Node):
         if not ok:
             self._debug_throttled('encode_failed', 'cv2.imencode failed for inference frame')
             timing['total_ms'] = (time.perf_counter() - infer_start) * 1000.0
-            return [], timing
+            return [], timing, False
 
         endpoint = f'{self._local_inference_url}/{self._local_model_id}'
         endpoint_with_key = (
@@ -639,12 +701,12 @@ class BallDetectionNode(Node):
                         self._last_error_text = 'roboflow 401 (invalid api key)'
                         self.get_logger().warn(f'roboflow http error: {retry_exc.code} {retry_exc.reason}')
                         timing['total_ms'] = (time.perf_counter() - infer_start) * 1000.0
-                        return [], timing
+                        return [], timing, False
                     else:
                         self.get_logger().warn(f'roboflow http error: {retry_exc.code} {retry_exc.reason}')
                         self._last_error_text = f'roboflow http error: {retry_exc.code}'
                         timing['total_ms'] = (time.perf_counter() - infer_start) * 1000.0
-                        return [], timing
+                        return [], timing, False
             else:
                 self.get_logger().warn(f'roboflow http error: {exc.code} {exc.reason}')
                 if exc.code == 401:
@@ -652,7 +714,7 @@ class BallDetectionNode(Node):
                 else:
                     self._last_error_text = f'roboflow http error: {exc.code}'
                 timing['total_ms'] = (time.perf_counter() - infer_start) * 1000.0
-                return [], timing
+                return [], timing, False
         except Exception as exc:
             timing['request_ms'] = (time.perf_counter() - t_request) * 1000.0
             now = time.monotonic()
@@ -661,7 +723,7 @@ class BallDetectionNode(Node):
                 self.get_logger().warn(f'roboflow infer failed: {exc}')
             self._last_error_text = f'roboflow infer failed: {type(exc).__name__}'
             timing['total_ms'] = (time.perf_counter() - infer_start) * 1000.0
-            return [], timing
+            return [], timing, False
         else:
             timing['request_ms'] = (time.perf_counter() - t_request) * 1000.0
 
@@ -671,7 +733,7 @@ class BallDetectionNode(Node):
         if not isinstance(predictions, list):
             self._debug('unexpected payload format: predictions is not a list')
             timing['total_ms'] = (time.perf_counter() - infer_start) * 1000.0
-            return [], timing
+            return [], timing, False
 
         self._debug(f'infer response: raw_predictions={len(predictions)}')
 
@@ -714,7 +776,7 @@ class BallDetectionNode(Node):
             self._last_error_text = 'no ball detected'
             self._debug('filtered detections=0 (after min_confidence)')
         timing['total_ms'] = (time.perf_counter() - infer_start) * 1000.0
-        return result, timing
+        return result, timing, True
 
     def _send_infer_request_with_fallback(
         self,

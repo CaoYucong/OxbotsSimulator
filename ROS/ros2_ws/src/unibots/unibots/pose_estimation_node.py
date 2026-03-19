@@ -329,7 +329,9 @@ class PoseEstimationNode(Node):
         self._last_placeholder_log = 0.0
         self._last_image_time = 0.0
         self._latest_image: Optional[np.ndarray] = None
+        self._latest_image_stamp: Optional[rclpy.time.Time] = None
         self._pose_history: deque[tuple[int, PoseStamped]] = deque()
+        self._camera_pose_history: deque[tuple[int, PoseStamped]] = deque()
         self._kf = cv2.KalmanFilter(5, 3)
         self._kf.measurementMatrix = np.array(
             [
@@ -356,6 +358,7 @@ class PoseEstimationNode(Node):
 
         self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
         self._pub_camera_pose = self.create_publisher(PoseStamped, '/camera_pose', 10)
+        self._pub_camera_pose_history = self.create_publisher(PathMsg, '/camera_pose_history', 10)
         self._pub_pose_history = self.create_publisher(PathMsg, '/pose_history', 10)
         self._pub_processed_image = self.create_publisher(Image, '/processed_image', 10)
         self.create_subscription(Image, camera_topic, self._on_image, 10)
@@ -390,6 +393,7 @@ class PoseEstimationNode(Node):
             return
 
         self._last_image_time = time.monotonic()
+        self._latest_image_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
 
         if self.tick_hz > 0.0:
             self._latest_image = image
@@ -600,7 +604,7 @@ class PoseEstimationNode(Node):
         robot = estimate['robot_pose_world']
         camera = estimate['camera_position_world']
         camera_rpy = estimate['camera_orientation_world_deg']
-        now_time = self.get_clock().now()
+        now_time = self._latest_image_stamp if self._latest_image_stamp is not None else self.get_clock().now()
         now_ns = now_time.nanoseconds
 
         cam_qx, cam_qy, cam_qz, cam_qw = _euler_zyx_deg_to_quaternion(
@@ -619,6 +623,20 @@ class PoseEstimationNode(Node):
         msg_camera.pose.orientation.z = cam_qz
         msg_camera.pose.orientation.w = cam_qw
         self._pub_camera_pose.publish(msg_camera)
+
+        camera_history_pose = PoseStamped()
+        camera_history_pose.header.stamp = now_time.to_msg()
+        camera_history_pose.header.frame_id = 'map'
+        camera_history_pose.pose = msg_camera.pose
+        self._camera_pose_history.append((now_ns, camera_history_pose))
+        _CAMERA_POSE_HISTORY_WINDOW_NS = int(2.0 * 1e9)
+        while self._camera_pose_history and (now_ns - self._camera_pose_history[0][0]) > _CAMERA_POSE_HISTORY_WINDOW_NS:
+            self._camera_pose_history.popleft()
+        msg_camera_history = PathMsg()
+        msg_camera_history.header.stamp = now_time.to_msg()
+        msg_camera_history.header.frame_id = 'map'
+        msg_camera_history.poses = [pose for _, pose in self._camera_pose_history]
+        self._pub_camera_pose_history.publish(msg_camera_history)
 
         measured_x = float(robot['x'])
         measured_y = float(robot['y'])

@@ -64,7 +64,7 @@ radar_sensor_node:
 front_camera_node:
   ros__parameters:
     # Use local USB camera when true; use web upstream camera when false.
-    use_real_sensor: false
+    use_real_sensor: true
     # Preferred USB camera device path. Empty = use index (better when USB port changed).
     usb_camera_device: ''
     # Fallback USB camera index when usb_camera_device is empty/unavailable.

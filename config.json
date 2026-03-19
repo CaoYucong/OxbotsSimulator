@@ -7,6 +7,6 @@
 	"default_angular_velocity": 40,
 	"run_on_pi": true,
 	"roboflow_api_key": "ixTfLRX4juimyCb388di",
-	"pi_ip": "192.168.50.2",
+	"pi_ip": "10.26.243.139",
 	"viewer_refresh_seconds": 1
 }

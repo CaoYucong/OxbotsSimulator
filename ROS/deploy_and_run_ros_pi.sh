@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOCAL_WS_DEFAULT="$SCRIPT_DIR/ros2_ws"
 
 PI_USER="${PI_USER:-caoyucong}"
-PI_IP="${PI_IP:-192.168.50.2}"
+PI_IP="${PI_IP:-10.26.243.139}"
 PI_PASSWORD="${PI_PASSWORD:-041003}"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 REMOTE_WS="${REMOTE_WS:-~/OxbotsSimulator/ROS/ros2_ws}"
@@ -70,7 +70,7 @@ Environment overrides:
 
 Examples:
   ./ROS/deploy_and_run_ros_pi.sh
-  PI_IP=192.168.50.23 ./ROS/deploy_and_run_ros_pi.sh --detach
+  PI_IP=10.26.243.139 ./ROS/deploy_and_run_ros_pi.sh --detach
 EOF
 }
 
@@ -396,18 +396,22 @@ for name, gpio, target in order:
     print(f'[INFO] assigning {name} (GPIO{gpio}) -> 0x{target:02X}  |  scan before: {[hex(x) for x in before]}', flush=True)
 
     if VL53L0X_DEFAULT_ADDR not in before:
-        raise SystemExit(
-            f'[ERROR] {name}: sensor not found at 0x{VL53L0X_DEFAULT_ADDR:02X} after XSHUT HIGH. '
-            'Check XSHUT wiring or increase TOF_BOOT_DELAY_MS.'
+        print(
+            f'[WARN] {name}: sensor not found at 0x{VL53L0X_DEFAULT_ADDR:02X} after XSHUT HIGH. '
+            'Skipping this sensor. Check XSHUT wiring or increase TOF_BOOT_DELAY_MS.',
+            flush=True
         )
+        continue
 
     try:
         bus.write_byte_data(VL53L0X_DEFAULT_ADDR, VL53L0X_ADDR_REG, target & 0x7F)
     except OSError as exc:
-        raise SystemExit(
-            f'[ERROR] {name}: I2C write to 0x{VL53L0X_DEFAULT_ADDR:02X} reg 0x{VL53L0X_ADDR_REG:02X} failed: {exc}. '
-            'Check XSHUT wiring/power.'
+        print(
+            f'[WARN] {name}: I2C write to 0x{VL53L0X_DEFAULT_ADDR:02X} reg 0x{VL53L0X_ADDR_REG:02X} failed: {exc}. '
+            'Skipping this sensor. Check XSHUT wiring/power.',
+            flush=True
         )
+        continue
 
     time.sleep(0.02)
     after = i2c_scan()
@@ -418,7 +422,10 @@ target_set = {target for (_, _, target) in order}
 print('[INFO] I2C scan after init:', ' '.join(f'0x{x:02X}' for x in addresses))
 missing = [f'0x{x:02X}' for x in sorted(target_set) if x not in addresses]
 if missing:
-    raise SystemExit('[ERROR] Missing ToF addresses after init: ' + ', '.join(missing))
+    print('[WARN] Missing ToF addresses after init: ' + ', '.join(missing) +
+          '. radar_sensor_node will start without these sensors.', flush=True)
+else:
+    print('[OK] All ToF sensors initialized successfully.')
 
 for pin in pins.values():
     pin.close()

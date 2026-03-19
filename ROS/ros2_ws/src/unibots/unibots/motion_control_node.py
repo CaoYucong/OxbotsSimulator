@@ -99,9 +99,12 @@ class MotionControlNode(Node):
         if DigitalOutputDevice is None:
             raise RuntimeError('gpiozero is not available. Please install python3-gpiozero on Raspberry Pi.')
 
+        # Wheels 5 & 6 always spin: pin A = HIGH (forward) from creation
+        ALWAYS_ON_WHEELS = {5, 6}
+
         self._devices = {
             wheel_id: (
-                DigitalOutputDevice(pin_a, initial_value=False),
+                DigitalOutputDevice(pin_a, initial_value=(wheel_id in ALWAYS_ON_WHEELS)),
                 DigitalOutputDevice(pin_b, initial_value=False),
             )
             for wheel_id, (pin_a, pin_b) in WHEELS.items()
@@ -109,7 +112,11 @@ class MotionControlNode(Node):
 
         self._forward_pattern = {wheel_id: 'f' for wheel_id in WHEELS}
         self._reverse_pattern = {wheel_id: 'r' for wheel_id in WHEELS}
+        self._reverse_pattern[5] = 'f'  # wheel 5 (pins 24, 25) always spins forward
+        self._reverse_pattern[6] = 'f'  # wheel 6 (pins 27, 4) always spins forward
         self._stop_pattern = {wheel_id: 's' for wheel_id in WHEELS}
+        self._stop_pattern[5] = 'f'  # wheel 5 (pins 24, 25) always spins forward
+        self._stop_pattern[6] = 'f'  # wheel 6 (pins 27, 4) always spins forward
         self._left_strafe_pattern = dict(self._stop_pattern)
         self._right_strafe_pattern = dict(self._stop_pattern)
         self._left_strafe_pattern.update({
@@ -204,8 +211,9 @@ class MotionControlNode(Node):
         return (x, y, theta)
 
     def _update_destination_waypoint(self) -> None:
-        if self._collision_avoiding_waypoint is not None:
-            self._destination_waypoint = self._collision_avoiding_waypoint
+        wp = self._collision_avoiding_waypoint
+        if wp is not None and not (wp[0] == 0.0 and wp[1] == 0.0 and (wp[2] is None or wp[2] == 0.0)):
+            self._destination_waypoint = wp
             return
         self._destination_waypoint = self._dynamic_waypoint
 
@@ -267,7 +275,7 @@ class MotionControlNode(Node):
                                 self._current_heading_deg - float(dest_heading_deg)
                             )
                         )
-                        reached_heading = heading_err <= 10.0
+                        reached_heading = heading_err <= 30.0
                 status = 'reached' if reached_heading else 'going'
             else:
                 status = 'going'
@@ -282,10 +290,10 @@ class MotionControlNode(Node):
             dtheta_text = 'None' if dtheta is None else f'{float(dtheta):.1f}'
             dest_text = f'({dx:.3f}, {dy:.3f}, {dtheta_text})'
 
-        self.get_logger().info(
-            f'[waypoint_status_debug] current=({cur_x_text}, {cur_y_text}, {cur_heading_text}), '
-            f'destination={dest_text}, status={status}'
-        )
+        # self.get_logger().info(
+        #     f'[waypoint_status_debug] current=({cur_x_text}, {cur_y_text}, {cur_heading_text}), '
+        #     f'destination={dest_text}, status={status}'
+        # )
 
         msg = String()
         msg.data = status
@@ -293,12 +301,11 @@ class MotionControlNode(Node):
 
     def _tick(self) -> None:
         self._publish_waypoint_status()
-        if (
-            self._destination_waypoint is None
-            or self._current_x is None
-            or self._current_y is None
-            or self._current_heading_deg is None
-        ):
+        if self._current_x is None or self._current_y is None or self._current_heading_deg is None:
+            # No AprilTag visible — reverse at full speed to find a tag
+            self._move_backward()
+            return
+        if self._destination_waypoint is None:
             self._stop()
             return
 
@@ -311,12 +318,12 @@ class MotionControlNode(Node):
             self._stop()
             return
 
-        target_heading_deg = math.degrees(math.atan2(dy, dx))
+        target_heading_deg = math.degrees(math.atan2(dy, dx)) + 180.0
         heading_error_deg = self._normalize_angle_deg(target_heading_deg - self._current_heading_deg)
 
-        if heading_error_deg > 10.0:
+        if heading_error_deg > 50.0:
             self._anticlock_rotate()
-        elif heading_error_deg < -10.0:
+        elif heading_error_deg < -50.0:
             self._clock_rotate()
         else:
             self._move_forward()
