@@ -12,9 +12,14 @@ def generate_launch_description() -> LaunchDescription:
         params_payload = yaml.safe_load(f) or {}
     front_camera_params = params_payload.get('front_camera_node', {}).get('ros__parameters', {})
     use_real_sensor = bool(front_camera_params.get('use_real_sensor', False))
+    simulation_intrinsic_path = os.path.join(pkg_share, 'config', 'simulation_camera_intrinsic.json')
     roboflow_api_key = os.getenv('ROBOFLOW_API_KEY', '').strip()
 
-    ball_detection_parameters = [params]
+    ball_detection_parameters = [params, {'use_real_sensor': use_real_sensor}]
+    pose_estimation_parameters = [params, {'use_real_sensor': use_real_sensor}]
+    if not use_real_sensor:
+        ball_detection_parameters.append({'camera_intrinsic_path': simulation_intrinsic_path})
+        pose_estimation_parameters.append({'intrinsic_path': simulation_intrinsic_path})
     if roboflow_api_key:
         ball_detection_parameters.append({'roboflow_api_key': roboflow_api_key})
 
@@ -59,7 +64,7 @@ def generate_launch_description() -> LaunchDescription:
             executable='pose_estimation_node',
             name='pose_estimation',
             output='screen',
-            parameters=[params, {'use_real_sensor': use_real_sensor}],
+            parameters=pose_estimation_parameters,
         ),
         Node(
             package='unibots',

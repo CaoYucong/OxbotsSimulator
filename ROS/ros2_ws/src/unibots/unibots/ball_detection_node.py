@@ -41,6 +41,7 @@ class BallDetectionNode(Node):
         self.declare_parameter('debug_log_every_sec', 2.0)
         self.declare_parameter('perf_logs', True)
         self.declare_parameter('perf_log_every_sec', 2.0)
+        self.declare_parameter('use_real_sensor', False)
         self.declare_parameter('camera_intrinsic_path', '')
         self.declare_parameter('ball_diameter_m', 0.043)
         self.declare_parameter('ping_ball_diameter_m', 0.040)
@@ -85,6 +86,7 @@ class BallDetectionNode(Node):
         self._perf_log_every_sec = float(
             self.get_parameter('perf_log_every_sec').get_parameter_value().double_value
         )
+        self._use_real_sensor = bool(self.get_parameter('use_real_sensor').get_parameter_value().bool_value)
         configured_intrinsic_path = (
             self.get_parameter('camera_intrinsic_path').get_parameter_value().string_value.strip()
         )
@@ -274,6 +276,8 @@ class BallDetectionNode(Node):
                 y = float(world_position.get('y'))
             except Exception:
                 continue
+            if abs(x) > 0.9 or abs(y) > 0.9:
+                continue
             ball_type = self._to_ball_type(str(detection.get('class', 'PING')))
             lines.append(f'({x:.6f}, {y:.6f}, {ball_type})')
 
@@ -285,8 +289,9 @@ class BallDetectionNode(Node):
         self._pub_visible_balls.publish(msg)
 
     def _find_default_intrinsic_path(self) -> str:
+        default_file = 'real_camera_intrinsic.yaml' if self._use_real_sensor else 'simulation_camera_intrinsic.json'
         local_candidate = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', 'config', 'real_camera_intrinsic.yaml')
+            os.path.join(os.path.dirname(__file__), '..', 'config', default_file)
         )
         if os.path.isfile(local_candidate):
             return local_candidate
@@ -301,20 +306,46 @@ class BallDetectionNode(Node):
 
         try:
             with open(intrinsic_path, 'r', encoding='utf-8') as file:
-                payload = yaml.safe_load(file) or {}
+                if intrinsic_path.lower().endswith(('.yaml', '.yml')):
+                    payload = yaml.safe_load(file) or {}
+                else:
+                    payload = json.load(file) or {}
         except Exception as exc:
             self.get_logger().warn(f'failed to load camera intrinsics: {exc}')
             return None
 
         try:
-            matrix_data = payload.get('camera_matrix', {}).get('data', [])
-            distortion_data = payload.get('distortion_coefficients', {}).get('data', [])
-            image_width = int(payload.get('image_width', 0))
-            image_height = int(payload.get('image_height', 0))
-            distortion_model = str(payload.get('distortion_model', '')).strip().lower()
+            if 'camera_matrix' in payload:
+                matrix_data = payload.get('camera_matrix', {}).get('data', [])
+                distortion_data = payload.get('distortion_coefficients', {}).get('data', [])
+                image_width = int(payload.get('image_width', 0))
+                image_height = int(payload.get('image_height', 0))
+                distortion_model = str(payload.get('distortion_model', '')).strip().lower()
 
-            camera_matrix = np.array(matrix_data, dtype=np.float64).reshape(3, 3)
-            distortion = np.array(distortion_data, dtype=np.float64).reshape(-1, 1)
+                camera_matrix = np.array(matrix_data, dtype=np.float64).reshape(3, 3)
+                distortion = np.array(distortion_data, dtype=np.float64).reshape(-1, 1)
+            else:
+                intr = payload.get('intrinsics', {})
+                fx = float(intr['fx'])
+                fy = float(intr['fy'])
+                cx = float(intr['cx'])
+                cy = float(intr['cy'])
+                camera_matrix = np.array(
+                    [
+                        [fx, 0.0, cx],
+                        [0.0, fy, cy],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    dtype=np.float64,
+                )
+
+                distortion_data = payload.get('distortion', {}).get('coefficients', [])
+                if not distortion_data:
+                    distortion_data = [0.0, 0.0, 0.0, 0.0, 0.0]
+                distortion = np.array(distortion_data, dtype=np.float64).reshape(-1, 1)
+                image_width = int(payload.get('image_size', {}).get('width', 0))
+                image_height = int(payload.get('image_size', {}).get('height', 0))
+                distortion_model = str(payload.get('distortion', {}).get('model', '')).strip().lower()
         except Exception as exc:
             self.get_logger().warn(f'invalid camera intrinsic format: {exc}')
             return None

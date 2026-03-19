@@ -26,7 +26,7 @@ web_bridge_node:
 radar_sensor_node:
   ros__parameters:
     # Use real ToF sensors when true; fetch upstream radar text when false.
-    use_real_sensor: true
+    use_real_sensor: false
     # Upstream simulator host for radar sensor extraction.
     remote_host: 192.168.50.1
     # Upstream simulator port for radar sensor extraction.
@@ -64,7 +64,7 @@ radar_sensor_node:
 front_camera_node:
   ros__parameters:
     # Use local USB camera when true; use web upstream camera when false.
-    use_real_sensor: true
+    use_real_sensor: false
     # Preferred USB camera device path. Empty = use index (better when USB port changed).
     usb_camera_device: ''
     # Fallback USB camera index when usb_camera_device is empty/unavailable.

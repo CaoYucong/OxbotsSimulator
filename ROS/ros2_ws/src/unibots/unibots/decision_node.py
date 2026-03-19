@@ -39,6 +39,8 @@ class DecisionNode(Node):
 
         self._pub_decisions = self.create_publisher(String, '/decisions', 10)
         self._pub_decision_making = self.create_publisher(String, '/decision_making_data', 10)
+        self._pub_dynamic_waypoint = self.create_publisher(String, '/dynamic_waypoint', 10)
+        self._pub_collision_avoiding_waypoint = self.create_publisher(String, '/collision_avoiding_waypoint', 10)
 
         self._mode_warned = False
         period = 0.1 if tick_hz <= 0.0 else (1.0 / tick_hz)
@@ -104,22 +106,39 @@ class DecisionNode(Node):
             return
 
         waypoint = result.get('dynamic_waypoint')
+        collision_waypoint = result.get('collision_avoiding_waypoint')
         speed = result.get('speed')
         if waypoint is None or speed is None:
             return
 
-        wx, wy, theta = waypoint
-        if theta is None:
-            waypoint_text = f'({wx:.6f}, {wy:.6f}, None)'
-        else:
-            waypoint_text = f'({wx:.6f}, {wy:.6f}, {math.degrees(theta):.6f})'
+        waypoint_text = self._format_waypoint_text(waypoint)
+        collision_waypoint_text = '' if collision_waypoint is None else self._format_waypoint_text(collision_waypoint)
 
         payload = {
             'dynamic_waypoints': waypoint_text,
+            'collision_avoiding_waypoint': collision_waypoint_text,
             'speed': f'{float(speed):.6f}',
         }
         self._publish_decisions(payload)
+        self._publish_dynamic_waypoint(waypoint_text)
+        self._publish_collision_avoiding_waypoint(collision_waypoint_text)
         self._publish_decision_making_data()
+
+    def _format_waypoint_text(self, waypoint) -> str:
+        wx, wy, theta = waypoint
+        if theta is None:
+            return f'({wx:.6f}, {wy:.6f}, None)'
+        return f'({wx:.6f}, {wy:.6f}, {math.degrees(theta):.6f})'
+
+    def _publish_collision_avoiding_waypoint(self, waypoint_text: str) -> None:
+        msg = String()
+        msg.data = waypoint_text
+        self._pub_collision_avoiding_waypoint.publish(msg)
+
+    def _publish_dynamic_waypoint(self, waypoint_text: str) -> None:
+        msg = String()
+        msg.data = waypoint_text
+        self._pub_dynamic_waypoint.publish(msg)
 
     def _publish_decisions(self, payload: dict) -> None:
         try:

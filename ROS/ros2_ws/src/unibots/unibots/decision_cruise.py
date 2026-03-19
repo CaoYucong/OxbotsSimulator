@@ -112,7 +112,7 @@ COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt"
 
 RADAR_MAX_RANGE = 0.8
 
-VISIBLE_RANGE_METERS = 2.0
+VISIBLE_RANGE_METERS = 1.0
 
 DEFAULT_LINEAR_VELOCITY_FALLBACK = 0.1
 
@@ -237,6 +237,8 @@ DECISION_MAKING_DATA_TIMEOUT = 0.2
 DECISION_MAKING_DATA_CACHE = {}
 
 DECISION_MAKING_DATA_LOCAL_CACHE = {}
+
+COLLISION_AVOIDING_WAYPOINT_LOCAL: Optional[tuple[float, float, Optional[float]]] = None
 
 WEB_ONLY_FILES = {
     WAYPOINT_STATUS_FILE,
@@ -703,6 +705,12 @@ def _stack_current_waypoint(stack_file: str = WAYPOINTS_STACK_FILE,
 def _write_collision_status(active: bool) -> None:
     status = "activated" if active else "inactive"
     _atomic_write(COLLISION_STATUS_FILE, f"{status}\n")
+
+def _set_collision_avoiding_waypoint(
+    waypoint: Optional[tuple[float, float, Optional[float]]]
+) -> None:
+    global COLLISION_AVOIDING_WAYPOINT_LOCAL
+    COLLISION_AVOIDING_WAYPOINT_LOCAL = waypoint
 
 def _parse_ball_lines(text: str):
     out = []
@@ -1360,38 +1368,12 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
     cur = _read_current_position(current_file)
     if cur is None:
         _write_collision_status(False)
+        _set_collision_avoiding_waypoint(None)
         set_velocity(DEFAULT_LINEAR_VELOCITY)
         return False
     cx, cy, bearing = cur
 
     collision_status = _read_status(COLLISION_STATUS_FILE)
-    waypoint_status = _read_status(WAYPOINT_STATUS_FILE)
-    abandon_time_threshold = 2.0  # seconds, if stacked waypoint is older than this, abandon it to avoid going to stale location
-    if collision_status == "activated":
-        if waypoint_status == "reached":
-            _write_collision_status(False)
-            set_velocity(DEFAULT_LINEAR_VELOCITY)
-            stack_wp = _read_stack_waypoint(WAYPOINTS_STACK_FILE)
-            if stack_wp is not None:
-                # Check if stacked waypoint is too old
-                stack_timestamp = _read_stack_timestamp(WAYPOINTS_STACK_FILE)
-                current_time = _read_time_seconds(TIME_FILE)
-                
-                if stack_timestamp is not None and current_time is not None:
-                    time_elapsed = current_time - stack_timestamp
-                    if time_elapsed > abandon_time_threshold:
-                        # Waypoint is too old, abandon it
-                        _atomic_write(WAYPOINTS_STACK_FILE, "")
-                        return True  # Don't goto anywhere, just return
-                
-                # Waypoint is still valid, proceed as normal
-                _atomic_write(WAYPOINTS_STACK_FILE, "")
-                x, y, orientation = stack_wp
-                if orientation is None:
-                    goto(x, y)
-                else:
-                    goto(x, y, orientation)
-                return True
     if collision_status == "inactive":
         _atomic_write(LAST_BEST_VECTOR_FILE, "")
             
@@ -1584,15 +1566,23 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
                       target_orientation = math.degrees(math.atan2(dy_to_goal, dx_to_goal))
 
         if abs(cx + dx_world) < 0.9 and abs(cy + dy_world) < 0.9:
-            goto(cx + dx_world, cy + dy_world, target_orientation, waypoint_type="collision")
+            _set_collision_avoiding_waypoint((
+                float(cx + dx_world),
+                float(cy + dy_world),
+                None if target_orientation is None else float(target_orientation),
+            ))
         else:
-            stop("collision")
+            _set_collision_avoiding_waypoint(None)
+            _write_collision_status(False)
+            set_velocity(DEFAULT_LINEAR_VELOCITY)
+            return False
 
         return True
-        
+
+    _set_collision_avoiding_waypoint(None)
     if collision_status == "activated":
-        if waypoint_status == "going":
-            return True
+        _write_collision_status(False)
+        set_velocity(DEFAULT_LINEAR_VELOCITY)
 
     return False
 
@@ -2077,8 +2067,12 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     
     update_ball_memory_v2(visible_balls_file=visible_balls_file)
 
-    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+    status = _read_status(status_file)
+    if status == "going":
         return 0
+
+    # if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+    #     pass
 
     cur = _read_current_position(current_file)
     cx, cy, bearing = cur if cur is not None else (0.0, 0.0, None)
@@ -2268,8 +2262,19 @@ def _export_ros_decision(default_speed: float) -> Optional[dict]:
 
     wx, wy, bearing_deg = waypoint
     theta = None if bearing_deg is None else math.radians(float(bearing_deg))
+    collision_waypoint = COLLISION_AVOIDING_WAYPOINT_LOCAL
+    if collision_waypoint is None:
+        collision_waypoint_theta = None
+    else:
+        cwx, cwy, cbearing_deg = collision_waypoint
+        collision_waypoint_theta = (
+            float(cwx),
+            float(cwy),
+            None if cbearing_deg is None else math.radians(float(cbearing_deg)),
+        )
     return {
         "dynamic_waypoint": (float(wx), float(wy), theta),
+        "collision_avoiding_waypoint": collision_waypoint_theta,
         "speed": speed,
     }
 
@@ -2298,6 +2303,8 @@ def decide_from_ros_state(
         sim_time_seconds=sim_time_seconds,
         waypoint_status=waypoint_status,
     )
+
+    _set_collision_avoiding_waypoint(None)
 
     if not DECISIONS_CACHE:
         DECISIONS_CACHE.update(DECISIONS_LOCAL_CACHE)

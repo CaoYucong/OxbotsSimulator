@@ -30,7 +30,7 @@ INFERENCE_IMAGE_REF="${INFERENCE_IMAGE_REF:-roboflow/roboflow-inference-server-c
 REMOTE_INFERENCE_IMAGE_ARCHIVE="${REMOTE_INFERENCE_IMAGE_ARCHIVE:-/home/${PI_USER}/roboflow-inference-server-cpu-latest-arm64.tar.gz}"
 REMOTE_INFERENCE_START_CMD="${REMOTE_INFERENCE_START_CMD:-docker run -d --restart unless-stopped --name unibots-roboflow-inference -p ${INFERENCE_PORT}:9001 ${INFERENCE_IMAGE_REF}}"
 ROBOFLOW_API_KEY="${ROBOFLOW_API_KEY:-}"
-INIT_TOF_ON_DEPLOY="${INIT_TOF_ON_DEPLOY:-1}"
+INIT_TOF_ON_DEPLOY="${INIT_TOF_ON_DEPLOY:-}"
 TOF_FRONT_XSHUT_GPIO="${TOF_FRONT_XSHUT_GPIO:-21}"
 TOF_LEFT_XSHUT_GPIO="${TOF_LEFT_XSHUT_GPIO:-26}"
 TOF_RIGHT_XSHUT_GPIO="${TOF_RIGHT_XSHUT_GPIO:-16}"
@@ -106,9 +106,84 @@ if [[ ! -d "$LOCAL_WS/src/$LAUNCH_PACKAGE" ]]; then
   exit 1
 fi
 
+LOCAL_PARAMS="${LOCAL_PARAMS:-$LOCAL_WS/src/$LAUNCH_PACKAGE/config/params.yaml}"
+
 if [[ ! -f "$LOCAL_CONFIG" ]]; then
   echo "[ERROR] Local config file not found: $LOCAL_CONFIG"
   exit 1
+fi
+
+if [[ -z "$INIT_TOF_ON_DEPLOY" ]]; then
+  if [[ -f "$LOCAL_PARAMS" ]] && command -v python3 >/dev/null 2>&1; then
+    TOF_REAL_SENSOR_FLAG="$(python3 - "$LOCAL_PARAMS" <<'PY'
+import re
+import sys
+
+params_path = sys.argv[1]
+try:
+    with open(params_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+except Exception:
+    print('unknown', end='')
+    raise SystemExit(0)
+
+in_radar = False
+in_params = False
+
+for raw_line in lines:
+    line = raw_line.rstrip('\n')
+    stripped = line.strip()
+
+    if not stripped or stripped.startswith('#'):
+        continue
+
+    if re.match(r'^[^\s].*:\s*$', line):
+        in_radar = stripped.startswith('radar_sensor_node:')
+        in_params = False
+        continue
+
+    if in_radar and re.match(r'^\s{2}ros__parameters:\s*$', line):
+        in_params = True
+        continue
+
+    if in_radar and in_params:
+        if re.match(r'^\s{2}\S', line):
+            break
+        m = re.match(r'^\s{4}use_real_sensor:\s*(.*?)\s*(?:#.*)?$', line)
+        if m:
+            value = m.group(1).strip().lower()
+            if value in {'true', '1', 'yes', 'on'}:
+                print('true', end='')
+            elif value in {'false', '0', 'no', 'off'}:
+                print('false', end='')
+            else:
+                print('unknown', end='')
+            raise SystemExit(0)
+
+print('unknown', end='')
+PY
+)"
+
+    case "$TOF_REAL_SENSOR_FLAG" in
+      true)
+        INIT_TOF_ON_DEPLOY="1"
+        echo "[INFO] Auto ToF init enabled from params.yaml (radar_sensor_node.use_real_sensor=true)"
+        ;;
+      false)
+        INIT_TOF_ON_DEPLOY="0"
+        echo "[INFO] Auto ToF init disabled from params.yaml (radar_sensor_node.use_real_sensor=false)"
+        ;;
+      *)
+        INIT_TOF_ON_DEPLOY="1"
+        echo "[WARN] Cannot parse use_real_sensor from $LOCAL_PARAMS, fallback INIT_TOF_ON_DEPLOY=1"
+        ;;
+    esac
+  else
+    INIT_TOF_ON_DEPLOY="1"
+    echo "[WARN] params.yaml or python3 unavailable, fallback INIT_TOF_ON_DEPLOY=1"
+  fi
+else
+  echo "[INFO] INIT_TOF_ON_DEPLOY overridden by environment: $INIT_TOF_ON_DEPLOY"
 fi
 
 if [[ -z "$ROBOFLOW_API_KEY" ]] && command -v python3 >/dev/null 2>&1; then

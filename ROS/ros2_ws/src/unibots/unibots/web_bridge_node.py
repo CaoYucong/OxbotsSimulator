@@ -220,7 +220,11 @@ def _state_payload(state: "_MirrorState", path: str) -> dict:
 class _MirrorState:
     def __init__(self) -> None:
         default_speed_payload = json.dumps(
-            {"dynamic_waypoints": "", "speed": f"{_load_default_linear_velocity():.6f}"},
+            {
+                "dynamic_waypoints": "",
+                "collision_avoiding_waypoint": "",
+                "speed": f"{_load_default_linear_velocity():.6f}",
+            },
             ensure_ascii=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -417,9 +421,8 @@ def _build_handler(state: _MirrorState):
                 return {"x": x, "y": y}
             return None
 
-        def _get_stack_waypoint(self, decision_making_payload: dict):
-            lines = _read_lines_from_text(_read_text_value(decision_making_payload, "waypoints_stack"))
-            for line in reversed(lines):
+        def _get_collision_avoiding_waypoint(self, decisions_payload: dict):
+            for line in _read_lines_from_text(_read_text_value(decisions_payload, "collision_avoiding_waypoint")):
                 item = _extract_xy_from_line(line)
                 if item is None:
                     continue
@@ -619,7 +622,7 @@ def _build_handler(state: _MirrorState):
                 self._send_json(
                     {
                         "dynamic": self._get_dynamic_waypoint(decisions_payload),
-                        "stack": self._get_stack_waypoint(decision_making_payload),
+                        "collision_avoiding": self._get_collision_avoiding_waypoint(decisions_payload),
                     }
                 )
                 return
@@ -930,7 +933,6 @@ class WebBridgeNode(Node):
         self.pub_simulation_data = self.create_publisher(String, '/simulation_data', 10)
         self.pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
         self.pub_visible_balls = self.create_publisher(String, '/visible_balls', 10)
-        self.pub_waypoint_status = self.create_publisher(String, '/waypoint_status', 10)
         self.create_subscription(Image, self.camera_topic, self._on_front_camera_msg, 10)
         self.create_subscription(Image, '/processed_image', self._on_processed_image_msg, 10)
         self.create_subscription(Image, '/ball_detection_image', self._on_ball_detection_image_msg, 10)
@@ -990,7 +992,6 @@ class WebBridgeNode(Node):
 
         current_text = str(payload.get('current_position', '')).strip()
         visible_text = str(payload.get('visible_balls', '')).strip()
-        waypoint_text = str(payload.get('waypoint_status', '')).strip()
 
         if not self._pose_estimation_enabled:
             pose = self._parse_current_position(current_text)
@@ -1009,9 +1010,7 @@ class WebBridgeNode(Node):
                 msg.pose.orientation.w = math.cos(theta * 0.5)
                 self.pub_current_position.publish(msg)
 
-        wp_msg = String()
-        wp_msg.data = waypoint_text
-        self.pub_waypoint_status.publish(wp_msg)
+        return
 
     def _on_simulation_data(self, msg: String) -> None:
         payload = self._parse_json_payload(msg.data)

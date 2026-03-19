@@ -1192,7 +1192,7 @@
         const visibleList = visible && visible.visible ? visible.visible : [];
         const obstacleList = obstacles && obstacles.obstacles ? obstacles.obstacles : [];
         const dynamic = waypoints && waypoints.dynamic ? waypoints.dynamic : null;
-        const stack = waypoints && waypoints.stack ? waypoints.stack : null;
+        const collisionAvoidingWaypoint = waypoints && waypoints.collision_avoiding ? waypoints.collision_avoiding : null;
         const aroundVectors = robotAround && robotAround.vectors ? robotAround.vectors : [];
         const radarSeries = radarHistory && radarHistory.history ? radarHistory.history : [];
         const tileSeenList = tileSeenTime && tileSeenTime.tiles ? tileSeenTime.tiles : [];
@@ -1230,17 +1230,17 @@
 
         if (dynamic) {
           if (robot) {
-            drawLine(robot.x, robot.y, dynamic.x, dynamic.y, COLORS.waypointLine, 2);
-          }
-          if (stack) {
-            drawDashedCircle(dynamic.x, dynamic.y, COLORS.waypointMuted);
-          } else {
-            drawTriangle(dynamic.x, dynamic.y, COLORS.dynamic);
+            if (collisionAvoidingWaypoint) {
+              drawLine(robot.x, robot.y, collisionAvoidingWaypoint.x, collisionAvoidingWaypoint.y, COLORS.waypointLine, 2);
+              drawLine(collisionAvoidingWaypoint.x, collisionAvoidingWaypoint.y, dynamic.x, dynamic.y, COLORS.waypointLine, 2);
+            } else {
+              drawLine(robot.x, robot.y, dynamic.x, dynamic.y, COLORS.waypointLine, 2);
+            }
           }
 
-          if (stack) {
-            drawLine(dynamic.x, dynamic.y, stack.x, stack.y, COLORS.waypointLine, 2);
-            drawTriangle(stack.x, stack.y, COLORS.stack);
+          drawTriangle(dynamic.x, dynamic.y, COLORS.dynamic);
+          if (collisionAvoidingWaypoint) {
+            drawTriangle(collisionAvoidingWaypoint.x, collisionAvoidingWaypoint.y, COLORS.stack);
           }
         }
 
