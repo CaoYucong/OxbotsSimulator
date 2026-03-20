@@ -19,7 +19,7 @@ class FrontCameraNode(Node):
         self.declare_parameter('use_real_sensor', False)
         self.declare_parameter('usb_camera_device', '')
         self.declare_parameter('usb_camera_index', 0)
-        self.declare_parameter('camera_remote_host', '192.168.50.1')
+        self.declare_parameter('camera_remote_host', '192.168.50.2')
         self.declare_parameter('camera_remote_port', 5003)
         self.declare_parameter('camera_path', '/data/front_camera')
         self.declare_parameter('camera_topic', '/front_camera')

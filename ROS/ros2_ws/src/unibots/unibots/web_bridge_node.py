@@ -850,7 +850,7 @@ class WebBridgeNode(Node):
     def __init__(self) -> None:
         super().__init__('web_bridge_node')
 
-        self.declare_parameter('remote_host', '192.168.50.1')
+        self.declare_parameter('remote_host', '192.168.50.2')
         self.declare_parameter('remote_port', 5003)
         self.declare_parameter('local_host', '127.0.0.1')
         self.declare_parameter('local_port', 5003)

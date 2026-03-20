@@ -5,15 +5,15 @@ web_bridge_node:
     # Shared frequency (Hz) used by all nodes.
     common_hz: 10.0
     # Upstream simulator host for simulation data mirror.
-    remote_host: 192.168.50.1
+    remote_host: 192.168.50.2
     # Upstream simulator port for simulation data mirror.
     remote_port: 5003
     # Local bind address for the HTTP mirror server.
     local_host: 0.0.0.0
     # Local port for the HTTP mirror server.
     local_port: 5003
-    # Poll rate for fetching upstream simulation data (Hz).
-    poll_hz: 10.0
+    # Poll rate for fetching upstream simulation data (Hz). Set to 0 when no upstream simulator.
+    poll_hz: 0.0
     # HTTP timeout for upstream simulation data requests (sec).
     request_timeout: 3.0
     # ROS topic subscribed by web bridge for front camera mirroring.
@@ -26,9 +26,9 @@ web_bridge_node:
 radar_sensor_node:
   ros__parameters:
     # Use real ToF sensors when true; fetch upstream radar text when false.
-    use_real_sensor: false
+    use_real_sensor: true
     # Upstream simulator host for radar sensor extraction.
-    remote_host: 192.168.50.1
+    remote_host: 192.168.50.2
     # Upstream simulator port for radar sensor extraction.
     remote_port: 5003
     # Poll rate for fetching upstream simulation data (Hz).
@@ -70,7 +70,7 @@ front_camera_node:
     # Fallback USB camera index when usb_camera_device is empty/unavailable.
     usb_camera_index: 0
     # Upstream host for front camera JPEG.
-    camera_remote_host: 192.168.50.1
+    camera_remote_host: 192.168.50.2
     # Upstream port for front camera JPEG.
     camera_remote_port: 5003
     # URL path for front camera JPEG.
@@ -148,8 +148,7 @@ pose_estimation:
     pose_estimation: true
     # Input camera topic for pose estimation.
     camera_topic: /front_camera
-    # Override intrinsic JSON path (empty = use package default config/simulation_camera_intrinsic.json,
-    # copied from pose_estimation/simulation_camera_intrinsic.json).
+    # Intrinsic path override (ignored — always uses real_camera_intrinsic.yaml).
     intrinsic_path: ''
     # Override tag map JSON path (empty = use package default).
     tag_map_path: ''

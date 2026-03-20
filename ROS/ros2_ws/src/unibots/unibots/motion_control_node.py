@@ -8,10 +8,13 @@ from rclpy.node import Node
 from std_msgs.msg import Float32, String
 
 try:
-    from gpiozero import DigitalOutputDevice
+    from gpiozero import DigitalOutputDevice, PWMOutputDevice
 except Exception:
     DigitalOutputDevice = None
+    PWMOutputDevice = None
 
+
+DRIVE_WHEEL_SPEED: float = 0.8  # PWM duty cycle for drive wheels 1-4 (0.0 – 1.0)
 
 WHEELS: Dict[int, Tuple[int, int]] = {
     1: (5, 6),
@@ -25,15 +28,17 @@ WHEELS: Dict[int, Tuple[int, int]] = {
 
 def set_wheel_state(devices: dict, wheel_id: int, state: str) -> None:
     a, b = devices[wheel_id]
+    is_pwm = PWMOutputDevice is not None and isinstance(a, PWMOutputDevice)
+    speed = DRIVE_WHEEL_SPEED if is_pwm else 1
     if state == 'f':
-        a.on()
-        b.off()
+        a.value = speed
+        b.value = 0
     elif state == 'r':
-        a.off()
-        b.on()
+        a.value = 0
+        b.value = speed
     else:
-        a.off()
-        b.off()
+        a.value = 0
+        b.value = 0
 
 
 def apply_pattern(devices: dict, pattern: dict) -> None:
@@ -99,16 +104,23 @@ class MotionControlNode(Node):
         if DigitalOutputDevice is None:
             raise RuntimeError('gpiozero is not available. Please install python3-gpiozero on Raspberry Pi.')
 
-        # Wheels 5 & 6 always spin: pin A = HIGH (forward) from creation
+        # Wheels 1-4: PWM drive wheels at DRIVE_WHEEL_SPEED
+        # Wheels 5 & 6: always-on digital wheels (full speed)
         ALWAYS_ON_WHEELS = {5, 6}
+        DRIVE_WHEELS = {1, 2, 3, 4}
 
-        self._devices = {
-            wheel_id: (
-                DigitalOutputDevice(pin_a, initial_value=(wheel_id in ALWAYS_ON_WHEELS)),
-                DigitalOutputDevice(pin_b, initial_value=False),
-            )
-            for wheel_id, (pin_a, pin_b) in WHEELS.items()
-        }
+        self._devices = {}
+        for wheel_id, (pin_a, pin_b) in WHEELS.items():
+            if wheel_id in DRIVE_WHEELS:
+                self._devices[wheel_id] = (
+                    PWMOutputDevice(pin_a, initial_value=0),
+                    PWMOutputDevice(pin_b, initial_value=0),
+                )
+            else:
+                self._devices[wheel_id] = (
+                    DigitalOutputDevice(pin_a, initial_value=(wheel_id in ALWAYS_ON_WHEELS)),
+                    DigitalOutputDevice(pin_b, initial_value=False),
+                )
 
         self._forward_pattern = {wheel_id: 'f' for wheel_id in WHEELS}
         self._reverse_pattern = {wheel_id: 'r' for wheel_id in WHEELS}
@@ -260,25 +272,11 @@ class MotionControlNode(Node):
         ):
             dest_x, dest_y, dest_heading_deg = self._destination_waypoint
             reached_xy = (
-                abs(self._current_x - dest_x) <= 0.05
-                and abs(self._current_y - dest_y) <= 0.05
+                abs(self._current_x - dest_x) <= 0.1
+                and abs(self._current_y - dest_y) <= 0.1
             )
 
-            if reached_xy:
-                reached_heading = True
-                if dest_heading_deg is not None:
-                    if self._current_heading_deg is None:
-                        reached_heading = False
-                    else:
-                        heading_err = abs(
-                            self._normalize_angle_deg(
-                                self._current_heading_deg - float(dest_heading_deg)
-                            )
-                        )
-                        reached_heading = heading_err <= 30.0
-                status = 'reached' if reached_heading else 'going'
-            else:
-                status = 'going'
+            status = 'reached' if reached_xy else 'going'
 
         cur_x_text = 'None' if self._current_x is None else f'{self._current_x:.3f}'
         cur_y_text = 'None' if self._current_y is None else f'{self._current_y:.3f}'
@@ -314,17 +312,17 @@ class MotionControlNode(Node):
         dy = dest_y - self._current_y
         distance = math.hypot(dx, dy)
 
-        if distance <= 0.05:
+        if distance <= 0.1:
             self._stop()
             return
 
-        target_heading_deg = math.degrees(math.atan2(dy, dx)) + 180.0
+        target_heading_deg = math.degrees(math.atan2(dy, dx))
         heading_error_deg = self._normalize_angle_deg(target_heading_deg - self._current_heading_deg)
 
-        if heading_error_deg > 50.0:
-            self._anticlock_rotate()
-        elif heading_error_deg < -50.0:
+        if heading_error_deg > 15.0:
             self._clock_rotate()
+        elif heading_error_deg < -15.0:
+            self._anticlock_rotate()
         else:
             self._move_forward()
 

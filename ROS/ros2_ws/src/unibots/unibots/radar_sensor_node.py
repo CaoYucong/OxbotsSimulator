@@ -13,7 +13,7 @@ class RadarSensorNode(Node):
         super().__init__('radar_sensor_node')
 
         self.declare_parameter('use_real_sensor', False)
-        self.declare_parameter('remote_host', '192.168.50.1')
+        self.declare_parameter('remote_host', '192.168.50.2')
         self.declare_parameter('remote_port', 5003)
         self.declare_parameter('poll_hz', 10.0)
         self.declare_parameter('request_timeout', 1.0)

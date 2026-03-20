@@ -416,6 +416,7 @@ def _post_decision_making_data(payload: dict) -> bool:
         if ok:
             DECISION_MAKING_DATA_CACHE = dict(payload)
         return ok
+    DECISION_MAKING_DATA_CACHE = payload
     try:
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -426,7 +427,6 @@ def _post_decision_making_data(payload: dict) -> bool:
         )
         with urllib.request.urlopen(req, timeout=0.3) as res:
             res.read()
-        DECISION_MAKING_DATA_CACHE = payload
         return True
     except Exception:
         return False
@@ -2237,6 +2237,9 @@ def _sync_ros_topic_state(
             "time": f"{float(sim_time_seconds):.6f}",
             "waypoint_status": (waypoint_status or "going").strip().lower() or "going",
             "radar_sensor": (radar_sensor_text or "").strip(),
+            # No obstacle robots in standalone Pi mode; provide empty value so
+            # _require_sim_value("obstacle_robot") never raises RuntimeError.
+            "obstacle_robot": SIM_DATA_CACHE.get("obstacle_robot", ""),
         }
     )
 

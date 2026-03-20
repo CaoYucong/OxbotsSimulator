@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOCAL_WS_DEFAULT="$SCRIPT_DIR/ros2_ws"
 
 PI_USER="${PI_USER:-caoyucong}"
-PI_IP="${PI_IP:-10.26.243.139}"
+PI_IP="${PI_IP:-192.168.50.2}"
 PI_PASSWORD="${PI_PASSWORD:-041003}"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 REMOTE_WS="${REMOTE_WS:-~/OxbotsSimulator/ROS/ros2_ws}"

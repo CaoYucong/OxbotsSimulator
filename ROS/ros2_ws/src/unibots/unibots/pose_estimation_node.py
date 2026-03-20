@@ -20,7 +20,8 @@ from sensor_msgs.msg import Image
 PERF_METRICS_ENABLED = True
 
 
-def _load_intrinsics(intrinsic_path: Path) -> tuple[np.ndarray, np.ndarray]:
+def _load_intrinsics(intrinsic_path: Path) -> tuple[np.ndarray, np.ndarray, str]:
+    """Returns (K, dist_coeffs, dist_model) where dist_model is 'fisheye' or 'plumb_bob'."""
     suffix = intrinsic_path.suffix.lower()
     with intrinsic_path.open('r', encoding='utf-8') as f:
         if suffix in ('.yaml', '.yml'):
@@ -36,9 +37,10 @@ def _load_intrinsics(intrinsic_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
         dist = payload.get('distortion_coefficients', {}).get('data', [])
         if not dist:
-            dist = [0.0, 0.0, 0.0, 0.0, 0.0]
+            dist = [0.0, 0.0, 0.0, 0.0]
         dist_coeffs = np.array(dist, dtype=np.float64).reshape(-1, 1)
-        return K, dist_coeffs
+        dist_model = payload.get('distortion_model', 'plumb_bob').lower()
+        return K, dist_coeffs, dist_model
 
     intr = payload.get('intrinsics', {})
     fx = float(intr['fx'])
@@ -49,7 +51,7 @@ def _load_intrinsics(intrinsic_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
     dist = payload.get('distortion', {}).get('coefficients', [0.0, 0.0, 0.0, 0.0, 0.0])
     dist_coeffs = np.array(dist, dtype=np.float64).reshape(-1, 1)
-    return K, dist_coeffs
+    return K, dist_coeffs, 'plumb_bob'
 
 
 def _load_tag_world_map(tag_map_path: Path) -> dict[int, np.ndarray]:
@@ -157,7 +159,9 @@ def estimate_camera_world_position(
     dist_coeffs: np.ndarray,
     tag_world: dict[int, np.ndarray],
     cam_offset_x_robot: float,
+    dist_model: str = 'plumb_bob',
     detected: Optional[tuple[list[np.ndarray], Optional[np.ndarray]]] = None,
+    position_bound: Optional[float] = None,
 ) -> Optional[dict]:
     timing_payload: Optional[dict] = None
     if PERF_METRICS_ENABLED:
@@ -193,10 +197,19 @@ def estimate_camera_world_position(
         return None
 
     obj = np.asarray(obj_points, dtype=np.float64)
-    img = np.asarray(img_points, dtype=np.float64)
+    # For fisheye cameras, cv2.solvePnP does not support the fisheye distortion model.
+    # Undistort image points first using the fisheye model, then solve with zero distortion.
+    if dist_model == 'fisheye':
+        img_raw = np.asarray(img_points, dtype=np.float64).reshape(-1, 1, 2)
+        img_undist = cv2.fisheye.undistortPoints(img_raw, K, dist_coeffs, P=K)
+        img = img_undist.reshape(-1, 2)
+        dist_for_pnp = np.zeros((4, 1), dtype=np.float64)
+    else:
+        img = np.asarray(img_points, dtype=np.float64)
+        dist_for_pnp = dist_coeffs
     if PERF_METRICS_ENABLED:
         t_pnp_start = time.perf_counter()
-    ok, rvec, tvec = cv2.solvePnP(obj, img, K, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
+    ok, rvec, tvec = cv2.solvePnP(obj, img, K, dist_for_pnp, flags=cv2.SOLVEPNP_ITERATIVE)
     if not ok:
         return None
 
@@ -211,6 +224,12 @@ def estimate_camera_world_position(
         }
     cam_world = -R.T @ tvec
     cam_world = cam_world.reshape(3)
+
+    # Reject mirror solutions: if position is outside arena bounds, discard
+    if position_bound is not None and position_bound > 0.0:
+        if abs(float(cam_world[0])) > position_bound or abs(float(cam_world[1])) > position_bound:
+            return None
+
     R_wc = R.T
     roll_deg, pitch_deg, yaw_deg = _rotation_matrix_to_euler_zyx_deg(R_wc)
 
@@ -260,6 +279,7 @@ class PoseEstimationNode(Node):
         self.declare_parameter('allow_legacy_opencv', False)
         self.declare_parameter('use_real_sensor', False)
         self.declare_parameter('pose_history_window_sec', 10.0)
+        self.declare_parameter('position_bound', 2.0)
 
         camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
@@ -275,6 +295,8 @@ class PoseEstimationNode(Node):
         self._pose_history_window_sec = float(
             self.get_parameter('pose_history_window_sec').get_parameter_value().double_value
         )
+        _bound_raw = float(self.get_parameter('position_bound').get_parameter_value().double_value)
+        self._position_bound: Optional[float] = _bound_raw if _bound_raw > 0.0 else None
 
         if self._enabled:
             ok_runtime, reason = _opencv_apriltag_runtime_supported()
@@ -294,20 +316,19 @@ class PoseEstimationNode(Node):
         default_intrinsic_real = os.path.join(pkg_share, 'config', 'real_camera_intrinsic.yaml')
         default_tag_map = os.path.join(pkg_share, 'config', 'tag_world_map.json')
 
-        if intrinsic_path_raw:
-            intrinsic_path = Path(intrinsic_path_raw)
-        else:
-            intrinsic_path = Path(default_intrinsic_real if self._use_real_sensor else default_intrinsic_sim)
+        # Always use real camera intrinsic; intrinsic_path param is ignored.
+        intrinsic_path = Path(default_intrinsic_real)
         tag_map_path = Path(tag_map_path_raw) if tag_map_path_raw else Path(default_tag_map)
 
         try:
-            self.K, self.dist_coeffs = _load_intrinsics(intrinsic_path)
+            self.K, self.dist_coeffs, self.dist_model = _load_intrinsics(intrinsic_path)
         except Exception as exc:
             self.get_logger().error(
                 f'failed to load intrinsics from {intrinsic_path}: {exc}; disabling pose_estimation'
             )
             self.K = np.eye(3, dtype=np.float64)
-            self.dist_coeffs = np.zeros((5, 1), dtype=np.float64)
+            self.dist_coeffs = np.zeros((4, 1), dtype=np.float64)
+            self.dist_model = 'plumb_bob'
             self._enabled = False
 
         try:
@@ -341,11 +362,13 @@ class PoseEstimationNode(Node):
             ],
             dtype=np.float32,
         )
-        self._kf.processNoiseCov = np.diag([1e-3, 1e-3, 5e-2, 5e-2, 2e-2]).astype(np.float32)
-        self._kf.measurementNoiseCov = np.diag([2e-2, 2e-2, 1.5]).astype(np.float32)
+        # Aggressive filter: larger process noise + smaller measurement noise → low latency
+        self._kf.processNoiseCov = np.diag([5e-3, 5e-3, 5e-2, 5e-2, 5e-2]).astype(np.float32)
+        self._kf.measurementNoiseCov = np.diag([3e-2, 3e-2, 1.0]).astype(np.float32)
         self._kf.errorCovPost = np.eye(5, dtype=np.float32)
         self._kf_initialized = False
         self._kf_last_update_ns: Optional[int] = None
+        self._kf_consecutive_rejections: int = 0
         self._placeholder_image = self._build_placeholder_image()
         if PERF_METRICS_ENABLED:
             self._perf_window_start = time.monotonic()
@@ -499,15 +522,42 @@ class PoseEstimationNode(Node):
             dtype=np.float32,
         )
 
-        pos_noise = 2e-2
-        heading_noise = 1.5
+        # Measurement noise: scale up when fewer tags are visible
+        pos_noise = 3e-2
+        heading_noise = 1.0
         if num_tags_used <= 1:
             pos_noise = 6e-2
-            heading_noise = 4.0
+            heading_noise = 2.0
         self._kf.measurementNoiseCov = np.diag([pos_noise, pos_noise, heading_noise]).astype(np.float32)
 
         pred = self._kf.predict()
+        predicted_x = float(pred[0, 0])
+        predicted_y = float(pred[1, 0])
         predicted_heading = float(pred[4, 0])
+
+        # Innovation gating: reject measurements that are implausibly far from prediction
+        pos_innovation = math.hypot(measured_x - predicted_x, measured_y - predicted_y)
+        if pos_innovation > 1.0:
+            self._kf_consecutive_rejections += 1
+            if self._kf_consecutive_rejections >= 10:
+                # Filter is stuck far from reality — reset and re-initialize
+                self._kf_initialized = False
+                self._kf_consecutive_rejections = 0
+                self.get_logger().warn(
+                    f'Kalman filter reset after 10 consecutive rejections '
+                    f'(innovation={pos_innovation:.2f}m); re-initializing at '
+                    f'({measured_x:.2f}, {measured_y:.2f})'
+                )
+                return measured_x, measured_y, self._normalize_heading_deg(measured_heading_deg)
+            # Bad detection — keep predicted state, do not call correct()
+            self._kf_last_update_ns = now_ns
+            return (
+                predicted_x,
+                predicted_y,
+                self._normalize_heading_deg(predicted_heading),
+            )
+
+        self._kf_consecutive_rejections = 0
         unwrapped_heading = self._unwrap_heading_near(predicted_heading, measured_heading_deg)
         measurement = np.array([[measured_x], [measured_y], [unwrapped_heading]], dtype=np.float32)
         corrected = self._kf.correct(measurement)
@@ -530,7 +580,9 @@ class PoseEstimationNode(Node):
                 dist_coeffs=self.dist_coeffs,
                 tag_world=self.tag_world,
                 cam_offset_x_robot=self.camera_offset_x,
+                dist_model=self.dist_model,
                 detected=(corners_list, ids),
+                position_bound=self._position_bound,
             )
         except Exception as exc:
             if self._should_log(self._last_warn_log):
