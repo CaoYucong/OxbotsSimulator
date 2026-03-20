@@ -14,7 +14,14 @@ except Exception:
     PWMOutputDevice = None
 
 
-DRIVE_WHEEL_SPEED: float = 0.8  # PWM duty cycle for drive wheels 1-4 (0.0 – 1.0)
+FORWARD_SPEED: float = 0.9            # PWM duty cycle for forward movement (wheels 1-4)
+BACKWARD_SPEED: float = 0.5           # PWM duty cycle for backward movement (wheels 1-4)
+LEFT_STRAFE_SPEED: float = 0.8        # PWM duty cycle for left strafe
+RIGHT_STRAFE_SPEED: float = 0.8       # PWM duty cycle for right strafe
+CLOCK_ROTATE_FRONT_SPEED: float = 0.7  # PWM duty cycle for clockwise rotation — front wheels (1, 2)
+CLOCK_ROTATE_REAR_SPEED: float = 0.9   # PWM duty cycle for clockwise rotation — rear wheels (3, 4)
+ANTICLOCK_ROTATE_FRONT_SPEED: float = 0.7  # PWM duty cycle for anti-clockwise rotation — front wheels (1, 2)
+ANTICLOCK_ROTATE_REAR_SPEED: float = 0.9   # PWM duty cycle for anti-clockwise rotation — rear wheels (3, 4)
 
 WHEELS: Dict[int, Tuple[int, int]] = {
     1: (5, 6),
@@ -26,24 +33,30 @@ WHEELS: Dict[int, Tuple[int, int]] = {
 }
 
 
-def set_wheel_state(devices: dict, wheel_id: int, state: str) -> None:
+def set_wheel_state(devices: dict, wheel_id: int, state: str, speed: float = FORWARD_SPEED) -> None:
     a, b = devices[wheel_id]
     is_pwm = PWMOutputDevice is not None and isinstance(a, PWMOutputDevice)
-    speed = DRIVE_WHEEL_SPEED if is_pwm else 1
+    s = speed if is_pwm else 1
     if state == 'f':
-        a.value = speed
+        a.value = s
         b.value = 0
     elif state == 'r':
         a.value = 0
-        b.value = speed
+        b.value = s
     else:
         a.value = 0
         b.value = 0
 
 
-def apply_pattern(devices: dict, pattern: dict) -> None:
+def apply_pattern(
+    devices: dict,
+    pattern: dict,
+    speed: float = FORWARD_SPEED,
+    speed_map: Optional[Dict[int, float]] = None,
+) -> None:
     for wheel_id, state in pattern.items():
-        set_wheel_state(devices, wheel_id, state)
+        s = speed_map[wheel_id] if (speed_map and wheel_id in speed_map) else speed
+        set_wheel_state(devices, wheel_id, state, s)
 
 
 def close_devices(devices: dict) -> None:
@@ -104,7 +117,7 @@ class MotionControlNode(Node):
         if DigitalOutputDevice is None:
             raise RuntimeError('gpiozero is not available. Please install python3-gpiozero on Raspberry Pi.')
 
-        # Wheels 1-4: PWM drive wheels at DRIVE_WHEEL_SPEED
+        # Wheels 1-4: PWM drive wheels (speed set per motion type)
         # Wheels 5 & 6: always-on digital wheels (full speed)
         ALWAYS_ON_WHEELS = {5, 6}
         DRIVE_WHEELS = {1, 2, 3, 4}
@@ -238,25 +251,35 @@ class MotionControlNode(Node):
         self._update_destination_waypoint()
 
     def _move_forward(self) -> None:
-        apply_pattern(self._devices, self._forward_pattern)
+        apply_pattern(self._devices, self._forward_pattern, FORWARD_SPEED)
 
     def _move_backward(self) -> None:
-        apply_pattern(self._devices, self._reverse_pattern)
+        apply_pattern(self._devices, self._reverse_pattern, BACKWARD_SPEED)
 
     def _stop(self) -> None:
         apply_pattern(self._devices, self._stop_pattern)
 
     def _move_left(self) -> None:
-        apply_pattern(self._devices, self._left_strafe_pattern)
+        apply_pattern(self._devices, self._left_strafe_pattern, LEFT_STRAFE_SPEED)
 
     def _move_right(self) -> None:
-        apply_pattern(self._devices, self._right_strafe_pattern)
+        apply_pattern(self._devices, self._right_strafe_pattern, RIGHT_STRAFE_SPEED)
 
     def _clock_rotate(self) -> None:
-        apply_pattern(self._devices, self.clock_rotate)
+        apply_pattern(
+            self._devices,
+            self.clock_rotate,
+            speed_map={1: CLOCK_ROTATE_FRONT_SPEED, 2: CLOCK_ROTATE_FRONT_SPEED,
+                       3: CLOCK_ROTATE_REAR_SPEED, 4: CLOCK_ROTATE_REAR_SPEED},
+        )
 
     def _anticlock_rotate(self) -> None:
-        apply_pattern(self._devices, self.anticlock_rotate)
+        apply_pattern(
+            self._devices,
+            self.anticlock_rotate,
+            speed_map={1: ANTICLOCK_ROTATE_FRONT_SPEED, 2: ANTICLOCK_ROTATE_FRONT_SPEED,
+                       3: ANTICLOCK_ROTATE_REAR_SPEED, 4: ANTICLOCK_ROTATE_REAR_SPEED},
+        )
 
     @staticmethod
     def _normalize_angle_deg(angle_deg: float) -> float:
