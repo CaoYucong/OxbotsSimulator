@@ -1943,6 +1943,8 @@ def goto_unseen_region(cx: float,
         for c in range(cols):
             v = memory_unseen[r][c]
             tx, ty = FIELD_TILES[r][c]
+            if abs(tx) > 0.7 or abs(ty) > 0.7:
+                continue
             dx = tx - cx
             dy = ty - cy
             d2 = dx * dx + dy * dy
@@ -2153,11 +2155,11 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     best = None
     best_d2 = None
     for (x, y, typ) in bx:
-        if math.hypot(x - cx, y - cy) < 0.05:
-            continue  # ball is at robot's position, skip
-        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
         distance = math.hypot(x - cx, y - cy)
-        if best_d2 is None or (d2 < best_d2 and distance >= 0.15):
+        if distance < 0.15:
+            continue  # too close to navigate to (motion_control would immediately "reach" it)
+        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
+        if best_d2 is None or d2 < best_d2:
             best_d2 = d2
             best = (x, y, typ)
 
@@ -2195,6 +2197,8 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
             for c in range(cols):
                 v = memory_ball[r][c]
                 tx, ty = FIELD_TILES[r][c]
+                if abs(tx) > 0.7 or abs(ty) > 0.7:
+                    continue
                 dist = math.hypot(tx - cx, ty - cy)
                 time_cost = next_point_time_cost((cx, cy), bearing, (tx, ty), None)
                 if time_cost <  best_ball_time_cost and dist >= 0.15 and v > 0.0:

@@ -92,6 +92,8 @@ class RadarSensorNode(Node):
 
         period = 0.1 if poll_hz <= 0.0 else (1.0 / poll_hz)
         self.create_timer(period, self._poll_once)
+        self._run_enabled: bool = False
+        self.create_subscription(String, '/run', self._on_run, 10)
 
         if self.use_real_sensor:
             self.get_logger().info(
@@ -112,6 +114,9 @@ class RadarSensorNode(Node):
         except ValueError:
             self._latest_time_s = None
 
+    def _on_run(self, msg: String) -> None:
+        self._run_enabled = (msg.data or '').strip().lower() != 'off'
+
     def _resolve_time_s(self) -> float:
         if self._latest_time_s is not None:
             return self._latest_time_s
@@ -125,6 +130,8 @@ class RadarSensorNode(Node):
         return ','.join(parts[:5])
 
     def _poll_once(self) -> None:
+        if not self._run_enabled:
+            return
         if self.use_real_sensor:
             radar_text = self._build_radar_text_from_tof()
             if not radar_text:

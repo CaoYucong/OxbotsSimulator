@@ -14,8 +14,8 @@ class DecisionNode(Node):
     def __init__(self) -> None:
         super().__init__('decision_node')
 
-        self.declare_parameter('tick_hz', 0.1)
-        self.declare_parameter('fallback_tick_hz', 0.1)
+        self.declare_parameter('tick_hz', 10.0)
+        self.declare_parameter('fallback_tick_hz', 10.0)
         self.declare_parameter('mode', '')
         self.declare_parameter('default_speed', 0.3)
         self.declare_parameter('time_topic', '/time')
@@ -33,12 +33,14 @@ class DecisionNode(Node):
         self._radar_sensor_text = ''
         self._waypoint_status = 'going'
         self._sim_time_seconds: Optional[float] = None
+        self._run_enabled: bool = False
 
         self.create_subscription(PoseStamped, '/current_position', self._on_current_position, 10)
         self.create_subscription(String, '/visible_balls', self._on_visible_balls, 10)
         self.create_subscription(String, '/radar_sensor', self._on_radar_sensor, 10)
         self.create_subscription(String, '/waypoint_status', self._on_waypoint_status, 10)
         self.create_subscription(String, self._time_topic, self._on_time, 10)
+        self.create_subscription(String, '/run', self._on_run, 10)
 
         self._pub_decisions = self.create_publisher(String, '/decisions', 10)
         self._pub_decision_making = self.create_publisher(String, '/decision_making_data', 10)
@@ -83,6 +85,9 @@ class DecisionNode(Node):
             self._sim_time_seconds = float(msg.data)
         except Exception:
             pass
+
+    def _on_run(self, msg: String) -> None:
+        self._run_enabled = (msg.data or '').strip().lower() != 'off'
 
     def _resolve_mode(self) -> str:
         mode = (self._mode_param or '').strip().lower()

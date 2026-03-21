@@ -228,6 +228,8 @@ class MotionControlNode(Node):
         self.create_subscription(Int32, num_tags_detected_topic, self._on_num_tags_detected, 10)
         self._pub_waypoint_status = self.create_publisher(String, waypoint_status_topic, 10)
         self._pub_scoop_state = self.create_publisher(String, scoop_state_topic, 10)
+        self._run_enabled: bool = False
+        self.create_subscription(String, '/run', self._on_run, 10)
 
         # Force scoop to closed at startup to avoid inheriting previous servo position.
         self._close_scoop()
@@ -245,6 +247,11 @@ class MotionControlNode(Node):
             self._warned_missing_time = False
         except Exception:
             pass
+
+    def _on_run(self, msg: String) -> None:
+        self._run_enabled = (msg.data or '').strip().lower() != 'off'
+        if not self._run_enabled:
+            self._stop()
 
     def _on_current_position(self, msg: PoseStamped) -> None:
         self._current_x = float(msg.pose.position.x)
@@ -293,11 +300,6 @@ class MotionControlNode(Node):
         return (x, y, theta)
 
     def _update_destination_waypoint(self) -> None:
-        wp = self._collision_avoiding_waypoint
-        if wp is not None and not (wp[0] == 0.0 and wp[1] == 0.0 and (wp[2] is None or wp[2] == 0.0)):
-            self._destination_waypoint = wp
-            self._destination_waypoint_type = 'collision'
-            return
         self._destination_waypoint = self._dynamic_waypoint
         self._destination_waypoint_type = self._dynamic_waypoints_type
 
@@ -318,8 +320,7 @@ class MotionControlNode(Node):
         self._update_destination_waypoint()
 
     def _on_collision_avoiding_waypoint(self, msg: String) -> None:
-        self._collision_avoiding_waypoint = self._parse_waypoint_text(msg.data)
-        self._update_destination_waypoint()
+        pass  # collision avoidance handled by decision_node; motion uses only dynamic_waypoint
 
     def _set_scoop_angle(self, angle: float) -> None:
         if self._servo is not None:
@@ -485,7 +486,13 @@ class MotionControlNode(Node):
         self._pub_waypoint_status.publish(msg)
 
     def _tick(self) -> None:
-        # Highest priority: no AprilTag visible — reverse unconditionally to find a tag.
+        if not self._run_enabled:
+            return
+        # Highest priority: sim time < 1 s — drive forward to clear start position.
+        if self._sim_time_seconds is not None and self._sim_time_seconds < 1.0:
+            self._move_forward(left_speed=FORWARD_SPEED, right_speed=FORWARD_SPEED)
+            return
+        # Second priority: no AprilTag visible — reverse unconditionally to find a tag.
         if self._num_tags_detected is not None and self._num_tags_detected == 0 and self._sim_time_seconds is not None and self._sim_time_seconds > 20.0:
             self._move_backward()
             self._publish_waypoint_status()
@@ -572,7 +579,7 @@ class MotionControlNode(Node):
                     else:
                         self._nav_log('[nav:home] reversing into wall')
                         self._move_backward()
-                        time.sleep(2.0)
+                        time.sleep(3.0)
                         # self._stop()
                         self._nav_log('[nav:home] opening scoop')
                         self._open_scoop()
@@ -600,7 +607,7 @@ class MotionControlNode(Node):
                     else:
                         self._nav_log('[nav:wall] driving into wall')
                         self._move_forward(left_speed=0.8, right_speed=0.8)
-                        time.sleep(2.0)
+                        time.sleep(3.0)
                         self._stop()
                         self._nav_log('[nav:wall] publishing reached')
                         reached_msg = String()

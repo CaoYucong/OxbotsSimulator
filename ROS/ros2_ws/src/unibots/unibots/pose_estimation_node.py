@@ -16,7 +16,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path as PathMsg
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, String
 
 PERF_METRICS_ENABLED = True
 
@@ -386,7 +386,9 @@ class PoseEstimationNode(Node):
         self._pub_camera_pose_history = self.create_publisher(PathMsg, '/camera_pose_history', 10)
         self._pub_pose_history = self.create_publisher(PathMsg, '/pose_history', 10)
         self._pub_processed_image = self.create_publisher(Image, '/processed_image', 10)
+        self._run_enabled: bool = False
         self.create_subscription(Image, camera_topic, self._on_image, 10)
+        self.create_subscription(String, '/run', self._on_run, 10)
         if self.tick_hz > 0.0:
             self.create_timer(1.0 / self.tick_hz, self._on_tick)
         self.create_timer(0.5, self._publish_placeholder_if_stale)
@@ -397,6 +399,9 @@ class PoseEstimationNode(Node):
             f'pose_estimation {state}; topic={camera_topic}, tick={tick_hz_text}, '
             f'intrinsics={intrinsic_path}, tag_map={tag_map_path}'
         )
+
+    def _on_run(self, msg: String) -> None:
+        self._run_enabled = (msg.data or '').strip().lower() != 'off'
 
     def _should_log(self, last_time: float) -> bool:
         now = time.monotonic()

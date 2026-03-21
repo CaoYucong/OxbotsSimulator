@@ -170,6 +170,8 @@ class BallDetectionNode(Node):
         self.create_subscription(PathMsg, self._camera_pose_history_topic, self._on_camera_pose_history, 10)
         self.create_subscription(String, '/mode', self._on_mode, 10)
         self.create_subscription(String, waypoint_type_topic, self._on_waypoint_type, 10)
+        self._run_enabled: bool = False
+        self.create_subscription(String, '/run', self._on_run, 10)
 
         self.create_timer(1.0 / self._infer_hz, self._infer_tick)
 
@@ -586,6 +588,9 @@ class BallDetectionNode(Node):
 
     # Modes that do not need ball detection.
     _BALL_DETECTION_DISABLED_MODES = frozenset({'planned'})
+
+    def _on_run(self, msg: String) -> None:
+        self._run_enabled = (msg.data or '').strip().lower() != 'off'
 
     def _on_waypoint_type(self, msg: String) -> None:
         self._waypoint_type = (msg.data or '').strip().lower()

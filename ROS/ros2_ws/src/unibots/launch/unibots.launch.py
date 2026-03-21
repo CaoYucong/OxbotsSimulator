@@ -80,4 +80,12 @@ def generate_launch_description() -> LaunchDescription:
             output='screen',
             parameters=[params],
         ),
+        Node(
+            package='unibots',
+            executable='reset_button_node',
+            name='reset_button_node',
+            output='screen',
+            emulate_tty=True,
+            parameters=[params],
+        ),
     ])

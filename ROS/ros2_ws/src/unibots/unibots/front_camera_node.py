@@ -9,6 +9,7 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image
+from std_msgs.msg import String
 
 
 class FrontCameraNode(Node):
@@ -96,6 +97,8 @@ class FrontCameraNode(Node):
                 self._usb_capture = None
                 self._usb_capture_source = ''
 
+        self._run_enabled: bool = False
+        self.create_subscription(String, '/run', self._on_run, 10)
         camera_period = 0.1 if camera_poll_hz <= 0.0 else (1.0 / camera_poll_hz)
         self.create_timer(camera_period, self._poll_camera_once)
 
@@ -110,6 +113,9 @@ class FrontCameraNode(Node):
                 f'front_camera_node started; source=web, upstream={self._url}, topic={self.camera_topic}, poll_hz={camera_poll_hz}, '
                 f'snapshot_dir={self._snapshot_dir}, snapshot_interval_sec={self.snapshot_interval_sec}'
             )
+
+    def _on_run(self, msg: String) -> None:
+        self._run_enabled = (msg.data or '').strip().lower() != 'off'
 
     def _save_snapshot_if_due(self, image: np.ndarray) -> None:
         now = time.time()
