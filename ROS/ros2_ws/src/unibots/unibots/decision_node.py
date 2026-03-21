@@ -1,6 +1,5 @@
 import json
 import math
-import os
 from typing import Optional
 
 import rclpy
@@ -15,15 +14,17 @@ class DecisionNode(Node):
     def __init__(self) -> None:
         super().__init__('decision_node')
 
-        self.declare_parameter('tick_hz', 10.0)
-        self.declare_parameter('fallback_tick_hz', 1.0)
+        self.declare_parameter('tick_hz', 0.1)
+        self.declare_parameter('fallback_tick_hz', 0.1)
         self.declare_parameter('mode', '')
         self.declare_parameter('default_speed', 0.3)
+        self.declare_parameter('time_topic', '/time')
 
         tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)  # kept for launch-file compat, unused
         fallback_tick_hz = float(self.get_parameter('fallback_tick_hz').get_parameter_value().double_value)
         self._mode_param = self.get_parameter('mode').get_parameter_value().string_value
         self._default_speed = float(self.get_parameter('default_speed').get_parameter_value().double_value)
+        self._time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
 
         self._current_x: Optional[float] = 0.0
         self._current_y: Optional[float] = 0.0
@@ -31,25 +32,27 @@ class DecisionNode(Node):
         self._visible_balls_text = ''
         self._radar_sensor_text = ''
         self._waypoint_status = 'going'
-        self._sim_time_seconds = 0.0
+        self._sim_time_seconds: Optional[float] = None
 
         self.create_subscription(PoseStamped, '/current_position', self._on_current_position, 10)
         self.create_subscription(String, '/visible_balls', self._on_visible_balls, 10)
         self.create_subscription(String, '/radar_sensor', self._on_radar_sensor, 10)
         self.create_subscription(String, '/waypoint_status', self._on_waypoint_status, 10)
-        self.create_subscription(String, '/time', self._on_time, 10)
+        self.create_subscription(String, self._time_topic, self._on_time, 10)
 
         self._pub_decisions = self.create_publisher(String, '/decisions', 10)
         self._pub_decision_making = self.create_publisher(String, '/decision_making_data', 10)
         self._pub_dynamic_waypoint = self.create_publisher(String, '/dynamic_waypoint', 10)
+        self._pub_dynamic_waypoints_type = self.create_publisher(String, '/dynamic_waypoints_type', 10)
         self._pub_collision_avoiding_waypoint = self.create_publisher(String, '/collision_avoiding_waypoint', 10)
+        self._pub_mode = self.create_publisher(String, '/mode', 10)
 
         self._mode_warned = False
         fallback_period = 1.0 if fallback_tick_hz <= 0.0 else (1.0 / fallback_tick_hz)
         self.create_timer(fallback_period, self._tick)
 
         self.get_logger().info(
-            f'decision_node started, tick_hz={fallback_tick_hz} (fixed), input_source=topics'
+            f'decision_node started, tick_hz={fallback_tick_hz} (fixed), input_source=topics, time_topic={self._time_topic}'
         )
 
     def _on_current_position(self, msg: PoseStamped) -> None:
@@ -83,13 +86,12 @@ class DecisionNode(Node):
 
     def _resolve_mode(self) -> str:
         mode = (self._mode_param or '').strip().lower()
-        if mode:
-            return mode
-        mode = planner._read_mode(planner.MODE_FILE) or os.environ.get('MODE') or planner.DEFAULT_MODE
-        return (mode or '').strip().lower()
+        return mode or planner.DEFAULT_MODE
 
     def _tick(self) -> None:
         if self._current_x is None or self._current_y is None or self._current_theta is None:
+            return
+        if self._sim_time_seconds is None:
             return
 
         mode_key = self._resolve_mode()
@@ -99,7 +101,7 @@ class DecisionNode(Node):
             current_theta=self._current_theta,
             visible_balls_json=self._visible_balls_text,
             radar_sensor_text=self._radar_sensor_text,
-            sim_time_seconds=self._sim_time_seconds,
+            sim_time_seconds=float(self._sim_time_seconds),
             waypoint_status=self._waypoint_status,
             mode=mode_key,
             default_speed=self._default_speed,
@@ -123,8 +125,25 @@ class DecisionNode(Node):
         }
         self._publish_decisions(payload)
         self._publish_dynamic_waypoint(waypoint_text)
+        self._publish_dynamic_waypoints_type()
         self._publish_collision_avoiding_waypoint(collision_waypoint_text)
         self._publish_decision_making_data()
+        self._publish_mode(mode_key)
+
+    def _publish_dynamic_waypoints_type(self) -> None:
+        cache = getattr(planner, 'DECISION_MAKING_DATA_LOCAL_CACHE', {})
+        wp_type = str(cache.get('dynamic_waypoints_type', '')).strip()
+        if not wp_type:
+            cache2 = getattr(planner, 'DECISION_MAKING_DATA_CACHE', {})
+            wp_type = str(cache2.get('dynamic_waypoints_type', '')).strip()
+        msg = String()
+        msg.data = wp_type
+        self._pub_dynamic_waypoints_type.publish(msg)
+
+    def _publish_mode(self, mode: str) -> None:
+        msg = String()
+        msg.data = mode
+        self._pub_mode.publish(msg)
 
     def _format_waypoint_text(self, waypoint) -> str:
         wx, wy, theta = waypoint

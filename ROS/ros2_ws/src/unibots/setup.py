@@ -37,6 +37,7 @@ setup(
             'decision_node = unibots.decision_node:main',
             'pose_estimation_node = unibots.pose_estimation_node:main',
             'motion_control_node = unibots.motion_control_node:main',
+            'reset_button_node = unibots.reset_button_node:main',
         ],
     },
 )

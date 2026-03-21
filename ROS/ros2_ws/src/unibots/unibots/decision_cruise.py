@@ -124,6 +124,8 @@ DEFAULT_ANGULAR_VELOCITY = DEFAULT_ANGULAR_VELOCITY_FALLBACK # degrees per secon
 
 VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 
+HOME: tuple[float, float, float] = (-0.9, 0.0, 0.0)  # (x, y, orientation_deg) — end-of-game home position
+
 INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball (meters)
 
 FIELD_OF_VIEW_DEGREES = 120.0
@@ -238,6 +240,10 @@ DECISION_MAKING_DATA_CACHE = {}
 
 DECISION_MAKING_DATA_LOCAL_CACHE = {}
 
+# When True, all HTTP/file I/O is bypassed; data lives in-memory only.
+# Set permanently to True the first time decide_from_ros_state() is called.
+_ROS_MODE: bool = False
+
 COLLISION_AVOIDING_WAYPOINT_LOCAL: Optional[tuple[float, float, Optional[float]]] = None
 
 WEB_ONLY_FILES = {
@@ -250,6 +256,7 @@ WEB_ONLY_FILES = {
 }
 
 DEFAULT_MODE = 'improved_nearest_v3_5'
+DECISION_DEBUG = True
 
 TILE_SIZE = 0.1
 
@@ -280,6 +287,9 @@ def _parse_sim_data_from_html(text: str) -> dict:
 
 def _refresh_sim_data() -> None:
     global SIM_DATA_CACHE
+    # In ROS mode SIM_DATA_CACHE is populated by _sync_ros_topic_state; no fetch needed.
+    if _ROS_MODE:
+        return
     if DATA_FLOW == "file":
         payload: dict[str, str] = {}
         for path in WEB_ONLY_FILES:
@@ -310,6 +320,10 @@ def _get_sim_value(key: str):
 
 def _refresh_decisions_data() -> None:
     global DECISIONS_CACHE
+    # In ROS mode keep DECISIONS_CACHE in sync with the local cache; no network.
+    if _ROS_MODE:
+        DECISIONS_CACHE = dict(DECISIONS_LOCAL_CACHE)
+        return
     if DATA_FLOW == "file":
         payload: dict[str, str] = {}
         for key in DECISIONS_LOCAL_CACHE.keys():
@@ -358,6 +372,10 @@ def _post_decisions_data(payload: dict) -> bool:
         if ok:
             DECISIONS_CACHE = dict(payload)
         return ok
+    # In ROS mode update the cache in-memory without any HTTP round-trip.
+    if _ROS_MODE:
+        DECISIONS_CACHE = dict(payload)
+        return True
     try:
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -368,13 +386,16 @@ def _post_decisions_data(payload: dict) -> bool:
         )
         with urllib.request.urlopen(req, timeout=0.3) as res:
             res.read()
-        DECISIONS_CACHE = payload
+        DECISIONS_CACHE = dict(payload)
         return True
     except Exception:
         return False
 
 def _refresh_decision_making_data() -> bool:
     global DECISION_MAKING_DATA_CACHE
+    # In ROS mode the cache is managed in-memory; nothing to fetch.
+    if _ROS_MODE:
+        return True
     if DATA_FLOW == "file":
         payload: dict[str, str] = {}
         try:
@@ -416,6 +437,10 @@ def _post_decision_making_data(payload: dict) -> bool:
         if ok:
             DECISION_MAKING_DATA_CACHE = dict(payload)
         return ok
+    # In ROS mode update the cache in-memory without any HTTP round-trip.
+    if _ROS_MODE:
+        DECISION_MAKING_DATA_CACHE = dict(payload)
+        return True
     DECISION_MAKING_DATA_CACHE = payload
     try:
         body = json.dumps(payload).encode("utf-8")
@@ -532,6 +557,20 @@ def _read_mode(path: str = MODE_FILE) -> Optional[str]:
 
 def _atomic_write(path: str, content: str) -> bool:
     return _write_decision_text(path, content)
+
+def _debug_log(msg: str) -> None:
+    if DECISION_DEBUG:
+        print(msg, file=sys.stderr)
+
+def _read_pingball_counter() -> int:
+    try:
+        value = _get_decision_making_value("pingball_counter")
+        return int(value) if value is not None else 0
+    except Exception:
+        return 0
+
+def _write_pingball_counter(count: int) -> None:
+    _update_decision_making_local("pingball_counter", str(count))
 
 def _read_collision_counter(path: str = COLLISION_COUNTER_FILE) -> tuple[int, list[float]]:
     count = 0
@@ -791,7 +830,9 @@ def _read_current_position(path: str):
 
 def _read_obstacle_positions(path: str):
     """Return list of (x, y, bearing_deg_or_none) from obstacle_robot.txt. Ignores invalid lines."""
-    cached = _require_sim_value("obstacle_robot", path)
+    cached = _get_sim_value("obstacle_robot")
+    if not cached:
+        return []
     return _parse_obstacle_lines(str(cached))
 
 def _parse_obstacle_lines(text: str):
@@ -838,11 +879,7 @@ def _read_radar_sensor_values() -> tuple[Optional[float], dict[str, float]]:
     sim_time: Optional[float] = None
 
     raw_radar = _get_sim_value("radar_sensor")
-    if raw_radar is None:
-        _refresh_sim_data()
-        raw_radar = _get_sim_value("radar_sensor")
-
-    if raw_radar is None:
+    if not raw_radar:
         return sim_time, values
 
     parts = [p.strip() for p in str(raw_radar).split(",")]
@@ -1975,12 +2012,24 @@ def update_ball_memory_v2(memory_tile_file: str = BALL_MEMORY_FILE,
             for c in range(cols):
                 memory[r][c] = max(0.0, memory[r][c] - 1.0)
 
-    visible_balls = _read_visible_ball_positions(visible_balls_file)
+    visible_balls = [
+        b for b in _read_visible_ball_positions(visible_balls_file)
+        if abs(b[0]) <= 0.7 and abs(b[1]) <= 0.7
+        # or (
+        #     b[2].lower() == 'ping'
+        #     and (abs(b[0]) > 0.75) != (abs(b[1]) > 0.75)
+        #     and not (abs(b[0]) <= 0.2 and abs(b[1]) > 0.75)
+        #     and not (abs(b[1]) <= 0.2 and abs(b[0]) > 0.75)
+        # )
+    ]
     remembered_points = _read_ball_memory_points(ball_memory_file)
     new_visible_balls = []
 
     for bx, by, _ in visible_balls:
-        is_new = True
+        is_new = all(
+            math.hypot(bx - rx, by - ry) > 0.05
+            for rx, ry in remembered_points
+        )
         if is_new:
             remembered_points.append((bx, by))
             new_visible_balls.append((bx, by))
@@ -2069,8 +2118,7 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
 
     status = _read_status(status_file)
     dynamic_waypoint_type = _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)
-    if status == "going" and dynamic_waypoint_type == "ball":
-        return 0
+    _debug_log(f"[decision] waypoint_status={status}, dynamic_waypoint_type={dynamic_waypoint_type}")
 
     # if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
     #     pass
@@ -2078,19 +2126,50 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     cur = _read_current_position(current_file)
     cx, cy, bearing = cur if cur is not None else (0.0, 0.0, None)
 
-    # sim_time = _read_time_seconds(TIME_FILE)
-    # if sim_time is not None and sim_time > 160:
-    #     goto(-0.9, 0.0, 0.0)
-    #     return 0
+    sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is not None and sim_time > 120.0:
+        _debug_log(f"[decision] Time={sim_time:.1f}s > 120s, heading home {HOME}")
+        goto(*HOME, waypoint_type="home")
+        return 0
 
 
     status = _read_status(status_file)
 
     if cur is None:
+        _debug_log("[decision] No current position data, skip")
         return 0
-    bx = _read_visible_ball_positions(visible_balls_file)
-    if not bx:
-        
+    
+    bx = [
+        b for b in _read_visible_ball_positions(visible_balls_file)
+        if (abs(b[0]) <= 0.7 and abs(b[1]) <= 0.7)
+        # or (
+        #     b[2].lower() == 'ping'
+        #     and (abs(b[0]) > 0.75) != (abs(b[1]) > 0.75)
+        #     and not (abs(b[0]) <= 0.2 and abs(b[1]) > 0.75)
+        #     and not (abs(b[1]) <= 0.2 and abs(b[0]) > 0.75)
+        # )
+    ]
+
+    best = None
+    best_d2 = None
+    for (x, y, typ) in bx:
+        if math.hypot(x - cx, y - cy) < 0.05:
+            continue  # ball is at robot's position, skip
+        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
+        distance = math.hypot(x - cx, y - cy)
+        if best_d2 is None or (d2 < best_d2 and distance >= 0.15):
+            best_d2 = d2
+            best = (x, y, typ)
+
+    if best is None:
+        _debug_log("[decision] Visible balls present but all too close to robot, continue to memory tiles")
+
+    if status == "going" and dynamic_waypoint_type in ("ball", "pingball", "steelball", "home"):
+        _debug_log(f"[decision] Still going to ball waypoint (type={dynamic_waypoint_type}), skip")
+        return 0
+
+    if best is None:
+        _debug_log("[decision] No visible balls, checking memory tiles")
         rows = len(FIELD_TILES)
         cols = len(FIELD_TILES[0]) if rows > 0 else 0
         memory_ball = _read_seen_tile_matrix(BALL_MEMORY_FILE, rows, cols)
@@ -2106,6 +2185,7 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
                       tx, ty = FIELD_TILES[r][c]
                       if abs(tx - dx) <= TILE_HALF and abs(ty - dy) <= TILE_HALF:
                           if memory_ball[r][c] > 0.0:
+                              _debug_log(f"[decision] Dynamic waypoint tile ({tx:.2f}, {ty:.2f}) still has memory ball (val={memory_ball[r][c]:.1f}), continuing")
                               return 0
 
         best_ball_rc = None
@@ -2130,33 +2210,28 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
         if best_ball_rc is not None and best_ball_val > 0.0:
             tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
+            _debug_log(f"[decision] Heading to best memory ball tile ({tx:.2f}, {ty:.2f}), val={best_ball_val:.1f}, cost={best_ball_time_cost:.2f}s")
             goto(tx, ty, rotation_avoidance_buffer=0.2)
             return 0
 
         if status != "reached":
+            _debug_log(f"[decision] No balls visible and no memory tile, status={status}, waiting on current path")
             # stop()
             return 0
         
         if goto_unseen_region(cx, cy):
+            _debug_log(f"[decision] No balls visible, heading to unseen region from ({cx:.2f}, {cy:.2f})")
             return 0
 
     else:
         pass
 
-    best = None
-    best_d2 = None
-    for (x, y, typ) in bx:
-        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
-        if best_d2 is None or d2 < best_d2:
-            best_d2 = d2
-            best = (x, y)
-
-    if best is None:
-        return 0
-
-    target_x, target_y = best
+    target_x, target_y, target_typ = best
     heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
-    ok = goto(target_x, target_y, heading_deg, waypoint_type="ball")
+    ball_waypoint_type = "pingball" if target_typ.lower() == "ping" else "steelball"
+
+    ok = goto(target_x, target_y, heading_deg, waypoint_type=ball_waypoint_type)
+    _debug_log(f"[decision] Heading to visible ball at ({target_x:.2f}, {target_y:.2f}), type={ball_waypoint_type}, heading={heading_deg:.1f}deg, goto={'ok' if ok else 'FAIL'}")
     return 0 if ok else 1
 
 def parse_args() -> argparse.Namespace:
@@ -2180,8 +2255,70 @@ def main() -> int:
     return handler()
 
 
+# ---------------------------------------------------------------------------
+# Planned-waypoint mode
+# ---------------------------------------------------------------------------
+
+PLANNED_WAYPOINTS: list[tuple[float, float]] = [
+    (-0.5, -0.5),
+    ( 0.5, -0.5),
+    ( 0.5,  0.5),
+    (-0.5,  0.5),
+]
+
+
+def mode_planned(
+    status_file: str = WAYPOINT_STATUS_FILE,
+    current_file: str = CURRENT_POSITION_FILE,
+    waypoints: list[tuple[float, float]] | None = None,
+) -> int:
+    """Follow a fixed list of waypoints in order, going home after each one."""
+    wps = waypoints if waypoints is not None else PLANNED_WAYPOINTS
+    if not wps:
+        return 0
+
+    raw_idx = DECISION_MAKING_DATA_LOCAL_CACHE.get("planned_waypoint_index")
+    try:
+        idx = int(raw_idx) if raw_idx is not None else 0
+    except Exception:
+        idx = 0
+    idx = idx % len(wps)
+
+    returning_home = DECISION_MAKING_DATA_LOCAL_CACHE.get("planned_returning_home", "0") == "1"
+
+    status = _read_status(status_file)
+    if status == "reached":
+        if returning_home:
+            # Just arrived home — advance to the next waypoint
+            idx = (idx + 1) % len(wps)
+            returning_home = False
+            _update_decision_making_local("planned_waypoint_index", str(idx))
+            _update_decision_making_local("planned_returning_home", "0")
+            tx, ty = wps[idx]
+            _debug_log(f"[planned] Arrived home, now heading to waypoint {idx} ({tx:.2f}, {ty:.2f})")
+            goto(tx, ty)
+        else:
+            # Just reached a waypoint — go home first
+            returning_home = True
+            _update_decision_making_local("planned_returning_home", "1")
+            _debug_log(f"[planned] Reached waypoint {idx}, heading home {HOME}")
+            goto(*HOME, waypoint_type="home")
+    else:
+        # Still travelling — keep heading to the current destination
+        _update_decision_making_local("planned_waypoint_index", str(idx))
+        if returning_home:
+            _debug_log(f"[planned] Returning home {HOME}")
+            goto(*HOME, waypoint_type="home")
+        else:
+            tx, ty = wps[idx]
+            _debug_log(f"[planned] Heading to waypoint {idx} ({tx:.2f}, {ty:.2f})")
+            goto(tx, ty)
+    return 0
+
+
 _MODE_HANDLERS = {
     "improved_nearest_v3_5": mode_improved_nearest_v3_5,
+    "planned": mode_planned,
 }
 
 
@@ -2237,9 +2374,8 @@ def _sync_ros_topic_state(
             "time": f"{float(sim_time_seconds):.6f}",
             "waypoint_status": (waypoint_status or "going").strip().lower() or "going",
             "radar_sensor": (radar_sensor_text or "").strip(),
-            # No obstacle robots in standalone Pi mode; provide empty value so
-            # _require_sim_value("obstacle_robot") never raises RuntimeError.
-            "obstacle_robot": SIM_DATA_CACHE.get("obstacle_robot", ""),
+            # No obstacle robots in standalone Pi mode.
+            "obstacle_robot": "",
         }
     )
 
@@ -2297,7 +2433,11 @@ def decide_from_ros_state(
     """ROS planner entrypoint used by decision_node.
 
     Reuses full mode handlers so decision_making_data artifacts are updated.
+    All data comes from ROS topics; no HTTP fetching is performed.
     """
+    global _ROS_MODE
+    _ROS_MODE = True  # Permanently disable web I/O for this process.
+
     _sync_ros_topic_state(
         current_x=current_x,
         current_y=current_y,

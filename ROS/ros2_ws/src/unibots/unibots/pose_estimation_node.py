@@ -16,6 +16,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path as PathMsg
 from rclpy.node import Node
 from sensor_msgs.msg import Image
+from std_msgs.msg import Int32
 
 PERF_METRICS_ENABLED = True
 
@@ -272,7 +273,7 @@ class PoseEstimationNode(Node):
         self.declare_parameter('camera_topic', '/front_camera')
         self.declare_parameter('intrinsic_path', '')
         self.declare_parameter('tag_map_path', '')
-        self.declare_parameter('camera_offset_x', 0.105)
+        self.declare_parameter('camera_offset_x', 0.15)
         self.declare_parameter('tick_hz', 0.0)
         self.declare_parameter('log_every_sec', 1.0)
         self.declare_parameter('pose_estimation', False)
@@ -381,6 +382,7 @@ class PoseEstimationNode(Node):
 
         self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
         self._pub_camera_pose = self.create_publisher(PoseStamped, '/camera_pose', 10)
+        self._pub_num_tags_detected = self.create_publisher(Int32, '/num_tags_detected', 10)
         self._pub_camera_pose_history = self.create_publisher(PathMsg, '/camera_pose_history', 10)
         self._pub_pose_history = self.create_publisher(PathMsg, '/pose_history', 10)
         self._pub_processed_image = self.create_publisher(Image, '/processed_image', 10)
@@ -574,6 +576,9 @@ class PoseEstimationNode(Node):
 
         try:
             corners_list, ids = _detect_apriltag_corners(image)
+            num_tags_msg = Int32()
+            num_tags_msg.data = int(len(ids)) if ids is not None else 0
+            self._pub_num_tags_detected.publish(num_tags_msg)
             estimate = estimate_camera_world_position(
                 image=image,
                 K=self.K,

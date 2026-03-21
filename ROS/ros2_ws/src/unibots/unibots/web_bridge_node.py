@@ -6,7 +6,6 @@ import os
 import re
 import threading
 import time
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -850,26 +849,18 @@ class WebBridgeNode(Node):
     def __init__(self) -> None:
         super().__init__('web_bridge_node')
 
-        self.declare_parameter('remote_host', '192.168.50.2')
-        self.declare_parameter('remote_port', 5003)
         self.declare_parameter('local_host', '127.0.0.1')
         self.declare_parameter('local_port', 5003)
         self.declare_parameter('allow_local_port_fallback', True)
-        self.declare_parameter('poll_hz', 10.0)
-        self.declare_parameter('request_timeout', 1.0)
         self.declare_parameter('camera_topic', '/front_camera')
         self.declare_parameter('pose_estimation', False)
         self.declare_parameter('web_debug', False)
 
-        self.remote_host = self.get_parameter('remote_host').get_parameter_value().string_value
-        self.remote_port = int(self.get_parameter('remote_port').get_parameter_value().integer_value)
         self.local_host = self.get_parameter('local_host').get_parameter_value().string_value
         self.local_port = int(self.get_parameter('local_port').get_parameter_value().integer_value)
         self.allow_local_port_fallback = bool(
             self.get_parameter('allow_local_port_fallback').get_parameter_value().bool_value
         )
-        poll_hz = float(self.get_parameter('poll_hz').get_parameter_value().double_value)
-        self.request_timeout = float(self.get_parameter('request_timeout').get_parameter_value().double_value)
         self.camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         self._pose_estimation_enabled = bool(
             self.get_parameter('pose_estimation').get_parameter_value().bool_value
@@ -879,22 +870,6 @@ class WebBridgeNode(Node):
         )
 
         planner.DATA_FLOW = 'web'
-
-        if self.request_timeout <= 0.0:
-            self.request_timeout = 1.0
-
-        self.remote_targets = (
-            {
-                "path": "/data/simulation_data",
-                "url": f"http://{self.remote_host}:{self.remote_port}/data/simulation_data",
-                "content_type": "application/json; charset=utf-8",
-            },
-        )
-        self._simulation_data_urls = [
-            f'http://{self.remote_host}:{self.remote_port}/data/simulation_data',
-            f'http://{self.remote_host}:{self.remote_port}/simulation_data',
-        ]
-        self._simulation_data_url_index = 0
 
         self._state = _MirrorState()
         handler = _build_handler(self._state)
@@ -915,12 +890,9 @@ class WebBridgeNode(Node):
         self._server_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._server_thread.start()
 
-        self._error_logged = {item["path"]: False for item in self.remote_targets}
-
         self._last_decisions_payload: dict | None = None
         self._last_decision_making_payload: dict | None = None
 
-        self.create_subscription(String, '/simulation_data', self._on_simulation_data, 10)
         self.create_subscription(PoseStamped, '/current_position', self._on_current_position_topic, 10)
         self.create_subscription(String, '/visible_balls', self._on_visible_balls_topic, 10)
         self.create_subscription(String, '/waypoint_status', self._on_waypoint_status_topic, 10)
@@ -930,95 +902,15 @@ class WebBridgeNode(Node):
         self.create_subscription(String, '/decisions', self._on_decisions, 10)
         self.create_subscription(String, '/decision_making_data', self._on_decision_making_data, 10)
 
-        self.pub_simulation_data = self.create_publisher(String, '/simulation_data', 10)
-        self.pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
-        self.pub_visible_balls = self.create_publisher(String, '/visible_balls', 10)
         self.create_subscription(Image, self.camera_topic, self._on_front_camera_msg, 10)
         self.create_subscription(Image, '/processed_image', self._on_processed_image_msg, 10)
         self.create_subscription(Image, '/ball_detection_image', self._on_ball_detection_image_msg, 10)
 
         self._cv_bridge = CvBridge()
 
-        period = 0.1 if poll_hz <= 0.0 else (1.0 / poll_hz)
-        self.create_timer(period, self._poll_once)
-
         self.get_logger().info(
-            f'web_bridge_node started; upstream={self.remote_host}:{self.remote_port}, '
-            f'local_mirror=http://{self.local_host}:{self.local_port}, poll_hz={poll_hz}'
+            f'web_bridge_node started; local_mirror=http://{self.local_host}:{self.local_port}'
         )
-
-    def _poll_once(self) -> None:
-        for target in self.remote_targets:
-            path = target["path"]
-            try:
-                body, active_url = self._fetch_simulation_data_body()
-                payload = json.loads(body.decode('utf-8', errors='ignore'))
-                if not isinstance(payload, dict):
-                    raise ValueError('simulation_data payload must be a JSON object')
-                canonical = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
-                sim_msg = String()
-                sim_msg.data = canonical
-                self.pub_simulation_data.publish(sim_msg)
-                self._error_logged[path] = False
-            except Exception as exc:
-                if not self._error_logged[path]:
-                    self.get_logger().warn(
-                        f'upstream fetch failed for {self._simulation_data_urls}: {exc}'
-                    )
-                    self._error_logged[path] = True
-
-    def _fetch_simulation_data_body(self) -> tuple[bytes, str]:
-        first_error: Exception | None = None
-        total = len(self._simulation_data_urls)
-        for offset in range(total):
-            idx = (self._simulation_data_url_index + offset) % total
-            url = self._simulation_data_urls[idx]
-            try:
-                req = urllib.request.Request(url, headers={'Connection': 'close'})
-                with urllib.request.urlopen(req, timeout=self.request_timeout) as res:
-                    body = res.read()
-                self._simulation_data_url_index = idx
-                return body, url
-            except Exception as exc:
-                if first_error is None:
-                    first_error = exc
-                continue
-
-        if first_error is None:
-            raise RuntimeError('no simulation_data urls configured')
-        raise first_error
-
-    def _publish_sim_topics_from_payload(self, payload: dict) -> None:
-
-        current_text = str(payload.get('current_position', '')).strip()
-        visible_text = str(payload.get('visible_balls', '')).strip()
-
-        if not self._pose_estimation_enabled:
-            pose = self._parse_current_position(current_text)
-            if pose is not None:
-                x, y, theta_deg = pose
-                theta = math.radians(theta_deg)
-                msg = PoseStamped()
-                msg.header.stamp = self.get_clock().now().to_msg()
-                msg.header.frame_id = 'map'
-                msg.pose.position.x = x
-                msg.pose.position.y = y
-                msg.pose.position.z = 0.0
-                msg.pose.orientation.x = 0.0
-                msg.pose.orientation.y = 0.0
-                msg.pose.orientation.z = math.sin(theta * 0.5)
-                msg.pose.orientation.w = math.cos(theta * 0.5)
-                self.pub_current_position.publish(msg)
-
-        return
-
-    def _on_simulation_data(self, msg: String) -> None:
-        payload = self._parse_json_payload(msg.data)
-        if payload is None:
-            return
-        canonical = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-        self._state.set('/data/simulation_data', canonical, 'application/json; charset=utf-8')
-        self._publish_sim_topics_from_payload(payload)
 
     def _on_current_position_topic(self, msg: PoseStamped) -> None:
         qx = float(msg.pose.orientation.x)

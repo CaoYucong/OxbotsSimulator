@@ -323,7 +323,7 @@ class RadarSensorNode(Node):
             raw, status, pub = debug_values[name]
             raw_mm = 'None' if raw is None else f'{int(raw * 1000.0)}'
             summary.append(f'{name}:raw_mm={raw_mm},status={status},pub={pub:.3f}')
-        self.get_logger().info('radar tof diag | ' + ' | '.join(summary))
+        # self.get_logger().info('radar tof diag | ' + ' | '.join(summary))
 
     def _fetch_simulation_data_body(self) -> bytes:
         first_error: Exception | None = None

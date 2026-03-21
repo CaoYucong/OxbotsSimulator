@@ -33,6 +33,7 @@ class BallDetectionNode(Node):
         self.declare_parameter('camera_pose_topic', '/camera_pose')
         self.declare_parameter('camera_pose_history_topic', '/camera_pose_history')
         self.declare_parameter('visible_balls_topic', '/visible_balls')
+        self.declare_parameter('waypoint_type_topic', '/dynamic_waypoints_type')
         self.declare_parameter('local_inference_url', 'http://127.0.0.1:9001')
         self.declare_parameter('local_model_id', 'unibot-ball-detection/1')
         self.declare_parameter('roboflow_api_key', '')
@@ -70,6 +71,7 @@ class BallDetectionNode(Node):
             self.get_parameter('camera_pose_history_topic').get_parameter_value().string_value
         )
         self._visible_balls_topic = self.get_parameter('visible_balls_topic').get_parameter_value().string_value
+        waypoint_type_topic = self.get_parameter('waypoint_type_topic').get_parameter_value().string_value
         self._local_inference_url = (
             self.get_parameter('local_inference_url').get_parameter_value().string_value.rstrip('/')
         )
@@ -152,6 +154,7 @@ class BallDetectionNode(Node):
         self._camera_intrinsics = self._load_camera_intrinsics(self._camera_intrinsic_path)
         self._current_camera_pose: Optional[tuple[np.ndarray, np.ndarray]] = None
         self._camera_pose_history_entries: list[tuple[int, np.ndarray, np.ndarray]] = []
+        self._waypoint_type: str = ''
         # Buffer of recent cropped front images keyed by stamp_ns (2-second rolling window).
         self._front_image_buffer: dict[int, np.ndarray] = {}
         # A matched (image, cam_world, r_wc) pair ready for the next infer tick.
@@ -165,6 +168,8 @@ class BallDetectionNode(Node):
         self.create_subscription(Image, front_camera_topic, self._on_front_image, 10)
         self.create_subscription(PoseStamped, self._camera_pose_topic, self._on_camera_pose, 10)
         self.create_subscription(PathMsg, self._camera_pose_history_topic, self._on_camera_pose_history, 10)
+        self.create_subscription(String, '/mode', self._on_mode, 10)
+        self.create_subscription(String, waypoint_type_topic, self._on_waypoint_type, 10)
 
         self.create_timer(1.0 / self._infer_hz, self._infer_tick)
 
@@ -323,7 +328,7 @@ class BallDetectionNode(Node):
                 y = float(world_position.get('y'))
             except Exception:
                 continue
-            if abs(x) > 0.9 or abs(y) > 0.9:
+            if abs(x) > 0.95 or abs(y) > 0.95:
                 continue
             try:
                 camera_range_m = float(detection.get('camera_range_m', 0.0))
@@ -579,8 +584,32 @@ class BallDetectionNode(Node):
                 f'inference startup check: http_failed in {http_ms:.1f}ms ({type(exc).__name__})'
             )
 
+    # Modes that do not need ball detection.
+    _BALL_DETECTION_DISABLED_MODES = frozenset({'planned'})
+
+    def _on_waypoint_type(self, msg: String) -> None:
+        self._waypoint_type = (msg.data or '').strip().lower()
+
+    def _on_mode(self, msg: String) -> None:
+        mode = (msg.data or '').strip().lower()
+        should_enable = mode not in self._BALL_DETECTION_DISABLED_MODES
+        if self._ball_detection_enabled != should_enable:
+            self._ball_detection_enabled = should_enable
+            self.get_logger().info(
+                f'ball_detection_enabled set to {should_enable} (mode={mode!r})'
+            )
+
     def _infer_tick(self) -> None:
         tick_start = time.perf_counter()
+        if self._waypoint_type == 'home':
+            self._latest_detections = []
+            self._publish_sticky_detection_image_or_fallback('home - no inference')
+            if self._latest_front_image is not None:
+                image_h, image_w = self._latest_front_image.shape[:2]
+            else:
+                image_w, image_h = 0, 0
+            self._publish_detection_topics([], image_w, image_h)
+            return
         if not self._ball_detection_enabled:
             self._latest_detections = []
             self._publish_sticky_detection_image_or_fallback('ball detection disabled')
@@ -625,14 +654,14 @@ class BallDetectionNode(Node):
         if not detections:
             self._debug_throttled('no_detection_publish', 'skip publish: no valid detections in this tick')
             tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
-            self.get_logger().info(
-                '[infer_time] '
-                f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
-                f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
-                f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
-                f'tick_total={tick_total_ms:.1f}ms, '
-                f'detections=0'
-            )
+            # self.get_logger().info(
+            #     '[infer_time] '
+            #     f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
+            #     f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
+            #     f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
+            #     f'tick_total={tick_total_ms:.1f}ms, '
+            #     f'detections=0'
+            # )
             return
 
         t_publish_topics = time.perf_counter()
@@ -640,15 +669,15 @@ class BallDetectionNode(Node):
         publish_topics_ms = (time.perf_counter() - t_publish_topics) * 1000.0
 
         tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
-        self.get_logger().info(
-            '[infer_time] '
-            f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
-            f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
-            f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
-            f'publish_topics={publish_topics_ms:.1f}ms, '
-            f'tick_total={tick_total_ms:.1f}ms, '
-            f'detections={len(detections)}'
-        )
+        # self.get_logger().info(
+        #     '[infer_time] '
+        #     f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
+        #     f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
+        #     f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
+        #     f'publish_topics={publish_topics_ms:.1f}ms, '
+        #     f'tick_total={tick_total_ms:.1f}ms, '
+        #     f'detections={len(detections)}'
+        # )
 
     def _infer_with_roboflow(self, image: np.ndarray) -> tuple[list[dict], dict[str, float], bool]:
         timing = {

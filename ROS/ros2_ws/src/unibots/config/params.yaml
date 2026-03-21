@@ -21,7 +21,7 @@ web_bridge_node:
     # Mirror the pose_estimation flag into web_bridge_node behavior.
     pose_estimation: true
     # When true, post decisions/decision_making_data to web endpoints.
-    web_debug: true
+    web_debug: false
 
 radar_sensor_node:
   ros__parameters:
@@ -43,10 +43,10 @@ radar_sensor_node:
     tof_left_addr: 48
     tof_rear_addr: 50
     # ToF XSHUT GPIO mapping (BCM) for startup address allocation/hold.
-    tof_front_xshut_gpio: 21
-    tof_left_xshut_gpio: 26
-    tof_right_xshut_gpio: 16
-    tof_rear_xshut_gpio: 20
+    tof_front_xshut_gpio: 26
+    tof_left_xshut_gpio: 20
+    tof_right_xshut_gpio: 21
+    tof_rear_xshut_gpio: 16
     # Delay after pulling each XSHUT high before writing address.
     tof_boot_delay_ms: 80
     # Clamp/fail policy for real ToF readings.
@@ -137,7 +137,7 @@ decision_node:
   ros__parameters:
     # Decision loop tick rate (Hz).
     tick_hz: 10.0
-    # Decision mode string (selects handler in decision_cruise).
+    # Decision mode string (selects handler in decision_cruise). improved_nearest_v3_5
     mode: improved_nearest_v3_5
     # Fallback speed when not provided by planner.
     default_speed: 0.3
