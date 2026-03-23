@@ -332,6 +332,16 @@ class BallDetectionNode(Node):
                 continue
             if abs(x) > 0.95 or abs(y) > 0.95:
                 continue
+
+            # Filter steel balls detected in the 8 goal-mouth rectangular regions:
+            # one coordinate |val| <= 0.45, the other |val| in (0.46, 0.54) or (0.82, 0.88).
+            ball_type_pre = self._to_ball_type(str(detection.get('class', 'PING')))
+            if ball_type_pre == 'METAL':
+                _ax, _ay = abs(x), abs(y)
+                _other_in_band = lambda v: (0.46 <= v <= 0.54) or (0.82 <= v <= 0.88)
+                if (_ax <= 0.45 and _other_in_band(_ay)) or (_ay <= 0.45 and _other_in_band(_ax)):
+                    continue
+
             try:
                 camera_range_m = float(detection.get('camera_range_m', 0.0))
             except Exception:

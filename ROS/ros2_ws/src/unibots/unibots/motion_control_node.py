@@ -23,7 +23,7 @@ SERVO_PIN: int = 12
 SCOOP_OPEN_ANGLE: float = 5.0   # servo angle to open the scoop
 SCOOP_CLOSED_ANGLE: float = 179.0  # servo angle when closed
 
-MOTION_DEBUG: bool = False  # set True to enable nav debug logs
+MOTION_DEBUG: bool = True  # set True to enable nav debug logs
 
 
 FORWARD_SPEED: float = 0.7            # PWM duty cycle for forward movement (wheels 1-4)
@@ -136,6 +136,7 @@ class MotionControlNode(Node):
         self._destination_waypoint: tuple[float, float, Optional[float]] | None = None
         self._dynamic_waypoints_type: str = ''
         self._destination_waypoint_type: str = ''
+        self._reached_mid: bool = False  # True once robot has reached intermediate point for current waypoint
         self._num_tags_detected: Optional[int] = None
         self._scoop_state: Optional[str] = None
 
@@ -313,10 +314,14 @@ class MotionControlNode(Node):
 
     def _on_dynamic_waypoints_type(self, msg: String) -> None:
         self._dynamic_waypoints_type = self._normalize_waypoint_type(msg.data)
+        self._reached_mid = False
         self._update_destination_waypoint()
 
     def _on_dynamic_waypoint(self, msg: String) -> None:
-        self._dynamic_waypoint = self._parse_waypoint_text(msg.data)
+        new_wp = self._parse_waypoint_text(msg.data)
+        if new_wp != self._dynamic_waypoint:
+            self._reached_mid = False
+        self._dynamic_waypoint = new_wp
         self._update_destination_waypoint()
 
     def _on_collision_avoiding_waypoint(self, msg: String) -> None:
@@ -432,14 +437,15 @@ class MotionControlNode(Node):
         )
         self._log_motor_states('anticlock_rotate')
 
-    def _rotate_burst(self, clockwise: bool, heading_error_deg: float = 0.0) -> None:
-        abs_err = abs(heading_error_deg)
-        if abs_err < 30.0:
-            burst_ms = ROTATE_BURST_SMALL_MS
-        elif abs_err < 60.0:
-            burst_ms = ROTATE_BURST_MED_MS
-        else:
-            burst_ms = ROTATE_BURST_LARGE_MS
+    def _rotate_burst(self, clockwise: bool, heading_error_deg: float = 0.0, burst_ms: Optional[float] = None) -> None:
+        if burst_ms is None:
+            abs_err = abs(heading_error_deg)
+            if abs_err < 30.0:
+                burst_ms = ROTATE_BURST_SMALL_MS
+            elif abs_err < 60.0:
+                burst_ms = ROTATE_BURST_MED_MS
+            else:
+                burst_ms = ROTATE_BURST_LARGE_MS
         if clockwise:
             self._clock_rotate()
         else:
@@ -488,14 +494,16 @@ class MotionControlNode(Node):
     def _tick(self) -> None:
         if not self._run_enabled:
             return
-        # Highest priority: sim time < 1 s — drive forward to clear start position.
-        if self._sim_time_seconds is not None and self._sim_time_seconds < 1.0:
+        # Highest priority: sim time < 3 s — drive forward to clear start position.
+        if self._sim_time_seconds is not None and self._sim_time_seconds < 3.0:
             self._move_forward(left_speed=FORWARD_SPEED, right_speed=FORWARD_SPEED)
             return
         # Second priority: no AprilTag visible — reverse unconditionally to find a tag.
         if self._num_tags_detected is not None and self._num_tags_detected == 0 and self._sim_time_seconds is not None and self._sim_time_seconds > 20.0:
             self._move_backward()
-            self._publish_waypoint_status()
+            reached_msg = String()
+            reached_msg.data = 'reached'
+            self._pub_waypoint_status.publish(reached_msg)
             return
 
         self._publish_waypoint_status()
@@ -537,13 +545,13 @@ class MotionControlNode(Node):
                 self._nav_log('[nav:inside] moving forward')
                 self._move_forward(left_speed=LEFT_FORWARD_SPEED, right_speed=RIGHT_FORWARD_SPEED)
         else:
-            # --- Waypoint outside field (|x| > 0.65 or |y| > 0.65) ---
-            # Intermediate point: clamp each coordinate to [-0.65, 0.65]
-            mid_x = max(-0.65, min(0.65, dest_x))
-            mid_y = max(-0.65, min(0.65, dest_y))
+            # --- Waypoint outside field (|x| > 0.7 or |y| > 0.7) ---
+            # Intermediate point: clamp each coordinate to [-0.7, 0.7]
+            mid_x = max(-0.7, min(0.7, dest_x))
+            mid_y = max(-0.7, min(0.7, dest_y))
             self._nav_log(f'[nav:outside] mid=({mid_x:.3f}, {mid_y:.3f})')
             # Step 1: navigate to intermediate point first
-            if not (abs(self._current_x - mid_x) < 0.1 and abs(self._current_y - mid_y) < 0.1):
+            if not self._reached_mid and not (abs(self._current_x - mid_x) < 0.2 and abs(self._current_y - mid_y) < 0.2):
                 dx_mid = mid_x - self._current_x
                 dy_mid = mid_y - self._current_y
                 target_heading_deg = math.degrees(math.atan2(dy_mid, dx_mid))
@@ -562,6 +570,7 @@ class MotionControlNode(Node):
                     self._move_forward(left_speed=LEFT_FORWARD_SPEED, right_speed=RIGHT_FORWARD_SPEED)
             else:
                 # Step 2: at intermediate point — approach wall
+                self._reached_mid = True
                 self._nav_log(f'[nav:outside:step2] at mid, type={self._destination_waypoint_type}')
                 if self._destination_waypoint_type == 'home':
                     # Face away from wall (back toward wall), then reverse 1 s
@@ -570,12 +579,12 @@ class MotionControlNode(Node):
                     self._nav_log(
                         f'[nav:home] face_away_heading={target_heading_deg:.1f}° error={heading_error_deg:.1f}°'
                     )
-                    if heading_error_deg > 20.0:
+                    if heading_error_deg > 30.0:
                         self._nav_log('[nav:home] rotating anti-clockwise to face away')
-                        self._rotate_burst(clockwise=False, heading_error_deg=heading_error_deg)
-                    elif heading_error_deg < -20.0:
+                        self._rotate_burst(clockwise=False, heading_error_deg=heading_error_deg, burst_ms=60.0)
+                    elif heading_error_deg < -30.0:
                         self._nav_log('[nav:home] rotating clockwise to face away')
-                        self._rotate_burst(clockwise=True, heading_error_deg=heading_error_deg)
+                        self._rotate_burst(clockwise=True, heading_error_deg=heading_error_deg, burst_ms=60.0)
                     else:
                         self._nav_log('[nav:home] reversing into wall')
                         self._move_backward()
@@ -588,6 +597,7 @@ class MotionControlNode(Node):
                         self._close_scoop()
                         time.sleep(1.0)
                         self._nav_log('[nav:home] publishing reached')
+                        self._reached_mid = False
                         reached_msg = String()
                         reached_msg.data = 'reached'
                         self._pub_waypoint_status.publish(reached_msg)
@@ -607,9 +617,9 @@ class MotionControlNode(Node):
                     else:
                         self._nav_log('[nav:wall] driving into wall')
                         self._move_forward(left_speed=0.8, right_speed=0.8)
-                        time.sleep(3.0)
-                        self._stop()
+                        time.sleep(2.0)
                         self._nav_log('[nav:wall] publishing reached')
+                        self._reached_mid = False
                         reached_msg = String()
                         reached_msg.data = 'reached'
                         self._pub_waypoint_status.publish(reached_msg)

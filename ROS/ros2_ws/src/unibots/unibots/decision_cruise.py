@@ -124,7 +124,7 @@ DEFAULT_ANGULAR_VELOCITY = DEFAULT_ANGULAR_VELOCITY_FALLBACK # degrees per secon
 
 VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 
-HOME: tuple[float, float, float] = (-0.9, 0.0, 0.0)  # (x, y, orientation_deg) — end-of-game home position
+HOME: tuple[float, float, float] = (-0.9, 0.0, -90.0)  # (x, y, orientation_deg) — end-of-game home position
 
 INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball (meters)
 
@@ -605,7 +605,8 @@ def _read_dynamic_waypoints():
     try:
         x = float(parts[0])
         y = float(parts[1])
-        bearing = float(parts[2]) if len(parts) >= 3 else None
+        bearing_raw = parts[2].strip() if len(parts) >= 3 else 'none'
+        bearing = None if bearing_raw.lower() == 'none' else float(bearing_raw)
         return (x, y, bearing)
     except Exception:
         return None
@@ -2152,12 +2153,18 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
         # )
     ]
 
+    cur_dyn = _read_dynamic_waypoints()
+    cur_dyn_x = cur_dyn[0] if cur_dyn is not None else None
+    cur_dyn_y = cur_dyn[1] if cur_dyn is not None else None
+
     best = None
     best_d2 = None
     for (x, y, typ) in bx:
         distance = math.hypot(x - cx, y - cy)
         if distance < 0.15:
             continue  # too close to navigate to (motion_control would immediately "reach" it)
+        if cur_dyn_x is not None and math.hypot(x - cur_dyn_x, y - cur_dyn_y) < 0.1:
+            continue  # same as current dynamic waypoint, skip to avoid re-targeting
         d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
         if best_d2 is None or d2 < best_d2:
             best_d2 = d2
@@ -2199,6 +2206,8 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
                 tx, ty = FIELD_TILES[r][c]
                 if abs(tx) > 0.7 or abs(ty) > 0.7:
                     continue
+                if cur_dyn_x is not None and math.hypot(tx - cur_dyn_x, ty - cur_dyn_y) < 0.1:
+                    continue  # same as current dynamic waypoint, skip
                 dist = math.hypot(tx - cx, ty - cy)
                 time_cost = next_point_time_cost((cx, cy), bearing, (tx, ty), None)
                 if time_cost <  best_ball_time_cost and dist >= 0.15 and v > 0.0:
