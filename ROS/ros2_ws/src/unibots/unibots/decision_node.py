@@ -14,8 +14,8 @@ class DecisionNode(Node):
     def __init__(self) -> None:
         super().__init__('decision_node')
 
-        self.declare_parameter('tick_hz', 10.0)
-        self.declare_parameter('fallback_tick_hz', 10.0)
+        self.declare_parameter('tick_hz', 1.0)
+        self.declare_parameter('fallback_tick_hz', 1.0)
         self.declare_parameter('mode', '')
         self.declare_parameter('default_speed', 0.3)
         self.declare_parameter('time_topic', '/time')
