@@ -23,7 +23,7 @@ web_bridge_node:
     # When true, post decisions/decision_making_data to web endpoints.
     web_debug: false
 
-radar_sensor_node:
+pose_estimation_sensor_fusion:
   ros__parameters:
     # Use real ToF sensors when true; fetch upstream radar text when false.
     use_real_sensor: true
@@ -37,29 +37,76 @@ radar_sensor_node:
     request_timeout: 3.0
     # Time topic used to stamp radar payload first field (t).
     time_topic: /time
-    # ToF I2C addresses after deploy-time allocation.
-    tof_front_addr: 51
-    tof_right_addr: 49
-    tof_left_addr: 48
-    tof_rear_addr: 50
-    # ToF XSHUT GPIO mapping (BCM) for startup address allocation/hold.
-    tof_front_xshut_gpio: 26
-    tof_left_xshut_gpio: 20
-    tof_right_xshut_gpio: 21
-    tof_rear_xshut_gpio: 16
-    # Delay after pulling each XSHUT high before writing address.
-    tof_boot_delay_ms: 80
+    # TCA9548A I2C multiplexer address (all address pins low = 0x70).
+    tca9548a_addr: 112
+    # TCA9548A channel assignments (Front moved to ch4; Left=1, Right=2, Rear=3).
+    tof_front_channel: 4
+    tof_left_channel: 1
+    tof_right_channel: 2
+    tof_rear_channel: 3
     # Clamp/fail policy for real ToF readings.
     tof_min_range_m: 0.02
     tof_max_range_m: 0.80
     tof_read_fail_value_m: 0.80
     # Diagnostic output for real ToF mode.
-    tof_debug_enabled: true
-    tof_debug_interval_sec: 1.0
+    tof_debug_enabled: false
+    tof_debug_interval_sec: 0.1
     # Retry sensor constructor this many times during startup/reinit.
     tof_init_retries: 5
     # When all 4 directions fail consecutively, auto reinitialize ToF readers.
     tof_reinit_after_fail_count: 8
+    # Poll the MPU6050 IMU on the shared I2C bus and log acceleration (only in real-sensor mode).
+    mpu_enabled: true
+    # MPU6050 I2C address (default 0x68 = 104; AD0 high = 0x69 = 105).
+    mpu_addr: 104
+    # MPU6050 dedicated polling rate (Hz). Runs on its own timer/thread, independent of ToF.
+    mpu_poll_hz: 200.0
+    # Throttle MPU acceleration debug logs to once per N seconds.
+    mpu_debug_interval_sec: 0.5
+    # When MPU reads fail consecutively, auto reinitialize the sensor.
+    mpu_reinit_after_fail_count: 20
+    # Shared I2C bus speed (Hz). 100000 (Standard-mode) is enough for 200Hz MPU and is
+    # the most reliable for marginal ToF wiring. Raise to 400000 only if all sensors are solid.
+    i2c_frequency: 100000
+    # --- IMU-aided pose fusion ---
+    # Predict /current_position at the MPU rate (dead-reckoning from accel+gyro) and
+    # correct it with the absolute, low-rate camera pose. Disable to republish the
+    # camera pose 1:1 (also auto-disabled when no MPU is available).
+    imu_fusion_enabled: true
+    # Max publish rate (Hz) for the fused /current_position. 0 = publish every MPU sample.
+    fusion_publish_hz: 100.0
+    # Body-frame axis mapping (x=0, y=1, z=2). This MPU is mounted with its
+    # X->robot-left, Y->robot-up, Z->robot-forward, so: forward=Z(2), left=X(0),
+    # yaw-rate=gyro about up=Y(1). Flip a *_sign if that reading moves the wrong way.
+    imu_forward_axis: 2
+    imu_left_axis: 0
+    imu_yaw_rate_axis: 1
+    imu_forward_sign: 1.0
+    imu_left_sign: 1.0
+    imu_yaw_rate_sign: 1.0
+    # Complementary-filter correction gains applied on each camera update [0..1].
+    # Higher = trust camera more (less IMU drift, more camera noise/latency).
+    fusion_pos_correction_gain: 0.5
+    fusion_vel_correction_gain: 0.1
+    fusion_heading_correction_gain: 0.4
+    # Online gyro-bias learning rate from the heading residual.
+    fusion_gyro_bias_gain: 0.02
+    # Velocity bleed-off time constant (sec) bounding accel-integration drift.
+    fusion_vel_damping_tau: 1.0
+    # Ignore horizontal accel below this magnitude (m/s^2) as noise.
+    fusion_accel_deadband: 0.08
+    # Clamp estimated speed (m/s).
+    fusion_max_speed: 2.0
+    # Hard-reset the estimate to the camera pose if it disagrees by more than this (m).
+    fusion_reset_pos_threshold: 0.5
+    # Zero-velocity update: clamp velocity to 0 when the robot is detected still.
+    fusion_zupt_enabled: true
+    fusion_zupt_accel_thresh: 0.15
+    fusion_zupt_gyro_thresh: 0.05
+    fusion_zupt_min_duration: 0.2
+    # Stationary samples collected at startup to estimate accel/gyro bias (keep the
+    # robot still during startup). 200 samples @ 200Hz = ~1s. 0 disables calibration.
+    fusion_calib_samples: 200
 
 front_camera_node:
   ros__parameters:
@@ -142,7 +189,7 @@ decision_node:
     # Fallback speed when not provided by planner.
     default_speed: 0.3
 
-pose_estimation:
+pose_estimation_camera:
   ros__parameters:
     # Enable pose_estimation node and publish /current_position.
     pose_estimation: true

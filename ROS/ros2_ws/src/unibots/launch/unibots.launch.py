@@ -33,13 +33,6 @@ def generate_launch_description() -> LaunchDescription:
         ),
         Node(
             package='unibots',
-            executable='radar_sensor_node',
-            name='radar_sensor_node',
-            output='screen',
-            parameters=[params, {'use_real_sensor': use_real_sensor}],
-        ),
-        Node(
-            package='unibots',
             executable='front_camera_node',
             name='front_camera_node',
             output='screen',
@@ -61,10 +54,17 @@ def generate_launch_description() -> LaunchDescription:
         ),
         Node(
             package='unibots',
-            executable='pose_estimation_node',
-            name='pose_estimation',
+            executable='pose_estimation_camera_node',
+            name='pose_estimation_camera',
             output='screen',
             parameters=pose_estimation_parameters,
+        ),
+        Node(
+            package='unibots',
+            executable='pose_estimation_sensor_fusion_node',
+            name='pose_estimation_sensor_fusion',
+            output='screen',
+            parameters=[params, {'use_real_sensor': use_real_sensor}],
         ),
         Node(
             package='unibots',

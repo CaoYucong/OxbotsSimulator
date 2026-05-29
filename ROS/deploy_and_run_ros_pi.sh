@@ -30,16 +30,6 @@ INFERENCE_IMAGE_REF="${INFERENCE_IMAGE_REF:-roboflow/roboflow-inference-server-c
 REMOTE_INFERENCE_IMAGE_ARCHIVE="${REMOTE_INFERENCE_IMAGE_ARCHIVE:-/home/${PI_USER}/roboflow-inference-server-cpu-latest-arm64.tar.gz}"
 REMOTE_INFERENCE_START_CMD="${REMOTE_INFERENCE_START_CMD:-docker run -d --restart unless-stopped --name unibots-roboflow-inference -p ${INFERENCE_PORT}:9001 ${INFERENCE_IMAGE_REF}}"
 ROBOFLOW_API_KEY="${ROBOFLOW_API_KEY:-}"
-INIT_TOF_ON_DEPLOY="${INIT_TOF_ON_DEPLOY:-}"
-TOF_FRONT_XSHUT_GPIO="${TOF_FRONT_XSHUT_GPIO:-21}"
-TOF_LEFT_XSHUT_GPIO="${TOF_LEFT_XSHUT_GPIO:-26}"
-TOF_RIGHT_XSHUT_GPIO="${TOF_RIGHT_XSHUT_GPIO:-16}"
-TOF_REAR_XSHUT_GPIO="${TOF_REAR_XSHUT_GPIO:-20}"
-TOF_FRONT_ADDR="${TOF_FRONT_ADDR:-0x33}"
-TOF_LEFT_ADDR="${TOF_LEFT_ADDR:-0x30}"
-TOF_RIGHT_ADDR="${TOF_RIGHT_ADDR:-0x31}"
-TOF_REAR_ADDR="${TOF_REAR_ADDR:-0x32}"
-TOF_BOOT_DELAY_MS="${TOF_BOOT_DELAY_MS:-80}"
 
 CONTROL_PATH_DEFAULT="$HOME/.ssh/cm-%C"
 SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-$CONTROL_PATH_DEFAULT}"
@@ -63,10 +53,7 @@ Environment overrides:
   PREFER_SOURCE_CV_BRIDGE, REMOTE_OFFLINE_ROOT, REMOTE_VISION_OPENCV_ARCHIVE,
   REMOTE_VISION_OPENCV_SRC_DIR, START_LOCAL_INFERENCE, INFERENCE_HOST,
   INFERENCE_PORT, INFERENCE_READY_TIMEOUT, INFERENCE_IMAGE_REF,
-  REMOTE_INFERENCE_IMAGE_ARCHIVE, REMOTE_INFERENCE_START_CMD, ROBOFLOW_API_KEY,
-  INIT_TOF_ON_DEPLOY, TOF_FRONT_XSHUT_GPIO, TOF_LEFT_XSHUT_GPIO,
-  TOF_RIGHT_XSHUT_GPIO, TOF_REAR_XSHUT_GPIO, TOF_FRONT_ADDR, TOF_LEFT_ADDR,
-  TOF_RIGHT_ADDR, TOF_REAR_ADDR, TOF_BOOT_DELAY_MS
+  REMOTE_INFERENCE_IMAGE_ARCHIVE, REMOTE_INFERENCE_START_CMD, ROBOFLOW_API_KEY
 
 Examples:
   ./ROS/deploy_and_run_ros_pi.sh
@@ -111,79 +98,6 @@ LOCAL_PARAMS="${LOCAL_PARAMS:-$LOCAL_WS/src/$LAUNCH_PACKAGE/config/params.yaml}"
 if [[ ! -f "$LOCAL_CONFIG" ]]; then
   echo "[ERROR] Local config file not found: $LOCAL_CONFIG"
   exit 1
-fi
-
-if [[ -z "$INIT_TOF_ON_DEPLOY" ]]; then
-  if [[ -f "$LOCAL_PARAMS" ]] && command -v python3 >/dev/null 2>&1; then
-    TOF_REAL_SENSOR_FLAG="$(python3 - "$LOCAL_PARAMS" <<'PY'
-import re
-import sys
-
-params_path = sys.argv[1]
-try:
-    with open(params_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-except Exception:
-    print('unknown', end='')
-    raise SystemExit(0)
-
-in_radar = False
-in_params = False
-
-for raw_line in lines:
-    line = raw_line.rstrip('\n')
-    stripped = line.strip()
-
-    if not stripped or stripped.startswith('#'):
-        continue
-
-    if re.match(r'^[^\s].*:\s*$', line):
-        in_radar = stripped.startswith('radar_sensor_node:')
-        in_params = False
-        continue
-
-    if in_radar and re.match(r'^\s{2}ros__parameters:\s*$', line):
-        in_params = True
-        continue
-
-    if in_radar and in_params:
-        if re.match(r'^\s{2}\S', line):
-            break
-        m = re.match(r'^\s{4}use_real_sensor:\s*(.*?)\s*(?:#.*)?$', line)
-        if m:
-            value = m.group(1).strip().lower()
-            if value in {'true', '1', 'yes', 'on'}:
-                print('true', end='')
-            elif value in {'false', '0', 'no', 'off'}:
-                print('false', end='')
-            else:
-                print('unknown', end='')
-            raise SystemExit(0)
-
-print('unknown', end='')
-PY
-)"
-
-    case "$TOF_REAL_SENSOR_FLAG" in
-      true)
-        INIT_TOF_ON_DEPLOY="1"
-        echo "[INFO] Auto ToF init enabled from params.yaml (radar_sensor_node.use_real_sensor=true)"
-        ;;
-      false)
-        INIT_TOF_ON_DEPLOY="0"
-        echo "[INFO] Auto ToF init disabled from params.yaml (radar_sensor_node.use_real_sensor=false)"
-        ;;
-      *)
-        INIT_TOF_ON_DEPLOY="1"
-        echo "[WARN] Cannot parse use_real_sensor from $LOCAL_PARAMS, fallback INIT_TOF_ON_DEPLOY=1"
-        ;;
-    esac
-  else
-    INIT_TOF_ON_DEPLOY="1"
-    echo "[WARN] params.yaml or python3 unavailable, fallback INIT_TOF_ON_DEPLOY=1"
-  fi
-else
-  echo "[INFO] INIT_TOF_ON_DEPLOY overridden by environment: $INIT_TOF_ON_DEPLOY"
 fi
 
 if [[ -z "$ROBOFLOW_API_KEY" ]] && command -v python3 >/dev/null 2>&1; then
@@ -320,143 +234,19 @@ run_ssh "$PI_USER@$PI_IP" "bash -lc '
   fi
 '"
 
-echo "[8/10] Ensure ToF runtime and initialize I2C addresses on Raspberry Pi"
-set +e
-TOF_STEP_OUTPUT="$(run_ssh "$PI_USER@$PI_IP" \
-  INIT_TOF_ON_DEPLOY="$INIT_TOF_ON_DEPLOY" \
-  TOF_FRONT_XSHUT_GPIO="$TOF_FRONT_XSHUT_GPIO" \
-  TOF_LEFT_XSHUT_GPIO="$TOF_LEFT_XSHUT_GPIO" \
-  TOF_RIGHT_XSHUT_GPIO="$TOF_RIGHT_XSHUT_GPIO" \
-  TOF_REAR_XSHUT_GPIO="$TOF_REAR_XSHUT_GPIO" \
-  TOF_FRONT_ADDR="$TOF_FRONT_ADDR" \
-  TOF_LEFT_ADDR="$TOF_LEFT_ADDR" \
-  TOF_RIGHT_ADDR="$TOF_RIGHT_ADDR" \
-  TOF_REAR_ADDR="$TOF_REAR_ADDR" \
-  TOF_BOOT_DELAY_MS="$TOF_BOOT_DELAY_MS" \
-  "bash -s" <<'REMOTE_TOF_SCRIPT' 2>&1
-if ! python3 -m pip install --break-system-packages --user --disable-pip-version-check -q smbus2 gpiozero; then
-  echo "[ERROR] Failed to install ToF Python dependencies"
-  exit 1
-fi
-if ! python3 -c "import smbus2, gpiozero" >/dev/null 2>&1; then
-  echo "[ERROR] ToF runtime import check failed (smbus2/gpiozero)"
-  exit 1
-fi
-
-if [[ "${INIT_TOF_ON_DEPLOY}" == "1" ]]; then
-  timeout 30s python3 -u - <<'PY'
-import os
-import time
-import smbus2
-from gpiozero import OutputDevice
-
-VL53L0X_DEFAULT_ADDR = 0x29
-VL53L0X_ADDR_REG = 0x8A
-I2C_BUS = 1
-
-boot_delay = max(10, int(os.environ.get('TOF_BOOT_DELAY_MS', '80'))) / 1000.0
-order = [
-    ('front', int(os.environ.get('TOF_FRONT_XSHUT_GPIO', '26')), int(os.environ.get('TOF_FRONT_ADDR', '0x30'), 0)),
-    ('left', int(os.environ.get('TOF_LEFT_XSHUT_GPIO', '16')), int(os.environ.get('TOF_LEFT_ADDR', '0x31'), 0)),
-    ('right', int(os.environ.get('TOF_RIGHT_XSHUT_GPIO', '20')), int(os.environ.get('TOF_RIGHT_ADDR', '0x32'), 0)),
-    ('rear', int(os.environ.get('TOF_REAR_XSHUT_GPIO', '21')), int(os.environ.get('TOF_REAR_ADDR', '0x33'), 0)),
-]
-
-pins = {}
-for name, gpio, _ in order:
-    try:
-        pins[name] = OutputDevice(gpio, active_high=True, initial_value=False)
-    except Exception as exc:
-        raise SystemExit(
-            f'[ERROR] failed to claim XSHUT GPIO{gpio} for {name}: {exc}. '
-            'This GPIO may be busy/reserved. Kill stale python3 and ensure no GPIO conflict.'
-        )
-time.sleep(0.1)
-
-bus = smbus2.SMBus(I2C_BUS)
-
-def i2c_scan():
-    found = []
-    for addr in range(0x03, 0x78):
-        try:
-            bus.read_byte(addr)
-            found.append(addr)
-        except OSError:
-            pass
-    return sorted(found)
-
-print('[INFO] ToF init: all XSHUT LOW, begin one-by-one address assignment')
-print(f'[INFO] initial I2C scan: {[hex(x) for x in i2c_scan()]}', flush=True)
-
-for name, gpio, target in order:
-    pins[name].on()
-    time.sleep(boot_delay)
-
-    before = i2c_scan()
-    print(f'[INFO] assigning {name} (GPIO{gpio}) -> 0x{target:02X}  |  scan before: {[hex(x) for x in before]}', flush=True)
-
-    if VL53L0X_DEFAULT_ADDR not in before:
-        print(
-            f'[WARN] {name}: sensor not found at 0x{VL53L0X_DEFAULT_ADDR:02X} after XSHUT HIGH. '
-            'Skipping this sensor. Check XSHUT wiring or increase TOF_BOOT_DELAY_MS.',
-            flush=True
-        )
-        continue
-
-    try:
-        bus.write_byte_data(VL53L0X_DEFAULT_ADDR, VL53L0X_ADDR_REG, target & 0x7F)
-    except OSError as exc:
-        print(
-            f'[WARN] {name}: I2C write to 0x{VL53L0X_DEFAULT_ADDR:02X} reg 0x{VL53L0X_ADDR_REG:02X} failed: {exc}. '
-            'Skipping this sensor. Check XSHUT wiring/power.',
-            flush=True
-        )
-        continue
-
-    time.sleep(0.02)
-    after = i2c_scan()
-    print(f'[OK] {name}: 0x{VL53L0X_DEFAULT_ADDR:02X} -> 0x{target:02X}  |  scan after: {[hex(x) for x in after]}', flush=True)
-
-addresses = i2c_scan()
-target_set = {target for (_, _, target) in order}
-print('[INFO] I2C scan after init:', ' '.join(f'0x{x:02X}' for x in addresses))
-missing = [f'0x{x:02X}' for x in sorted(target_set) if x not in addresses]
-if missing:
-    print('[WARN] Missing ToF addresses after init: ' + ', '.join(missing) +
-          '. radar_sensor_node will start without these sensors.', flush=True)
-else:
-    print('[OK] All ToF sensors initialized successfully.')
-
-for pin in pins.values():
-    pin.close()
-bus.close()
-print('[OK] ToF initialization complete')
-PY
-  rc=$?
-  if [[ "$rc" -eq 124 ]]; then
-    echo "[ERROR] ToF initialization timed out after 30s."
+echo "[8/10] Ensure ToF (TCA9548A + VL53L0X) runtime exists on Raspberry Pi"
+run_ssh "$PI_USER@$PI_IP" "bash -lc '
+  if ! python3 -m pip install --break-system-packages --user --disable-pip-version-check -q \
+    adafruit-circuitpython-vl53l0x adafruit-circuitpython-tca9548a; then
+    echo \"[ERROR] Failed to install ToF Python dependencies\"
     exit 1
-  elif [[ "$rc" -ne 0 ]]; then
-    exit "$rc"
   fi
-else
-  echo "[INFO] Skip ToF initialization (INIT_TOF_ON_DEPLOY=0)"
-fi
-REMOTE_TOF_SCRIPT
-)"
-TOF_STEP_RC=$?
-set -e
-
-echo "$TOF_STEP_OUTPUT"
-
-if [[ "$TOF_STEP_RC" -ne 0 ]]; then
-  if printf '%s' "$TOF_STEP_OUTPUT" | grep -qiE 'failed to claim XSHUT GPIO|GPIO busy'; then
-    echo "[WARN] ToF init skipped: XSHUT GPIO is busy (likely already held by running radar_sensor_node)."
-    echo "[INFO] Hint: set INIT_TOF_ON_DEPLOY=0 to skip step 8 intentionally."
-  else
-    exit "$TOF_STEP_RC"
+  if ! python3 -c \"import adafruit_vl53l0x, adafruit_tca9548a\" >/dev/null 2>&1; then
+    echo \"[ERROR] ToF runtime import check failed (adafruit_vl53l0x / adafruit_tca9548a)\"
+    exit 1
   fi
-fi
+  echo \"[OK] ToF runtime ready (TCA9548A + VL53L0X)\"
+'"
 
 REMOTE_CMD="source /opt/ros/$ROS_DISTRO/setup.bash && cd $REMOTE_WS"
 

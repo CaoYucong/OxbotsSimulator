@@ -3,7 +3,6 @@
 ROS2 Jazzy Python package providing:
 
 - `web_bridge_node`: HTTP mirror bridge for simulation data + web viewer endpoints
-- `radar_sensor_node`: standalone radar sensor fetcher/publisher (`/radar_sensor`)
 - `front_camera_node`: standalone front camera fetcher/publisher (`/front_camera`)
 - `ball_detection_node`: Roboflow ball detector + processed image overlay
 - `decision_node`: decision node that consumes topics and publishes decisions
@@ -24,10 +23,8 @@ ROS2 Jazzy Python package providing:
 - Topics published by `web_bridge_node`:
 	- `/visible_balls`, `/waypoint_status`, `/time`
 	- `/current_position` only when `pose_estimation` is disabled
-	- (`/radar_sensor` publishing has been moved out to `radar_sensor_node`)
+	- (`/radar_sensor` publishing has been moved out to `pose_estimation_sensor_fusion`)
 	- (`/front_camera` publishing has been moved out to `front_camera_node`)
-- Topics published by `radar_sensor_node`:
-	- `/radar_sensor` (fetched from upstream `/data/simulation_data` field `radar_sensor`)
 - Topics published by `front_camera_node`:
 	- `/front_camera` (fetched from upstream camera endpoint)
 - Topics published by `ball_detection_node`:
@@ -42,6 +39,9 @@ ROS2 Jazzy Python package providing:
 - Set `ball_detection_enabled: false` in `config/params.yaml` to disable ball detection loop.
 - Topics published by `pose_estimation`:
 	- `/current_position` when `pose_estimation` is enabled
+- Topics published by `pose_estimation_sensor_fusion`:
+	- `/current_position` (IMU-aided fused pose when `imu_fusion_enabled` and an MPU6050 is present: the absolute `/current_position_camera` pose is dead-reckoned forward with the 200Hz MPU accel/gyro and published at up to `fusion_publish_hz`; otherwise republished 1:1 from `/current_position_camera`)
+	- `/radar_sensor` (real ToF readings, or fetched from upstream `/data/simulation_data` field `radar_sensor`)
 - Topics published by `decision_node`:
 	- `/decisions`, `/decision_making_data`
 - Topics subscribed by `motion_control_node`:

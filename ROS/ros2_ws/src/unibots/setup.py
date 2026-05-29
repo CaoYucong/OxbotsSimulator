@@ -30,12 +30,12 @@ setup(
     entry_points={
         'console_scripts': [
             'web_bridge_node = unibots.web_bridge_node:main',
-            'radar_sensor_node = unibots.radar_sensor_node:main',
             'front_camera_node = unibots.front_camera_node:main',
             'ball_detection_node = unibots.ball_detection_node:main',
             'timer_node = unibots.timer_node:main',
             'decision_node = unibots.decision_node:main',
-            'pose_estimation_node = unibots.pose_estimation_node:main',
+            'pose_estimation_camera_node = unibots.pose_estimation_camera_node:main',
+            'pose_estimation_sensor_fusion_node = unibots.pose_estimation_sensor_fusion_node:main',
             'motion_control_node = unibots.motion_control_node:main',
             'reset_button_node = unibots.reset_button_node:main',
         ],

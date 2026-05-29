@@ -268,7 +268,7 @@ def estimate_camera_world_position(
 
 class PoseEstimationNode(Node):
     def __init__(self) -> None:
-        super().__init__('pose_estimation')
+        super().__init__('pose_estimation_camera')
 
         self.declare_parameter('camera_topic', '/front_camera')
         self.declare_parameter('intrinsic_path', '')
@@ -380,7 +380,7 @@ class PoseEstimationNode(Node):
             self._perf_pnp_ms = 0.0
             self._perf_total_ms = 0.0
 
-        self._pub_current_position = self.create_publisher(PoseStamped, '/current_position', 10)
+        self._pub_current_position = self.create_publisher(PoseStamped, '/current_position_camera', 10)
         self._pub_camera_pose = self.create_publisher(PoseStamped, '/camera_pose', 10)
         self._pub_num_tags_detected = self.create_publisher(Int32, '/num_tags_detected', 10)
         self._pub_camera_pose_history = self.create_publisher(PathMsg, '/camera_pose_history', 10)
