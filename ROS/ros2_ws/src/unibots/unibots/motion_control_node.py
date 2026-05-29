@@ -5,7 +5,7 @@ from typing import Dict, Optional, Tuple
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32, String
+from std_msgs.msg import Float32, String
 
 try:
     from gpiozero import AngularServo, DigitalOutputDevice, PWMOutputDevice
@@ -107,7 +107,6 @@ class MotionControlNode(Node):
         self.declare_parameter('collision_avoiding_waypoint_topic', '/collision_avoiding_waypoint')
         self.declare_parameter('waypoint_status_topic', '/waypoint_status')
         self.declare_parameter('scoop_state_topic', '/scoop_state')
-        self.declare_parameter('num_tags_detected_topic', '/num_tags_detected')
         self.declare_parameter('target_heading_deg', 10.0)
         self.declare_parameter('heading_deadband_min_deg', 9.0)
         self.declare_parameter('heading_deadband_max_deg', 11.0)
@@ -119,7 +118,6 @@ class MotionControlNode(Node):
         collision_avoiding_waypoint_topic = self.get_parameter('collision_avoiding_waypoint_topic').get_parameter_value().string_value or '/collision_avoiding_waypoint'
         waypoint_status_topic = self.get_parameter('waypoint_status_topic').get_parameter_value().string_value or '/waypoint_status'
         scoop_state_topic = self.get_parameter('scoop_state_topic').get_parameter_value().string_value or '/scoop_state'
-        num_tags_detected_topic = self.get_parameter('num_tags_detected_topic').get_parameter_value().string_value or '/num_tags_detected'
         self._target_heading_deg = float(self.get_parameter('target_heading_deg').get_parameter_value().double_value)
         self._heading_deadband_min_deg = float(self.get_parameter('heading_deadband_min_deg').get_parameter_value().double_value)
         self._heading_deadband_max_deg = float(self.get_parameter('heading_deadband_max_deg').get_parameter_value().double_value)
@@ -130,6 +128,7 @@ class MotionControlNode(Node):
         self._current_x: float | None = None
         self._current_y: float | None = None
         self._current_heading_deg: float | None = None
+        self._current_position_frame_id: str | None = None
         self._speed_mps: float = 0.0
         self._dynamic_waypoint: tuple[float, float, Optional[float]] | None = None
         self._collision_avoiding_waypoint: tuple[float, float, Optional[float]] | None = None
@@ -137,7 +136,6 @@ class MotionControlNode(Node):
         self._dynamic_waypoints_type: str = ''
         self._destination_waypoint_type: str = ''
         self._reached_mid: bool = False  # True once robot has reached intermediate point for current waypoint
-        self._num_tags_detected: Optional[int] = None
         self._scoop_state: Optional[str] = None
 
         if DigitalOutputDevice is None:
@@ -226,7 +224,6 @@ class MotionControlNode(Node):
         self.create_subscription(String, dynamic_waypoint_topic, self._on_dynamic_waypoint, 10)
         self.create_subscription(String, collision_avoiding_waypoint_topic, self._on_collision_avoiding_waypoint, 10)
         self.create_subscription(String, '/dynamic_waypoints_type', self._on_dynamic_waypoints_type, 10)
-        self.create_subscription(Int32, num_tags_detected_topic, self._on_num_tags_detected, 10)
         self._pub_waypoint_status = self.create_publisher(String, waypoint_status_topic, 10)
         self._pub_scoop_state = self.create_publisher(String, scoop_state_topic, 10)
         self._run_enabled: bool = False
@@ -255,6 +252,7 @@ class MotionControlNode(Node):
             self._stop()
 
     def _on_current_position(self, msg: PoseStamped) -> None:
+        self._current_position_frame_id = msg.header.frame_id or None
         self._current_x = float(msg.pose.position.x)
         self._current_y = float(msg.pose.position.y)
         qx = float(msg.pose.orientation.x)
@@ -271,9 +269,6 @@ class MotionControlNode(Node):
             self._speed_mps = float(msg.data)
         except Exception:
             self._speed_mps = 0.0
-
-    def _on_num_tags_detected(self, msg: Int32) -> None:
-        self._num_tags_detected = int(msg.data)
 
     @staticmethod
     def _parse_waypoint_text(text: str) -> tuple[float, float, Optional[float]] | None:
@@ -498,8 +493,12 @@ class MotionControlNode(Node):
         if self._sim_time_seconds is not None and self._sim_time_seconds < 3.0:
             self._move_forward(left_speed=FORWARD_SPEED, right_speed=FORWARD_SPEED)
             return
-        # Second priority: no AprilTag visible — reverse unconditionally to find a tag.
-        if self._num_tags_detected is not None and self._num_tags_detected == 0 and self._sim_time_seconds is not None and self._sim_time_seconds > 20.0:
+        # Second priority: fused pose lost (NO-TAG) — reverse to find a tag.
+        if (
+            self._sim_time_seconds is not None
+            and self._sim_time_seconds > 10.0
+            and self._current_position_frame_id == 'NO-TAG'
+        ):
             self._move_backward()
             reached_msg = String()
             reached_msg.data = 'reached'

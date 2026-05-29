@@ -95,7 +95,11 @@ class PoseEstimationSensorFusionNode(Node):
         self.declare_parameter('fusion_zupt_min_duration', 0.2)
         # Stationary samples collected at startup to estimate accel/gyro bias.
         self.declare_parameter('fusion_calib_samples', 200)
+        # After this many seconds without a new camera pose, stop publishing the
+        # IMU-dead-reckoned estimate and publish NO-TAG instead.
+        self.declare_parameter('fusion_camera_stale_timeout_sec', 5.0)
 
+        self._NO_TAG_FRAME_ID = 'NO-TAG'
         self.use_real_sensor = self.get_parameter('use_real_sensor').get_parameter_value().bool_value
         self.remote_host = self.get_parameter('remote_host').get_parameter_value().string_value
         self.remote_port = int(self.get_parameter('remote_port').get_parameter_value().integer_value)
@@ -161,6 +165,9 @@ class PoseEstimationSensorFusionNode(Node):
             self.get_parameter('fusion_zupt_min_duration').get_parameter_value().double_value
         )
         self.fusion_calib_samples = int(self.get_parameter('fusion_calib_samples').get_parameter_value().integer_value)
+        self.fusion_camera_stale_timeout_sec = float(
+            self.get_parameter('fusion_camera_stale_timeout_sec').get_parameter_value().double_value
+        )
 
         if fusion_publish_hz < 0.0:
             fusion_publish_hz = 0.0
@@ -169,6 +176,8 @@ class PoseEstimationSensorFusionNode(Node):
             self.fusion_vel_damping_tau = 1.0
         if self.fusion_calib_samples < 0:
             self.fusion_calib_samples = 0
+        if self.fusion_camera_stale_timeout_sec <= 0.0:
+            self.fusion_camera_stale_timeout_sec = 5.0
         for axis_name in ('imu_forward_axis', 'imu_left_axis', 'imu_yaw_rate_axis'):
             axis_val = getattr(self, axis_name)
             if axis_val < 0 or axis_val > 2:
@@ -230,6 +239,7 @@ class PoseEstimationSensorFusionNode(Node):
         self._last_fusion_pub_time = 0.0
         self._still_since: float | None = None
         self._camera_frame_id = 'map'
+        self._no_tag_active = False
 
         if self.time_topic:
             self.create_subscription(String, self.time_topic, self._on_time, 10)
@@ -340,6 +350,31 @@ class PoseEstimationSensorFusionNode(Node):
             self._last_cam_time = now
             self._last_cam_x = meas_x
             self._last_cam_y = meas_y
+            if self._no_tag_active:
+                self._no_tag_active = False
+                self.get_logger().info('camera pose recovered; resuming fused /current_position')
+
+    def _camera_pose_age_sec(self, now: float) -> float | None:
+        if self._last_cam_time is None:
+            return None
+        return now - self._last_cam_time
+
+    def _is_camera_pose_stale(self, now: float) -> bool:
+        age = self._camera_pose_age_sec(now)
+        if age is None:
+            return False
+        return age > self.fusion_camera_stale_timeout_sec
+
+    def _mark_no_tag_if_needed(self, now: float) -> None:
+        if self._no_tag_active:
+            return
+        self._no_tag_active = True
+        age = self._camera_pose_age_sec(now)
+        age_text = 'unknown' if age is None else f'{age:.2f}s'
+        self.get_logger().warn(
+            f'no camera pose for {age_text} (> {self.fusion_camera_stale_timeout_sec:.1f}s); '
+            f'publishing {self._NO_TAG_FRAME_ID} on /current_position'
+        )
 
     def _on_time(self, msg: String) -> None:
         raw = (msg.data or '').strip()
@@ -641,7 +676,24 @@ class PoseEstimationSensorFusionNode(Node):
         if self._fusion_publish_min_dt > 0.0 and (now - self._last_fusion_pub_time) < self._fusion_publish_min_dt:
             return
         self._last_fusion_pub_time = now
+        if self._is_camera_pose_stale(now):
+            self._mark_no_tag_if_needed(now)
+            self._publish_no_tag_pose()
+            return
         self._publish_fused_pose(pub_x, pub_y, pub_heading)
+
+    def _publish_no_tag_pose(self) -> None:
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self._NO_TAG_FRAME_ID
+        msg.pose.position.x = 0.0
+        msg.pose.position.y = 0.0
+        msg.pose.position.z = 0.0
+        msg.pose.orientation.x = 0.0
+        msg.pose.orientation.y = 0.0
+        msg.pose.orientation.z = 0.0
+        msg.pose.orientation.w = 1.0
+        self._pub.publish(msg)
 
     def _publish_fused_pose(self, x: float, y: float, heading: float) -> None:
         qx, qy, qz, qw = _quaternion_from_yaw(heading)

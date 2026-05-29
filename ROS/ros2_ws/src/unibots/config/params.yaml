@@ -107,6 +107,9 @@ pose_estimation_sensor_fusion:
     # Stationary samples collected at startup to estimate accel/gyro bias (keep the
     # robot still during startup). 200 samples @ 200Hz = ~1s. 0 disables calibration.
     fusion_calib_samples: 200
+    # After this many seconds without a new camera pose, stop publishing the
+    # IMU-dead-reckoned estimate and publish NO-TAG on /current_position instead.
+    fusion_camera_stale_timeout_sec: 5.0
 
 front_camera_node:
   ros__parameters:
