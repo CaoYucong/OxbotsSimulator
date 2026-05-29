@@ -12,21 +12,17 @@ class RadarSensorNode(Node):
     def __init__(self) -> None:
         super().__init__('radar_sensor_node')
 
-        self.declare_parameter('use_real_sensor', False)
+        self.declare_parameter('use_real_sensor', True)
         self.declare_parameter('remote_host', '192.168.50.2')
         self.declare_parameter('remote_port', 5003)
         self.declare_parameter('poll_hz', 10.0)
         self.declare_parameter('request_timeout', 1.0)
         self.declare_parameter('time_topic', '/time')
-        self.declare_parameter('tof_front_addr', 0x30)
-        self.declare_parameter('tof_right_addr', 0x32)
-        self.declare_parameter('tof_left_addr', 0x31)
-        self.declare_parameter('tof_rear_addr', 0x33)
-        self.declare_parameter('tof_front_xshut_gpio', 26)
-        self.declare_parameter('tof_left_xshut_gpio', 16)
-        self.declare_parameter('tof_right_xshut_gpio', 20)
-        self.declare_parameter('tof_rear_xshut_gpio', 21)
-        self.declare_parameter('tof_boot_delay_ms', 80)
+        self.declare_parameter('tca9548a_addr', 0x70)
+        self.declare_parameter('tof_front_channel', 2)
+        self.declare_parameter('tof_left_channel',3)
+        self.declare_parameter('tof_right_channel', 1)
+        self.declare_parameter('tof_rear_channel', 0)
         self.declare_parameter('tof_min_range_m', 0.02)
         self.declare_parameter('tof_max_range_m', 0.80)
         self.declare_parameter('tof_read_fail_value_m', 0.80)
@@ -48,7 +44,6 @@ class RadarSensorNode(Node):
         self.tof_debug_interval_sec = float(
             self.get_parameter('tof_debug_interval_sec').get_parameter_value().double_value
         )
-        self.tof_boot_delay_ms = int(self.get_parameter('tof_boot_delay_ms').get_parameter_value().integer_value)
         self.tof_init_retries = int(self.get_parameter('tof_init_retries').get_parameter_value().integer_value)
         self.tof_reinit_after_fail_count = int(
             self.get_parameter('tof_reinit_after_fail_count').get_parameter_value().integer_value
@@ -58,8 +53,6 @@ class RadarSensorNode(Node):
             self.request_timeout = 1.0
         if self.tof_debug_interval_sec <= 0.0:
             self.tof_debug_interval_sec = 1.0
-        if self.tof_boot_delay_ms <= 0:
-            self.tof_boot_delay_ms = 80
         if self.tof_init_retries <= 0:
             self.tof_init_retries = 1
         if self.tof_reinit_after_fail_count <= 0:
@@ -70,7 +63,6 @@ class RadarSensorNode(Node):
         self._tof_backend = 'none'
         self._tof_readers = {}
         self._tof_consecutive_fail_count = 0
-        self._tof_xshut_pins = {}
 
         if self.time_topic:
             self.create_subscription(String, self.time_topic, self._on_time, 10)
@@ -86,14 +78,11 @@ class RadarSensorNode(Node):
         self._tof_error_logged = False
 
         if self.use_real_sensor:
-            self._prepare_tof_addresses()
             self._tof_readers = self._build_tof_readers()
             self._tof_backend = 'vl53l0x' if self._tof_readers else 'none'
 
         period = 0.1 if poll_hz <= 0.0 else (1.0 / poll_hz)
         self.create_timer(period, self._poll_once)
-        self._run_enabled: bool = False
-        self.create_subscription(String, '/run', self._on_run, 10)
 
         if self.use_real_sensor:
             self.get_logger().info(
@@ -114,9 +103,6 @@ class RadarSensorNode(Node):
         except ValueError:
             self._latest_time_s = None
 
-    def _on_run(self, msg: String) -> None:
-        self._run_enabled = (msg.data or '').strip().lower() != 'off'
-
     def _resolve_time_s(self) -> float:
         if self._latest_time_s is not None:
             return self._latest_time_s
@@ -130,8 +116,6 @@ class RadarSensorNode(Node):
         return ','.join(parts[:5])
 
     def _poll_once(self) -> None:
-        if not self._run_enabled:
-            return
         if self.use_real_sensor:
             radar_text = self._build_radar_text_from_tof()
             if not radar_text:
@@ -173,90 +157,51 @@ class RadarSensorNode(Node):
             import board
             import busio
             import adafruit_vl53l0x
+            import adafruit_tca9548a
         except Exception as exc:
             self.get_logger().error(f'use_real_sensor=true but ToF dependencies unavailable: {exc}')
             return {}
 
-        addresses = {
-            'front': int(self.get_parameter('tof_front_addr').get_parameter_value().integer_value),
-            'right': int(self.get_parameter('tof_right_addr').get_parameter_value().integer_value),
-            'left': int(self.get_parameter('tof_left_addr').get_parameter_value().integer_value),
-            'rear': int(self.get_parameter('tof_rear_addr').get_parameter_value().integer_value),
+        mux_addr = int(self.get_parameter('tca9548a_addr').get_parameter_value().integer_value)
+        channels = {
+            'front': int(self.get_parameter('tof_front_channel').get_parameter_value().integer_value),
+            'left': int(self.get_parameter('tof_left_channel').get_parameter_value().integer_value),
+            'right': int(self.get_parameter('tof_right_channel').get_parameter_value().integer_value),
+            'rear': int(self.get_parameter('tof_rear_channel').get_parameter_value().integer_value),
         }
 
-        i2c = busio.I2C(board.SCL, board.SDA)
+        try:
+            i2c = busio.I2C(board.SCL, board.SDA)
+            tca = adafruit_tca9548a.TCA9548A(i2c, address=mux_addr)
+        except Exception as exc:
+            self.get_logger().error(f'failed to initialise TCA9548A at 0x{mux_addr:02X}: {exc}')
+            return {}
+
         readers = {}
-        for name, addr in addresses.items():
+        for name, ch in channels.items():
             sensor = None
             last_exc = None
             for _ in range(self.tof_init_retries):
                 try:
-                    sensor = adafruit_vl53l0x.VL53L0X(i2c, address=addr)
+                    sensor = adafruit_vl53l0x.VL53L0X(tca[ch])
                     break
                 except Exception as exc:
                     last_exc = exc
                     time.sleep(0.05)
 
             if sensor is None:
-                self.get_logger().warn(f'failed to init ToF {name}@0x{addr:02X}: {last_exc}')
+                self.get_logger().warn(f'failed to init ToF {name} on TCA9548A channel {ch}: {last_exc}')
                 continue
 
             def _make_reader(dev):
                 return lambda: float(dev.range) / 1000.0
 
             readers[name] = _make_reader(sensor)
+
         if not readers:
             self.get_logger().error('no ToF sensors initialized; radar_sensor_node cannot publish real radar data')
         return readers
 
-    def _prepare_tof_addresses(self) -> None:
-        try:
-            import smbus2
-            from gpiozero import OutputDevice
-        except Exception as exc:
-            self.get_logger().warn(f'cannot allocate ToF addresses at startup (missing deps): {exc}')
-            return
-
-        order = [
-            ('front', int(self.get_parameter('tof_front_xshut_gpio').get_parameter_value().integer_value), int(self.get_parameter('tof_front_addr').get_parameter_value().integer_value)),
-            ('left', int(self.get_parameter('tof_left_xshut_gpio').get_parameter_value().integer_value), int(self.get_parameter('tof_left_addr').get_parameter_value().integer_value)),
-            ('right', int(self.get_parameter('tof_right_xshut_gpio').get_parameter_value().integer_value), int(self.get_parameter('tof_right_addr').get_parameter_value().integer_value)),
-            ('rear', int(self.get_parameter('tof_rear_xshut_gpio').get_parameter_value().integer_value), int(self.get_parameter('tof_rear_addr').get_parameter_value().integer_value)),
-        ]
-
-        pins = {}
-        for name, gpio, _ in order:
-            try:
-                pins[name] = OutputDevice(gpio, active_high=True, initial_value=False)
-            except Exception as exc:
-                self.get_logger().warn(f'failed to claim ToF XSHUT GPIO{gpio} for {name}: {exc}')
-                for pin in pins.values():
-                    pin.close()
-                return
-
-        time.sleep(0.1)
-        bus = None
-        try:
-            bus = smbus2.SMBus(1)
-            for name, _gpio, target in order:
-                pins[name].on()
-                time.sleep(max(10, self.tof_boot_delay_ms) / 1000.0)
-                try:
-                    bus.write_byte_data(0x29, 0x8A, target & 0x7F)
-                except OSError as exc:
-                    self.get_logger().warn(f'address assign failed for {name} -> 0x{target:02X}: {exc}')
-                time.sleep(0.02)
-            self.get_logger().info('ToF XSHUT/address allocation done at node startup')
-        except Exception as exc:
-            self.get_logger().warn(f'ToF startup address allocation failed: {exc}')
-        finally:
-            if bus is not None:
-                try:
-                    bus.close()
-                except Exception:
-                    pass
-
-        self._tof_xshut_pins = pins
 
     def _build_radar_text_from_tof(self) -> str | None:
         if not self._tof_readers:
@@ -302,10 +247,9 @@ class RadarSensorNode(Node):
 
         if self._tof_consecutive_fail_count >= self.tof_reinit_after_fail_count:
             self.get_logger().warn(
-                'all ToF reads failed repeatedly; attempting ToF address re-allocation + reinitialization '
+                'all ToF reads failed repeatedly; attempting TCA9548A reinitialization '
                 f'(count={self._tof_consecutive_fail_count})'
             )
-            self._prepare_tof_addresses()
             self._tof_readers = self._build_tof_readers()
             self._tof_backend = 'vl53l0x' if self._tof_readers else 'none'
             self._tof_consecutive_fail_count = 0
@@ -330,7 +274,7 @@ class RadarSensorNode(Node):
             raw, status, pub = debug_values[name]
             raw_mm = 'None' if raw is None else f'{int(raw * 1000.0)}'
             summary.append(f'{name}:raw_mm={raw_mm},status={status},pub={pub:.3f}')
-        # self.get_logger().info('radar tof diag | ' + ' | '.join(summary))
+        self.get_logger().info('radar tof diag | ' + ' | '.join(summary))
 
     def _fetch_simulation_data_body(self) -> bytes:
         first_error: Exception | None = None
@@ -354,12 +298,6 @@ class RadarSensorNode(Node):
         raise first_error
 
     def destroy_node(self) -> bool:
-        for pin in self._tof_xshut_pins.values():
-            try:
-                pin.close()
-            except Exception:
-                pass
-        self._tof_xshut_pins.clear()
         return super().destroy_node()
 
 
