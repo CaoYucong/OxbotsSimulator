@@ -465,7 +465,7 @@ class PoseEstimationNode(Node):
         now = time.monotonic()
         if self._should_log(self._last_placeholder_log):
             self._last_placeholder_log = now
-            self.get_logger().warn('no camera image available, publishing placeholder processed image')
+            # self.get_logger().warn('no camera image available, publishing placeholder processed image')
 
         msg_image = self._bridge.cv2_to_imgmsg(self._placeholder_image, encoding='bgr8')
         msg_image.header.stamp = self.get_clock().now().to_msg()
