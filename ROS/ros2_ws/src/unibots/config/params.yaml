@@ -131,6 +131,9 @@ front_camera_node:
     camera_poll_hz: 10.0
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
+    # USB camera resolution (pixels). 0 = use camera default.
+    camera_width: 1600
+    camera_height: 1200
 
 ball_detection_node:
   ros__parameters:

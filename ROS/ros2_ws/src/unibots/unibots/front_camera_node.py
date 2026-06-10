@@ -26,6 +26,8 @@ class FrontCameraNode(Node):
         self.declare_parameter('camera_topic', '/front_camera')
         self.declare_parameter('camera_poll_hz', 10.0)
         self.declare_parameter('camera_request_timeout', 1.0)
+        self.declare_parameter('camera_width', 0)
+        self.declare_parameter('camera_height', 0)
         self.declare_parameter('snapshot_save_dir', default_snapshot_dir)
         self.declare_parameter('snapshot_interval_sec', 1.0)
 
@@ -44,6 +46,8 @@ class FrontCameraNode(Node):
         self.snapshot_interval_sec = float(
             self.get_parameter('snapshot_interval_sec').get_parameter_value().double_value
         )
+        self.camera_width = int(self.get_parameter('camera_width').get_parameter_value().integer_value)
+        self.camera_height = int(self.get_parameter('camera_height').get_parameter_value().integer_value)
 
         if self.camera_request_timeout <= 0.0:
             self.camera_request_timeout = 1.0
@@ -75,6 +79,7 @@ class FrontCameraNode(Node):
                 self._usb_capture = cv2.VideoCapture(self.usb_camera_device)
                 if self._usb_capture.isOpened():
                     self._usb_capture_source = self.usb_camera_device
+                    self._configure_usb_capture(self._usb_capture)
                 else:
                     self.get_logger().warn(
                         f'use_real_sensor=true but USB camera could not be opened at device={self.usb_camera_device}; '
@@ -87,6 +92,7 @@ class FrontCameraNode(Node):
                 self._usb_capture = cv2.VideoCapture(self.usb_camera_index)
                 if self._usb_capture.isOpened():
                     self._usb_capture_source = f'index={self.usb_camera_index}'
+                    self._configure_usb_capture(self._usb_capture)
 
             if not self._usb_capture.isOpened():
                 self.get_logger().warn(
@@ -116,6 +122,32 @@ class FrontCameraNode(Node):
 
     def _on_run(self, msg: String) -> None:
         self._run_enabled = (msg.data or '').strip().lower() != 'off'
+
+    def _configure_usb_capture(self, capture: cv2.VideoCapture) -> None:
+        if self.camera_width > 0:
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.camera_width))
+        if self.camera_height > 0:
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.camera_height))
+
+        actual_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if self.camera_width > 0 and actual_width != self.camera_width:
+            self.get_logger().warn(
+                f'USB camera width requested {self.camera_width} but got {actual_width}'
+            )
+        if self.camera_height > 0 and actual_height != self.camera_height:
+            self.get_logger().warn(
+                f'USB camera height requested {self.camera_height} but got {actual_height}'
+            )
+        self.get_logger().info(f'USB camera resolution: {actual_width}x{actual_height}')
+
+    @staticmethod
+    def _rotate_180(image: np.ndarray) -> np.ndarray:
+        # Camera is mounted upside-down. Use a true 180-degree rotation
+        # (flip both axes), NOT a single-axis flip. A single-axis flip is a
+        # mirror (reflection), which breaks AprilTag/ArUco decoding because the
+        # bit pattern no longer matches any codeword in the dictionary.
+        return cv2.flip(image, -1)
 
     def _save_snapshot_if_due(self, image: np.ndarray) -> None:
         now = time.time()
@@ -149,7 +181,7 @@ class FrontCameraNode(Node):
                     self._usb_camera_error_logged = True
                 return
 
-            # image = cv2.flip(image, 0)
+            image = self._rotate_180(image)
 
             self._usb_camera_error_logged = False
             msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
@@ -184,6 +216,8 @@ class FrontCameraNode(Node):
         if image is None:
             self.get_logger().warn('front camera payload could not be decoded')
             return
+
+        image = self._rotate_180(image)
 
         msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
         msg.header.stamp = self.get_clock().now().to_msg()
