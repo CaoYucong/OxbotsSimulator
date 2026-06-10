@@ -45,8 +45,7 @@ LEFT_ENC_B: int = 27
 RIGHT_ENC_A: int = 22
 RIGHT_ENC_B: int = 23
 
-FORWARD_SPEED: float = 0.7   # PWM duty cycle (0.0 - 1.0)
-TARGET_REVOLUTIONS: float = 10.0  # wheel revolutions to complete once /time > 0
+FULL_SPEED: float = 1.0  # PWM duty cycle for full-speed forward/reverse
 
 COUNTS_PER_REV: float = 488.0  # quadrature counts per output-shaft revolution
 ENCODER_DEBUG_HZ: float = 5.0  # how often to print encoder debug
@@ -88,13 +87,9 @@ class MotionControlNode(Node):
         if PWMOutputDevice is None:
             raise RuntimeError('gpiozero is not available. Please install python3-gpiozero on the Raspberry Pi.')
 
-        self.declare_parameter('forward_speed', FORWARD_SPEED)
-        self.declare_parameter('target_revolutions', TARGET_REVOLUTIONS)
         self.declare_parameter('time_topic', '/time')
         self.declare_parameter('counts_per_rev', COUNTS_PER_REV)
         self.declare_parameter('encoder_debug_hz', ENCODER_DEBUG_HZ)
-        self._forward_speed = float(self.get_parameter('forward_speed').get_parameter_value().double_value) or FORWARD_SPEED
-        self._target_revolutions = float(self.get_parameter('target_revolutions').get_parameter_value().double_value) or TARGET_REVOLUTIONS
         time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
         self._counts_per_rev = float(self.get_parameter('counts_per_rev').get_parameter_value().double_value) or COUNTS_PER_REV
         encoder_debug_hz = float(self.get_parameter('encoder_debug_hz').get_parameter_value().double_value) or ENCODER_DEBUG_HZ
@@ -102,7 +97,6 @@ class MotionControlNode(Node):
         self._left = Motor(LEFT_M1A, LEFT_M1B)
         self._right = Motor(RIGHT_M2A, RIGHT_M2B)
         self._motion_started = False
-        self._motion_done = False
         self._start_left_steps = 0
         self._start_right_steps = 0
 
@@ -127,7 +121,7 @@ class MotionControlNode(Node):
         self.get_logger().info(
             f'motion_control_node started (MDD3A dual-PWM): '
             f'left=({LEFT_M1A},{LEFT_M1B}) right=({RIGHT_M2A},{RIGHT_M2B}), '
-            f'forward_speed={self._forward_speed}, target_revolutions={self._target_revolutions}, '
+            f'odd seconds=forward, even seconds=reverse at full speed, '
             f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}'
         )
 
@@ -150,8 +144,7 @@ class MotionControlNode(Node):
         if self._motion_started:
             self.get_logger().info(
                 f'[encoder] left={left_rev_display:+.3f} rev ({left_cnt} cnt), '
-                f'right={right_rev:+.3f} rev ({right_steps} cnt) '
-                f'(target={self._target_revolutions:.1f})'
+                f'right={right_rev:+.3f} rev ({right_steps} cnt)'
             )
         else:
             self.get_logger().info(
@@ -160,7 +153,6 @@ class MotionControlNode(Node):
 
     def _reset_motion_state(self) -> None:
         self._motion_started = False
-        self._motion_done = False
         self._start_left_steps = 0
         self._start_right_steps = 0
 
@@ -176,40 +168,27 @@ class MotionControlNode(Node):
             self._stop()
             return
 
-        if self._motion_done:
-            self._stop()
-            return
-
-        if self._left_enc is None or self._right_enc is None:
-            if not self._motion_started:
-                self.get_logger().error('Encoders required for revolution control; motors will not run.')
-                self._motion_started = True
-            self._stop()
-            return
-
         if not self._motion_started:
-            self._start_left_steps = self._left_enc.steps
-            self._start_right_steps = self._right_enc.steps
+            if self._left_enc is not None and self._right_enc is not None:
+                self._start_left_steps = self._left_enc.steps
+                self._start_right_steps = self._right_enc.steps
             self._motion_started = True
             self.get_logger().info(
-                f'/time > 0: driving forward until either wheel reaches '
-                f'{self._target_revolutions:.1f} rev'
+                '/time > 0: odd seconds full-speed forward, even seconds full-speed reverse'
             )
 
-        left_rev, right_rev = self._wheel_revolutions()
-        if left_rev >= self._target_revolutions or right_rev >= self._target_revolutions:
-            self._motion_done = True
-            self._stop()
-            self.get_logger().info(
-                f'Target reached: left={-left_rev:.3f} rev, right={right_rev:.3f} rev — stopped'
-            )
-            return
-
-        self._move_forward()
+        if int(t) % 2 == 1:
+            self._move_forward()
+        else:
+            self._move_reverse()
 
     def _move_forward(self) -> None:
-        self._left.forward(self._forward_speed)
-        self._right.forward(self._forward_speed)
+        self._left.forward(FULL_SPEED)
+        self._right.forward(FULL_SPEED)
+
+    def _move_reverse(self) -> None:
+        self._left.reverse(FULL_SPEED)
+        self._right.reverse(FULL_SPEED)
 
     def _stop(self) -> None:
         self._left.stop()
