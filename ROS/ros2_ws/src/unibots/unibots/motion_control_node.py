@@ -43,9 +43,9 @@ Encoders (BCM numbering, 3.3V supply to protect the Pi):
 Keyboard control (stdin, run in a terminal):
   - W   : forward 20 cm (encoder closed-loop, stops automatically)
   - S   : reverse 20 cm (encoder closed-loop, stops automatically)
-  - A/D : turn left / turn right (hold)
+  - A/D : turn right / turn left (hold)
   - Q   : left wheel forward 10 rev (encoder closed-loop)
-  - P   : right wheel forward 10 rev (encoder closed-loop)
+  - E   : right wheel forward 10 rev (encoder closed-loop)
   - Space : stop
 """
 
@@ -90,7 +90,7 @@ SERVO_PIN: int = 21
 FULL_SPEED: float = 1.0       # PWM duty cycle for full-speed forward
 TURN_SPEED: float = 1.0       # PWM duty cycle for in-place turns
 
-COUNTS_PER_REV: float = 488.0  # quadrature counts per output-shaft revolution
+COUNTS_PER_REV: float = 490.0  # quadrature counts per output-shaft revolution
 COUNTS_PER_METER: float = 3300  # encoder counts per meter of travel 
 DEFAULT_MOVE_DIST: float = 0.2   # default straight move distance on W/S keys (meters)
 DEFAULT_WHEEL_REVS: float = 10.0  # default single-wheel spin on Q/P keys (revolutions)
@@ -417,11 +417,11 @@ class MotionControlNode(Node):
         left_speed = 0.0
         right_speed = 0.0
         if 'a' in keys:
-            left_speed += self._turn_speed
-            right_speed -= self._turn_speed
-        if 'd' in keys:
             left_speed -= self._turn_speed
             right_speed += self._turn_speed
+        if 'd' in keys:
+            left_speed += self._turn_speed
+            right_speed -= self._turn_speed
 
         peak = max(abs(left_speed), abs(right_speed))
         if peak > 1.0:
