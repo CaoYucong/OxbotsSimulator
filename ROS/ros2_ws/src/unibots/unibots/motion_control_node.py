@@ -67,7 +67,7 @@ COUNTS_PER_REV: float = 488.0  # quadrature counts per output-shaft revolution
 WHEEL_DIAMETER: float = 0.047  # wheel diameter in meters
 ENCODER_DEBUG_HZ: float = 10.0  # how often to print encoder debug
 ROTATE_SWITCH_INTERVAL_S: int = 10  # alternate rotate target every N seconds
-ROTATE_PHASE_TARGET: int = 4000  # encoder count target per wheel in each phase
+ROTATE_PHASE_TARGET: int = COUNTS_PER_REV *5  # encoder count target per wheel in each phase
 
 
 class Motor:
@@ -299,7 +299,7 @@ class MotionControlNode(Node):
 
         phase = int(t) // ROTATE_SWITCH_INTERVAL_S
         target_left = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
-        target_right = -ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
+        target_right = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
         targets = (target_left, target_right)
         if self._rotate_targets != targets:
             self._rotate_targets = targets
