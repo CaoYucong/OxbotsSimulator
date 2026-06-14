@@ -38,7 +38,8 @@ class BallDetectionNode(Node):
         self.declare_parameter('local_model_id', 'unibot-ball-detection/1')
         self.declare_parameter('roboflow_api_key', '')
         self.declare_parameter('request_timeout_sec', 10.0)
-        self.declare_parameter('infer_hz', 1.0)
+        self.declare_parameter('infer_hz', 0.1)
+        self.declare_parameter('infer_image_height', 360)
         self.declare_parameter('min_confidence', 0.25)
         self.declare_parameter('debug_logs', False)
         self.declare_parameter('debug_log_every_sec', 2.0)
@@ -84,6 +85,9 @@ class BallDetectionNode(Node):
             self.get_parameter('request_timeout_sec').get_parameter_value().double_value
         )
         self._infer_hz = float(self.get_parameter('infer_hz').get_parameter_value().double_value)
+        self._infer_image_height = int(
+            self.get_parameter('infer_image_height').get_parameter_value().integer_value
+        )
         self._min_confidence = float(self.get_parameter('min_confidence').get_parameter_value().double_value)
         self._debug_logs = bool(self.get_parameter('debug_logs').get_parameter_value().bool_value)
         self._debug_log_every_sec = float(
@@ -124,6 +128,8 @@ class BallDetectionNode(Node):
             self._request_timeout_sec = 1.0
         if self._infer_hz <= 0.0:
             self._infer_hz = 0.1
+        if self._infer_image_height < 0:
+            self._infer_image_height = 0
         if self._debug_log_every_sec <= 0.0:
             self._debug_log_every_sec = 2.0
         if self._perf_log_every_sec <= 0.0:
@@ -182,6 +188,7 @@ class BallDetectionNode(Node):
             f'ball_detection_enabled={self._ball_detection_enabled}, '
             f'mode=local, model_id={self._local_model_id}, '
             f'infer_hz={self._infer_hz:.2f}, min_confidence={self._min_confidence:.2f}, '
+            f'infer_image_height={self._infer_image_height}, '
             f'crop_y_start={self._crop_y_start}, '
             f'camera_pose_topic={self._camera_pose_topic}, '
             f'visible_balls_topic={self._visible_balls_topic}'
@@ -665,18 +672,31 @@ class BallDetectionNode(Node):
         publish_image_ms = (time.perf_counter() - t_publish_image) * 1000.0
         if not infer_ok:
             self._debug_throttled('infer_failed', 'skip publish: roboflow inference failed')
+            tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
+            self._perf_throttled(
+                'infer_time',
+                '[infer_time] '
+                f"resize={infer_timing.get('resize_ms', 0.0):.1f}ms, "
+                f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
+                f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
+                f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
+                f'tick_total={tick_total_ms:.1f}ms, '
+                f'detections=0, infer_ok=false',
+            )
             return
         if not detections:
             self._debug_throttled('no_detection_publish', 'skip publish: no valid detections in this tick')
             tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
-            # self.get_logger().info(
-            #     '[infer_time] '
-            #     f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
-            #     f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
-            #     f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
-            #     f'tick_total={tick_total_ms:.1f}ms, '
-            #     f'detections=0'
-            # )
+            self._perf_throttled(
+                'infer_time',
+                '[infer_time] '
+                f"resize={infer_timing.get('resize_ms', 0.0):.1f}ms, "
+                f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
+                f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
+                f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
+                f'tick_total={tick_total_ms:.1f}ms, '
+                f'detections=0',
+            )
             return
 
         t_publish_topics = time.perf_counter()
@@ -684,18 +704,21 @@ class BallDetectionNode(Node):
         publish_topics_ms = (time.perf_counter() - t_publish_topics) * 1000.0
 
         tick_total_ms = (time.perf_counter() - tick_start) * 1000.0
-        # self.get_logger().info(
-        #     '[infer_time] '
-        #     f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
-        #     f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
-        #     f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
-        #     f'publish_topics={publish_topics_ms:.1f}ms, '
-        #     f'tick_total={tick_total_ms:.1f}ms, '
-        #     f'detections={len(detections)}'
-        # )
+        self._perf_throttled(
+            'infer_time',
+            '[infer_time] '
+            f"resize={infer_timing.get('resize_ms', 0.0):.1f}ms, "
+            f"encode={infer_timing.get('encode_ms', 0.0):.1f}ms, "
+            f"request={infer_timing.get('request_ms', 0.0):.1f}ms, "
+            f"infer_total={infer_timing.get('total_ms', 0.0):.1f}ms, "
+            f'publish_topics={publish_topics_ms:.1f}ms, '
+            f'tick_total={tick_total_ms:.1f}ms, '
+            f'detections={len(detections)}',
+        )
 
     def _infer_with_roboflow(self, image: np.ndarray) -> tuple[list[dict], dict[str, float], bool]:
         timing = {
+            'resize_ms': 0.0,
             'encode_ms': 0.0,
             'request_ms': 0.0,
             'extract_ms': 0.0,
@@ -704,8 +727,25 @@ class BallDetectionNode(Node):
         }
         infer_start = time.perf_counter()
 
+        # Downscale before inference to cut encode/transfer/infer cost, then map
+        # detections back to the original-resolution coordinate space so that box
+        # drawing and 3D back-projection (which rely on full-res intrinsics) stay correct.
+        t_resize = time.perf_counter()
+        orig_h, orig_w = image.shape[:2]
+        target_h = self._infer_image_height
+        if target_h > 0 and orig_h > target_h:
+            infer_w = max(1, int(round(orig_w * (target_h / float(orig_h)))))
+            infer_image = cv2.resize(image, (infer_w, target_h), interpolation=cv2.INTER_AREA)
+            scale_back_x = orig_w / float(infer_w)
+            scale_back_y = orig_h / float(target_h)
+        else:
+            infer_image = image
+            scale_back_x = 1.0
+            scale_back_y = 1.0
+        timing['resize_ms'] = (time.perf_counter() - t_resize) * 1000.0
+
         t_encode = time.perf_counter()
-        ok, encoded = cv2.imencode('.jpg', image)
+        ok, encoded = cv2.imencode('.jpg', infer_image)
         timing['encode_ms'] = (time.perf_counter() - t_encode) * 1000.0
         if not ok:
             self._debug_throttled('encode_failed', 'cv2.imencode failed for inference frame')
@@ -720,7 +760,9 @@ class BallDetectionNode(Node):
         image_bytes = encoded.tobytes()
         self._debug(
             f'infer request: endpoint={endpoint_for_log}, '
-            f'api_key_set={bool(self._roboflow_api_key)}, frame={image.shape[1]}x{image.shape[0]}, '
+            f'api_key_set={bool(self._roboflow_api_key)}, '
+            f'infer_frame={infer_image.shape[1]}x{infer_image.shape[0]} '
+            f'(orig={orig_w}x{orig_h}), '
             f'timeout={self._request_timeout_sec:.2f}s'
         )
 
@@ -788,10 +830,10 @@ class BallDetectionNode(Node):
                 conf = float(item.get('confidence', 0.0))
                 if conf < self._min_confidence:
                     continue
-                x = float(item['x'])
-                y = float(item['y'])
-                width = float(item['width'])
-                height = float(item['height'])
+                x = float(item['x']) * scale_back_x
+                y = float(item['y']) * scale_back_y
+                width = float(item['width']) * scale_back_x
+                height = float(item['height']) * scale_back_y
                 cls = str(item.get('class', 'ball'))
             except Exception:
                 continue

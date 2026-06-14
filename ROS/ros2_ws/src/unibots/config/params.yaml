@@ -132,8 +132,8 @@ front_camera_node:
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
     # USB camera resolution (pixels). 0 = use camera default.
-    camera_width: 1600
-    camera_height: 1200
+    camera_width: 1920
+    camera_height: 1080
 
 ball_detection_node:
   ros__parameters:
@@ -159,10 +159,17 @@ ball_detection_node:
     roboflow_api_key: ''
     # HTTP timeout for Roboflow inference request (sec).
     request_timeout_sec: 1.0
-    # Inference loop frequency (Hz).
+    # Inference loop frequency (Hz). 0.1 = once every 10 seconds.
     infer_hz: 1.0
+    # Downscale frame to this height (px) before inference; boxes are scaled back to
+    # full resolution for drawing and 3D back-projection. 0 = no downscaling.
+    infer_image_height: 360
     # Filter out detections below this confidence.
     min_confidence: 0.25
+    # Log inference timing breakdown ([infer_time] encode/request/tick_total, etc.).
+    perf_logs: true
+    # Throttle perf logs to once per N seconds per message key.
+    perf_log_every_sec: 0.0
     # Real camera intrinsic YAML path; empty = auto-detect package config/real_camera_intrinsic.yaml.
     camera_intrinsic_path: ''
     # Ball physical diameter (meters), used to estimate depth from bbox size.
@@ -207,10 +214,10 @@ pose_estimation_camera:
     tag_map_path: ''
     # Camera offset from robot center along +x (meters).
     camera_offset_x: 0.105
-    # Pose estimation processing tick rate (Hz). 0 = process every image.
-    tick_hz: 10.0
-    # Throttle pose logs to once per N seconds.
-    log_every_sec: 0.05
+    # Pose estimation processing tick rate (Hz). 1.0 = once per second; 0 = process every image.
+    tick_hz: 4.0
+    # Throttle pose logs to once per N seconds. 0 = log every run.
+    log_every_sec: 0.0
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
     allow_legacy_opencv: true
 
