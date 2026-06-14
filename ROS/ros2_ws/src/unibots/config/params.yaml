@@ -131,9 +131,17 @@ front_camera_node:
     camera_poll_hz: 10.0
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
-    # USB camera resolution (pixels). 0 = use camera default.
+    # USB camera capture resolution (pixels). 0 = use camera default.
+    # Capture at full-FOV resolution; requesting a smaller resolution directly
+    # makes many USB cameras center-crop the sensor (narrower FOV) instead of
+    # scaling the full frame.
     camera_width: 1920
     camera_height: 1080
+    # Downsample the captured full-FOV frame to this size before publishing.
+    # 0 = publish at capture resolution. Keeps original FOV, fewer pixels.
+    # Intrinsics (real_camera_intrinsic.yaml) must match this output resolution.
+    output_width: 1280
+    output_height: 720
 
 ball_detection_node:
   ros__parameters:

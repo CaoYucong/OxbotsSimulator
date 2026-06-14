@@ -28,6 +28,8 @@ class FrontCameraNode(Node):
         self.declare_parameter('camera_request_timeout', 1.0)
         self.declare_parameter('camera_width', 0)
         self.declare_parameter('camera_height', 0)
+        self.declare_parameter('output_width', 0)
+        self.declare_parameter('output_height', 0)
         self.declare_parameter('snapshot_save_dir', default_snapshot_dir)
         self.declare_parameter('snapshot_interval_sec', 1.0)
 
@@ -48,6 +50,13 @@ class FrontCameraNode(Node):
         )
         self.camera_width = int(self.get_parameter('camera_width').get_parameter_value().integer_value)
         self.camera_height = int(self.get_parameter('camera_height').get_parameter_value().integer_value)
+        self.output_width = int(self.get_parameter('output_width').get_parameter_value().integer_value)
+        self.output_height = int(self.get_parameter('output_height').get_parameter_value().integer_value)
+
+        if self.output_width < 0:
+            self.output_width = 0
+        if self.output_height < 0:
+            self.output_height = 0
 
         if self.camera_request_timeout <= 0.0:
             self.camera_request_timeout = 1.0
@@ -108,15 +117,21 @@ class FrontCameraNode(Node):
         camera_period = 0.1 if camera_poll_hz <= 0.0 else (1.0 / camera_poll_hz)
         self.create_timer(camera_period, self._poll_camera_once)
 
+        if self.output_width > 0 and self.output_height > 0:
+            output_desc = f'{self.output_width}x{self.output_height} (software downscale, full FOV)'
+        else:
+            output_desc = 'capture resolution (no downscale)'
+
         if self.use_real_sensor:
             self.get_logger().info(
                 f'front_camera_node started; source=usb_camera({self._usb_capture_source or "unavailable"}), '
-                f'topic={self.camera_topic}, poll_hz={camera_poll_hz}, '
+                f'topic={self.camera_topic}, poll_hz={camera_poll_hz}, output={output_desc}, '
                 f'snapshot_dir={self._snapshot_dir}, snapshot_interval_sec={self.snapshot_interval_sec}'
             )
         else:
             self.get_logger().info(
                 f'front_camera_node started; source=web, upstream={self._url}, topic={self.camera_topic}, poll_hz={camera_poll_hz}, '
+                f'output={output_desc}, '
                 f'snapshot_dir={self._snapshot_dir}, snapshot_interval_sec={self.snapshot_interval_sec}'
             )
 
@@ -148,6 +163,22 @@ class FrontCameraNode(Node):
         # mirror (reflection), which breaks AprilTag/ArUco decoding because the
         # bit pattern no longer matches any codeword in the dictionary.
         return cv2.flip(image, -1)
+
+    def _downscale_output(self, image: np.ndarray) -> np.ndarray:
+        # Capture at the camera's full field-of-view resolution, then downsample
+        # the whole frame here. Requesting a smaller resolution directly from the
+        # sensor (e.g. 720p) makes many USB cameras switch to a center-crop sensor
+        # mode (narrower FOV) instead of scaling the full FOV. Software resize keeps
+        # the original FOV and only reduces pixel count. Intrinsics must be scaled
+        # by the same factor as the resolution change.
+        if self.output_width <= 0 or self.output_height <= 0:
+            return image
+        h, w = image.shape[:2]
+        if w == self.output_width and h == self.output_height:
+            return image
+        return cv2.resize(
+            image, (self.output_width, self.output_height), interpolation=cv2.INTER_AREA
+        )
 
     def _save_snapshot_if_due(self, image: np.ndarray) -> None:
         now = time.time()
@@ -182,6 +213,7 @@ class FrontCameraNode(Node):
                 return
 
             image = self._rotate_180(image)
+            image = self._downscale_output(image)
 
             self._usb_camera_error_logged = False
             msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
@@ -218,6 +250,7 @@ class FrontCameraNode(Node):
             return
 
         image = self._rotate_180(image)
+        image = self._downscale_output(image)
 
         msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
         msg.header.stamp = self.get_clock().now().to_msg()
