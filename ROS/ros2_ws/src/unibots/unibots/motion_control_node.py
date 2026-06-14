@@ -24,12 +24,20 @@ Encoders (BCM numbering, 3.3V supply to protect the Pi):
 Monitor Output:
 grep --line-buffered 'motion_control_node'
 
+Wheel state output (for differential-drive odometry):
+  - Topic: /wheel_joint_states (sensor_msgs/JointState)
+  - Joints: left_wheel_joint, right_wheel_joint
+  - position: cumulative wheel angle (rad), forward = positive
+  - velocity: wheel angular velocity (rad/s)
+
 """
 
+import math
 import time
 
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
 try:
@@ -65,6 +73,10 @@ ROTATE_POLL_S: float = 0.01  # closed-loop polling interval for rotate()
 
 COUNTS_PER_REV: float = 488.0  # quadrature counts per output-shaft revolution
 WHEEL_DIAMETER: float = 0.047  # wheel diameter in meters
+WHEEL_STATE_HZ: float = 50.0  # JointState publish rate for odometry
+WHEEL_JOINT_STATE_TOPIC: str = '/wheel_joint_states'
+LEFT_WHEEL_JOINT_NAME: str = 'left_wheel_joint'
+RIGHT_WHEEL_JOINT_NAME: str = 'right_wheel_joint'
 ENCODER_DEBUG_HZ: float = 10.0  # how often to print encoder debug
 ROTATE_SWITCH_INTERVAL_S: int = 10  # alternate rotate target every N seconds
 ROTATE_PHASE_TARGET: int = COUNTS_PER_REV *5  # encoder count target per wheel in each phase
@@ -181,15 +193,25 @@ class MotionControlNode(Node):
         self.declare_parameter('time_topic', '/time')
         self.declare_parameter('counts_per_rev', COUNTS_PER_REV)
         self.declare_parameter('encoder_debug_hz', ENCODER_DEBUG_HZ)
+        self.declare_parameter('wheel_state_hz', WHEEL_STATE_HZ)
+        self.declare_parameter('wheel_state_topic', WHEEL_JOINT_STATE_TOPIC)
         time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
         self._counts_per_rev = float(self.get_parameter('counts_per_rev').get_parameter_value().double_value) or COUNTS_PER_REV
         encoder_debug_hz = float(self.get_parameter('encoder_debug_hz').get_parameter_value().double_value) or ENCODER_DEBUG_HZ
+        wheel_state_hz = float(self.get_parameter('wheel_state_hz').get_parameter_value().double_value) or WHEEL_STATE_HZ
+        wheel_state_topic = (
+            self.get_parameter('wheel_state_topic').get_parameter_value().string_value
+            or WHEEL_JOINT_STATE_TOPIC
+        )
 
         self._run_enabled = False
         self._motion_started = False
         self._rotate_targets: tuple[int, int] | None = None
         self._start_left_steps = 0
         self._start_right_steps = 0
+        self._prev_left_count: int | None = None
+        self._prev_right_count: int | None = None
+        self._prev_wheel_state_time: float | None = None
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
         self._left_enc = None
@@ -213,15 +235,20 @@ class MotionControlNode(Node):
         self.create_subscription(String, '/run', self._on_run, 10)
         self.create_timer(ROTATE_POLL_S, self._update_rotates)
 
+        self._wheel_state_pub = self.create_publisher(JointState, wheel_state_topic, 10)
+
         if self._left_enc is not None and self._right_enc is not None:
             period = 0.2 if encoder_debug_hz <= 0.0 else (1.0 / encoder_debug_hz)
             self.create_timer(period, self._print_encoders)
+            wheel_period = 0.02 if wheel_state_hz <= 0.0 else (1.0 / wheel_state_hz)
+            self.create_timer(wheel_period, self._publish_wheel_joint_states)
 
         self.get_logger().info(
             f'motion_control_node started (MDD3A dual-PWM): '
             f'left=({LEFT_MOTOR_A},{LEFT_MOTOR_B}) right=({RIGHT_MOTOR_A},{RIGHT_MOTOR_B}), '
             f'every {ROTATE_SWITCH_INTERVAL_S}s alternate left/right rotate to count={ROTATE_PHASE_TARGET}, '
-            f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}'
+            f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}, '
+            f'wheel_state={wheel_state_topic} @ {wheel_state_hz:.1f} Hz'
         )
 
     def _update_rotates(self) -> None:
@@ -230,6 +257,15 @@ class MotionControlNode(Node):
         self._left.update_rotate()
         self._right.update_rotate()
 
+    def _signed_wheel_counts(self) -> tuple[int, int]:
+        """Encoder counts in robot frame (forward motion = positive for both wheels)."""
+        left = -int(self._left_enc.steps)
+        right = int(self._right_enc.steps)
+        return left, right
+
+    def _count_to_rad(self, count: int) -> float:
+        return (count / self._counts_per_rev) * (2.0 * math.pi)
+
     def _wheel_revolutions(self) -> tuple[float, float]:
         left_steps = self._left_enc.steps - self._start_left_steps
         right_steps = self._right_enc.steps - self._start_right_steps
@@ -237,6 +273,40 @@ class MotionControlNode(Node):
             left_steps / self._counts_per_rev,
             right_steps / self._counts_per_rev,
         )
+
+    def _publish_wheel_joint_states(self) -> None:
+        if self._left_enc is None or self._right_enc is None:
+            return
+
+        left_count, right_count = self._signed_wheel_counts()
+        stamp = self.get_clock().now()
+        now_s = stamp.nanoseconds * 1e-9
+
+        left_vel = 0.0
+        right_vel = 0.0
+        if (
+            self._prev_wheel_state_time is not None
+            and self._prev_left_count is not None
+            and self._prev_right_count is not None
+        ):
+            dt = now_s - self._prev_wheel_state_time
+            if dt > 0.0:
+                left_vel = self._count_to_rad(left_count - self._prev_left_count) / dt
+                right_vel = self._count_to_rad(right_count - self._prev_right_count) / dt
+
+        self._prev_left_count = left_count
+        self._prev_right_count = right_count
+        self._prev_wheel_state_time = now_s
+
+        msg = JointState()
+        msg.header.stamp = stamp.to_msg()
+        msg.name = [LEFT_WHEEL_JOINT_NAME, RIGHT_WHEEL_JOINT_NAME]
+        msg.position = [
+            self._count_to_rad(left_count),
+            self._count_to_rad(right_count),
+        ]
+        msg.velocity = [left_vel, right_vel]
+        self._wheel_state_pub.publish(msg)
 
     def _print_encoders(self) -> None:
         if self._left_enc is None or self._right_enc is None:

@@ -1,29 +1,291 @@
+"""Sensor-fusion pose node: camera absolute pose + wheel odometry.
+
+Inputs:
+  - /current_position_camera (geometry_msgs/PoseStamped):
+      Absolute robot-origin pose in the 'map' frame estimated from AprilTags.
+      Low rate (~few Hz) and latent, but drift-free. Its header.stamp is the
+      camera (system) timestamp the pose is valid for. Used as a correction
+      anchor.
+  - /wheel_joint_states (sensor_msgs/JointState):
+      High-rate (~50 Hz) left/right wheel angle (rad) and angular velocity
+      (rad/s) from the encoders. Used to dead-reckon between camera fixes.
+
+Output:
+  - /current_position (geometry_msgs/PoseStamped):
+      Fused pose published at the wheel-odometry rate. Computed as:
+          current = camera_anchor  (+)  (odom_now (-) odom_at_camera_stamp)
+      i.e. take the most recent camera pose and add the relative wheel motion
+      accumulated since that camera frame's timestamp.
+
+Geometry:
+  - Differential drive, both driven wheels are at the REAR.
+  - 488 encoder counts per wheel revolution.
+  - Wheel diameter 47 mm  -> radius 0.0235 m.
+  - Wheel track (distance between the two wheels) 0.19 m.
+  - The robot coordinate origin is NOT on the wheel axle: it sits 40 mm
+    forward of the midpoint of the two rear wheels. Odometry is integrated at
+    the wheel-axle midpoint and converted to the robot origin on publish.
+"""
+
+import math
+from collections import deque
+
 import rclpy
-from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+
+COUNTS_PER_REV: float = 488.0
+WHEEL_DIAMETER_M: float = 0.047
+WHEEL_RADIUS_M: float = WHEEL_DIAMETER_M / 2.0
+WHEEL_TRACK_M: float = 0.19  # distance between the two rear wheels
+ORIGIN_FORWARD_OFFSET_M: float = 0.04  # robot origin is 40mm ahead of the axle midpoint
+ODOM_HISTORY_SEC: float = 3.0
+LEFT_WHEEL_JOINT_NAME: str = 'left_wheel_joint'
+RIGHT_WHEEL_JOINT_NAME: str = 'right_wheel_joint'
+
+
+def _yaw_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> float:
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def _quaternion_from_yaw(yaw: float) -> tuple[float, float, float, float]:
+    return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
 
 
 class PoseEstimationSensorFusionNode(Node):
-    """Forwards /current_position_camera to /current_position unchanged."""
+    """Fuses absolute camera pose with wheel odometry into /current_position."""
 
     def __init__(self) -> None:
         super().__init__('pose_estimation_sensor_fusion')
 
-        self._pub = self.create_publisher(PoseStamped, '/current_position', 10)
-        self.create_subscription(
-            PoseStamped,
-            '/current_position_camera',
-            self._on_camera_pose,
-            10,
+        self.declare_parameter('camera_pose_topic', '/current_position_camera')
+        self.declare_parameter('wheel_state_topic', '/wheel_joint_states')
+        self.declare_parameter('output_topic', '/current_position')
+        self.declare_parameter('wheel_radius_m', WHEEL_RADIUS_M)
+        self.declare_parameter('wheel_track_m', WHEEL_TRACK_M)
+        self.declare_parameter('origin_forward_offset_m', ORIGIN_FORWARD_OFFSET_M)
+        self.declare_parameter('left_wheel_joint', LEFT_WHEEL_JOINT_NAME)
+        self.declare_parameter('right_wheel_joint', RIGHT_WHEEL_JOINT_NAME)
+        self.declare_parameter('odom_history_sec', ODOM_HISTORY_SEC)
+
+        self._camera_topic = (
+            self.get_parameter('camera_pose_topic').get_parameter_value().string_value
+            or '/current_position_camera'
         )
+        self._wheel_topic = (
+            self.get_parameter('wheel_state_topic').get_parameter_value().string_value
+            or '/wheel_joint_states'
+        )
+        self._output_topic = (
+            self.get_parameter('output_topic').get_parameter_value().string_value
+            or '/current_position'
+        )
+        self._wheel_radius = (
+            float(self.get_parameter('wheel_radius_m').get_parameter_value().double_value)
+            or WHEEL_RADIUS_M
+        )
+        self._wheel_track = (
+            float(self.get_parameter('wheel_track_m').get_parameter_value().double_value)
+            or WHEEL_TRACK_M
+        )
+        self._origin_offset = float(
+            self.get_parameter('origin_forward_offset_m').get_parameter_value().double_value
+        )
+        self._left_joint = (
+            self.get_parameter('left_wheel_joint').get_parameter_value().string_value
+            or LEFT_WHEEL_JOINT_NAME
+        )
+        self._right_joint = (
+            self.get_parameter('right_wheel_joint').get_parameter_value().string_value
+            or RIGHT_WHEEL_JOINT_NAME
+        )
+        history_sec = (
+            float(self.get_parameter('odom_history_sec').get_parameter_value().double_value)
+            or ODOM_HISTORY_SEC
+        )
+        self._history_window_ns = int(history_sec * 1e9)
+
+        # Free-running wheel-axle-midpoint odometry pose (drifts; corrected by camera).
+        self._odom_x = 0.0
+        self._odom_y = 0.0
+        self._odom_yaw = 0.0  # kept unwrapped/continuous for exact deltas
+        self._prev_left_rad: float | None = None
+        self._prev_right_rad: float | None = None
+        # History of (stamp_ns, x, y, yaw) for interpolating odom at camera time.
+        self._odom_history: deque[tuple[int, float, float, float]] = deque()
+
+        # Camera correction anchor, expressed at the wheel-axle midpoint.
+        self._anchor_valid = False
+        self._anchor_x = 0.0
+        self._anchor_y = 0.0
+        self._anchor_yaw = 0.0
+        self._anchor_odom_x = 0.0
+        self._anchor_odom_y = 0.0
+        self._anchor_odom_yaw = 0.0
+
+        self._pub = self.create_publisher(PoseStamped, self._output_topic, 10)
+        self.create_subscription(JointState, self._wheel_topic, self._on_wheel_state, 50)
+        self.create_subscription(PoseStamped, self._camera_topic, self._on_camera_pose, 10)
 
         self.get_logger().info(
-            'pose_estimation_sensor_fusion started; forwarding '
-            '/current_position_camera -> /current_position'
+            'pose_estimation_sensor_fusion started; fusing '
+            f'{self._camera_topic} (anchor) + {self._wheel_topic} (odom) -> {self._output_topic}; '
+            f'wheel_radius={self._wheel_radius:.4f}m, track={self._wheel_track:.3f}m, '
+            f'origin_forward_offset={self._origin_offset:.3f}m'
         )
 
+    # ----- wheel odometry -----------------------------------------------------
+
+    def _on_wheel_state(self, msg: JointState) -> None:
+        left_rad = right_rad = None
+        for name, position in zip(msg.name, msg.position):
+            if name == self._left_joint:
+                left_rad = float(position)
+            elif name == self._right_joint:
+                right_rad = float(position)
+        if left_rad is None or right_rad is None:
+            return
+
+        stamp_ns = self._stamp_to_ns(msg)
+
+        if self._prev_left_rad is None or self._prev_right_rad is None:
+            self._prev_left_rad = left_rad
+            self._prev_right_rad = right_rad
+            self._record_odom(stamp_ns)
+            return
+
+        d_left = (left_rad - self._prev_left_rad) * self._wheel_radius
+        d_right = (right_rad - self._prev_right_rad) * self._wheel_radius
+        self._prev_left_rad = left_rad
+        self._prev_right_rad = right_rad
+
+        d_center = 0.5 * (d_left + d_right)
+        d_yaw = (d_right - d_left) / self._wheel_track
+
+        # Integrate at the heading midpoint (2nd-order exact for constant-curvature arc).
+        yaw_mid = self._odom_yaw + 0.5 * d_yaw
+        self._odom_x += d_center * math.cos(yaw_mid)
+        self._odom_y += d_center * math.sin(yaw_mid)
+        self._odom_yaw += d_yaw
+
+        self._record_odom(stamp_ns)
+        self._publish_fused(stamp_ns)
+
+    def _record_odom(self, stamp_ns: int) -> None:
+        self._odom_history.append((stamp_ns, self._odom_x, self._odom_y, self._odom_yaw))
+        while (
+            len(self._odom_history) > 1
+            and (stamp_ns - self._odom_history[0][0]) > self._history_window_ns
+        ):
+            self._odom_history.popleft()
+
+    def _odom_pose_at(self, stamp_ns: int) -> tuple[float, float, float]:
+        """Interpolate the recorded odom pose at the given timestamp."""
+        hist = self._odom_history
+        if not hist:
+            return self._odom_x, self._odom_y, self._odom_yaw
+        if stamp_ns <= hist[0][0]:
+            return hist[0][1], hist[0][2], hist[0][3]
+        if stamp_ns >= hist[-1][0]:
+            return hist[-1][1], hist[-1][2], hist[-1][3]
+
+        for i in range(len(hist) - 1):
+            t0, x0, y0, yaw0 = hist[i]
+            t1, x1, y1, yaw1 = hist[i + 1]
+            if t0 <= stamp_ns <= t1:
+                span = t1 - t0
+                a = 0.0 if span <= 0 else (stamp_ns - t0) / span
+                return (
+                    x0 + a * (x1 - x0),
+                    y0 + a * (y1 - y0),
+                    yaw0 + a * (yaw1 - yaw0),
+                )
+        return hist[-1][1], hist[-1][2], hist[-1][3]
+
+    # ----- camera correction --------------------------------------------------
+
     def _on_camera_pose(self, msg: PoseStamped) -> None:
-        self._pub.publish(msg)
+        ox = msg.pose.position.x
+        oy = msg.pose.position.y
+        yaw = _yaw_from_quaternion(
+            msg.pose.orientation.x,
+            msg.pose.orientation.y,
+            msg.pose.orientation.z,
+            msg.pose.orientation.w,
+        )
+        if not all(math.isfinite(v) for v in (ox, oy, yaw)):
+            return
+
+        # Camera gives the robot-origin pose; convert to the wheel-axle midpoint,
+        # which is the point odometry integrates.
+        axle_x = ox - self._origin_offset * math.cos(yaw)
+        axle_y = oy - self._origin_offset * math.sin(yaw)
+
+        stamp_ns = self._stamp_to_ns(msg)
+        odom_x, odom_y, odom_yaw = self._odom_pose_at(stamp_ns)
+
+        self._anchor_x = axle_x
+        self._anchor_y = axle_y
+        self._anchor_yaw = yaw
+        self._anchor_odom_x = odom_x
+        self._anchor_odom_y = odom_y
+        self._anchor_odom_yaw = odom_yaw
+        self._anchor_valid = True
+
+        self._publish_fused(self._latest_stamp_ns())
+
+    # ----- fusion + publish ---------------------------------------------------
+
+    def _publish_fused(self, stamp_ns: int) -> None:
+        if not self._anchor_valid:
+            return
+
+        # Relative motion in odom frame since the camera anchor's timestamp.
+        dx = self._odom_x - self._anchor_odom_x
+        dy = self._odom_y - self._anchor_odom_y
+        d_yaw = self._odom_yaw - self._anchor_odom_yaw
+
+        # Rotate the odom-frame delta into the anchor (map) frame and compose.
+        rot = self._anchor_yaw - self._anchor_odom_yaw
+        cos_r = math.cos(rot)
+        sin_r = math.sin(rot)
+        axle_x = self._anchor_x + cos_r * dx - sin_r * dy
+        axle_y = self._anchor_y + sin_r * dx + cos_r * dy
+        axle_yaw = self._anchor_yaw + d_yaw
+
+        # Convert the axle-midpoint pose back to the robot origin (40mm forward).
+        origin_x = axle_x + self._origin_offset * math.cos(axle_yaw)
+        origin_y = axle_y + self._origin_offset * math.sin(axle_yaw)
+
+        qx, qy, qz, qw = _quaternion_from_yaw(axle_yaw)
+        out = PoseStamped()
+        out.header.stamp = rclpy.time.Time(nanoseconds=stamp_ns).to_msg()
+        out.header.frame_id = 'map'
+        out.pose.position.x = origin_x
+        out.pose.position.y = origin_y
+        out.pose.position.z = 0.0
+        out.pose.orientation.x = qx
+        out.pose.orientation.y = qy
+        out.pose.orientation.z = qz
+        out.pose.orientation.w = qw
+        self._pub.publish(out)
+
+    # ----- helpers ------------------------------------------------------------
+
+    def _stamp_to_ns(self, msg) -> int:
+        stamp = msg.header.stamp
+        ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+        if ns <= 0:
+            return self.get_clock().now().nanoseconds
+        return ns
+
+    def _latest_stamp_ns(self) -> int:
+        if self._odom_history:
+            return self._odom_history[-1][0]
+        return self.get_clock().now().nanoseconds
 
 
 def main(args=None) -> None:

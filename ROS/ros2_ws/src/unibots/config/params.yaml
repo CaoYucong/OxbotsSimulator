@@ -25,6 +25,24 @@ web_bridge_node:
 
 pose_estimation_sensor_fusion:
   ros__parameters:
+    # --- Camera + wheel-odometry pose fusion ---
+    # Absolute (drift-free, latent) robot-origin pose from AprilTag camera node.
+    camera_pose_topic: /current_position_camera
+    # High-rate left/right wheel angle (rad) + angular velocity (rad/s).
+    wheel_state_topic: /wheel_joint_states
+    # Fused pose output consumed by the rest of the stack.
+    output_topic: /current_position
+    # Driven-wheel radius (47mm diameter / 2).
+    wheel_radius_m: 0.0235
+    # Distance between the two rear wheels.
+    wheel_track_m: 0.19
+    # Robot origin sits this far forward of the wheel-axle midpoint.
+    origin_forward_offset_m: 0.04
+    # JointState names published by motion_control_node.
+    left_wheel_joint: left_wheel_joint
+    right_wheel_joint: right_wheel_joint
+    # Odometry history kept to interpolate the pose at a camera timestamp (sec).
+    odom_history_sec: 3.0
     # Use real ToF sensors when true; fetch upstream radar text when false.
     use_real_sensor: true
     # Upstream simulator host for radar sensor extraction.
@@ -242,3 +260,9 @@ motion_control_node:
     # Stop rotating when heading is within this inclusive band (degrees).
     heading_deadband_min_deg: 9.0
     heading_deadband_max_deg: 11.0
+    # Quadrature encoder counts per wheel output-shaft revolution.
+    counts_per_rev: 488.0
+    # Wheel JointState publish rate (Hz) for differential-drive odometry.
+    wheel_state_hz: 50.0
+    # Topic publishing left/right wheel position (rad) and velocity (rad/s).
+    wheel_state_topic: /wheel_joint_states
