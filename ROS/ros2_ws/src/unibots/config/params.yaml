@@ -140,8 +140,8 @@ front_camera_node:
     # Downsample the captured full-FOV frame to this size before publishing.
     # 0 = publish at capture resolution. Keeps original FOV, fewer pixels.
     # Intrinsics (real_camera_intrinsic.yaml) must match this output resolution.
-    output_width: 1280
-    output_height: 720
+    output_width: 960
+    output_height: 540
 
 ball_detection_node:
   ros__parameters:
@@ -171,7 +171,7 @@ ball_detection_node:
     infer_hz: 1.0
     # Downscale frame to this height (px) before inference; boxes are scaled back to
     # full resolution for drawing and 3D back-projection. 0 = no downscaling.
-    infer_image_height: 360
+    infer_image_height: 180
     # Filter out detections below this confidence.
     min_confidence: 0.25
     # Log inference timing breakdown ([infer_time] encode/request/tick_total, etc.).
