@@ -246,6 +246,10 @@ pose_estimation_camera:
     log_every_sec: 0.0
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
     allow_legacy_opencv: true
+    # Skip AprilTag/PnP while motion_control reports 'moving'.
+    robot_motion_status_topic: /robot_motion_status
+    # Smooth camera pose with a Kalman filter before publishing /current_position_camera.
+    use_kalman_filter: false
 
 motion_control_node:
   ros__parameters:
@@ -258,14 +262,18 @@ motion_control_node:
     # Output topic publishing 'going' / 'reached' for the active waypoint.
     waypoint_status_topic: /waypoint_status
     # PWM duty cycle (0..1) when driving straight toward the waypoint.
-    drive_speed: 0.5
+    drive_speed: 1.0
     # PWM duty cycle (0..1) when rotating in place to face the waypoint.
-    rotate_speed: 0.4
+    rotate_speed: 0.1
     # Drive forward only when |heading error| is within this band (degrees);
     # otherwise rotate in place to face the target.
     heading_tolerance_deg: 5.0
     # 'reached' (and stop) when both |dx| and |dy| to the target are within this (meters).
     position_tolerance_m: 0.1
+    # Stopped dwell (seconds) between rotate and drive, and after drive completes.
+    phase_pause_s: 1.0
+    # Stopped dwell (seconds) at a reached waypoint before starting the next target.
+    waypoint_reached_pause_s: 0.01
     # Quadrature encoder counts per wheel output-shaft revolution.
     counts_per_rev: 488.0
     # Wheel JointState publish rate (Hz) for differential-drive odometry.

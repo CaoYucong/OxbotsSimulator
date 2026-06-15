@@ -18,6 +18,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Int32, String
 
+ROBOT_MOTION_STATUS_TOPIC: str = '/robot_motion_status'
+
 PERF_METRICS_ENABLED = True
 
 
@@ -281,6 +283,8 @@ class PoseEstimationNode(Node):
         self.declare_parameter('use_real_sensor', False)
         self.declare_parameter('pose_history_window_sec', 10.0)
         self.declare_parameter('position_bound', 2.0)
+        self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
+        self.declare_parameter('use_kalman_filter', False)
 
         camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
@@ -298,6 +302,13 @@ class PoseEstimationNode(Node):
         )
         _bound_raw = float(self.get_parameter('position_bound').get_parameter_value().double_value)
         self._position_bound: Optional[float] = _bound_raw if _bound_raw > 0.0 else None
+        self._motion_status_topic = (
+            self.get_parameter('robot_motion_status_topic').get_parameter_value().string_value
+            or ROBOT_MOTION_STATUS_TOPIC
+        )
+        self._use_kalman_filter = bool(
+            self.get_parameter('use_kalman_filter').get_parameter_value().bool_value
+        )
 
         if self._enabled:
             ok_runtime, reason = _opencv_apriltag_runtime_supported()
@@ -353,22 +364,25 @@ class PoseEstimationNode(Node):
         self._latest_image_stamp: Optional[rclpy.time.Time] = None
         self._pose_history: deque[tuple[int, PoseStamped]] = deque()
         self._camera_pose_history: deque[tuple[int, PoseStamped]] = deque()
-        self._kf = cv2.KalmanFilter(5, 3)
-        self._kf.measurementMatrix = np.array(
-            [
-                [1.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 1.0],
-            ],
-            dtype=np.float32,
-        )
-        # Aggressive filter: larger process noise + smaller measurement noise → low latency
-        self._kf.processNoiseCov = np.diag([5e-3, 5e-3, 5e-2, 5e-2, 5e-2]).astype(np.float32)
-        self._kf.measurementNoiseCov = np.diag([3e-2, 3e-2, 1.0]).astype(np.float32)
-        self._kf.errorCovPost = np.eye(5, dtype=np.float32)
+        self._kf = None
         self._kf_initialized = False
         self._kf_last_update_ns: Optional[int] = None
         self._kf_consecutive_rejections: int = 0
+        if self._use_kalman_filter:
+            self._kf = cv2.KalmanFilter(5, 3)
+            self._kf.measurementMatrix = np.array(
+                [
+                    [1.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 1.0],
+                ],
+                dtype=np.float32,
+            )
+            # Aggressive filter: larger process noise + smaller measurement noise → low latency
+            self._kf.processNoiseCov = np.diag([5e-3, 5e-3, 5e-2, 5e-2, 5e-2]).astype(np.float32)
+            self._kf.measurementNoiseCov = np.diag([3e-2, 3e-2, 1.0]).astype(np.float32)
+            self._kf.errorCovPost = np.eye(5, dtype=np.float32)
+        self._robot_motion_status: str | None = None
         self._placeholder_image = self._build_placeholder_image()
 
         self._pub_current_position = self.create_publisher(PoseStamped, '/current_position_camera', 10)
@@ -380,6 +394,9 @@ class PoseEstimationNode(Node):
         self._run_enabled: bool = False
         self.create_subscription(Image, camera_topic, self._on_image, 10)
         self.create_subscription(String, '/run', self._on_run, 10)
+        self.create_subscription(
+            String, self._motion_status_topic, self._on_robot_motion_status, 10
+        )
         if self.tick_hz > 0.0:
             self.create_timer(1.0 / self.tick_hz, self._on_tick)
         self.create_timer(0.5, self._publish_placeholder_if_stale)
@@ -388,8 +405,13 @@ class PoseEstimationNode(Node):
         tick_hz_text = f'{self.tick_hz:.3f}Hz' if self.tick_hz > 0.0 else 'image-rate'
         self.get_logger().info(
             f'pose_estimation {state}; topic={camera_topic}, tick={tick_hz_text}, '
-            f'intrinsics={intrinsic_path}, tag_map={tag_map_path}'
+            f'intrinsics={intrinsic_path}, tag_map={tag_map_path}, '
+            f'pose_when={self._motion_status_topic}=stopped, '
+            f'kalman_filter={"on" if self._use_kalman_filter else "off"}'
         )
+
+    def _on_robot_motion_status(self, msg: String) -> None:
+        self._robot_motion_status = (msg.data or '').strip().lower()
 
     def _on_run(self, msg: String) -> None:
         self._run_enabled = (msg.data or '').strip().lower() != 'off'
@@ -567,6 +589,9 @@ class PoseEstimationNode(Node):
         return x_f, y_f, h_f
 
     def _process_image(self, image: np.ndarray) -> None:
+        if self._robot_motion_status == 'moving':
+            return
+
         t_process_start = time.perf_counter()
 
         try:
@@ -647,13 +672,18 @@ class PoseEstimationNode(Node):
         measured_x = float(robot['x'])
         measured_y = float(robot['y'])
         measured_heading_deg = float(robot['heading_x0'])
-        filtered_x, filtered_y, filtered_heading_deg = self._kalman_update_pose(
-            measured_x=measured_x,
-            measured_y=measured_y,
-            measured_heading_deg=measured_heading_deg,
-            now_ns=now_ns,
-            num_tags_used=used_tags,
-        )
+        if self._use_kalman_filter:
+            filtered_x, filtered_y, filtered_heading_deg = self._kalman_update_pose(
+                measured_x=measured_x,
+                measured_y=measured_y,
+                measured_heading_deg=measured_heading_deg,
+                now_ns=now_ns,
+                num_tags_used=used_tags,
+            )
+        else:
+            filtered_x = measured_x
+            filtered_y = measured_y
+            filtered_heading_deg = self._normalize_heading_deg(measured_heading_deg)
         heading_rad = math.radians(filtered_heading_deg)
         msg_out = PoseStamped()
         msg_out.header.stamp = now_time.to_msg()

@@ -39,10 +39,14 @@ Waypoint following:
   - Inputs:
       /current_position (geometry_msgs/PoseStamped) -> robot x, y, heading
       /dynamic_waypoint (std_msgs/String '(x, y, theta_deg)') -> target x, y
-  - Behavior (face-then-drive):
-      * If the heading error to the target is outside +/-5 deg, rotate in place
-        to face the target.
-      * If within +/-5 deg, drive straight forward.
+  - Behavior (heading-gated drive toward each waypoint):
+      * Rotate in place whenever |heading error| exceeds tolerance.
+      * After heading enters tolerance, pause 1 s; if heading drifts out during
+        that interval, rotate again instead of driving forward.
+      * Drive forward only while |heading error| is within tolerance; re-rotate
+        immediately if heading drifts out while moving.
+      * Pause: publish 'stopped', wait 1 s, then mark the waypoint 'reached'.
+      * Dwell: publish 'stopped', wait 5 s, then accept the next /dynamic_waypoint.
       * Stop once |dx| and |dy| to the target are both within +/-0.1 m.
   - Waypoint status output:
       /waypoint_status (std_msgs/String)
@@ -86,10 +90,11 @@ RIGHT_ENC_A: int = 22
 RIGHT_ENC_B: int = 23
 
 FULL_SPEED: float = 1.0  # PWM duty cycle for full-speed forward/reverse
-ROTATE_RAMP_S: float = 0.1  # soft-start ramp duration after rotate() begins
+ROTATE_RAMP_S: float = 0.5  # soft-start ramp duration after rotate() begins
 ROTATE_RAMP_START_SPEED: float = 0.2  # PWM duty cycle at rotate() start
 ROTATE_SLOW_SPEED: float = 0.1  # PWM duty cycle when close to target
-ROTATE_SLOWDOWN_COUNTS: int = 800  # switch to slow speed when |error| < this
+ROTATE_SLOWDOWN_COUNTS: int = 30  # switch to slow speed when |encoder error| < this
+ROTATE_HEADING_SLOWDOWN_DEG: float = 30.0  # switch to slow speed when |heading error| < this
 ROTATE_POLL_S: float = 0.01  # closed-loop polling interval for rotate()
 
 COUNTS_PER_REV: float = 488.0  # quadrature counts per output-shaft revolution
@@ -107,15 +112,28 @@ POSITION_TOPIC: str = '/current_position'  # geometry_msgs/PoseStamped robot pos
 WAYPOINT_TOPIC: str = '/dynamic_waypoint'  # std_msgs/String '(x, y, theta_deg)'
 WAYPOINT_STATUS_TOPIC: str = '/waypoint_status'  # 'going' / 'reached'
 CONTROL_HZ: float = 10.0  # waypoint-following control loop rate
-DRIVE_SPEED: float = 0.5  # PWM duty cycle when driving forward toward the waypoint
-ROTATE_SPEED: float = 0.4  # PWM duty cycle when rotating in place to face the waypoint
-HEADING_TOLERANCE_DEG: float = 5.0  # face the target when |heading error| <= this
+DRIVE_SPEED: float = 0.05  # PWM duty cycle when driving forward toward the waypoint
+ROTATE_SPEED: float = 0.05  # PWM duty cycle when rotating in place to face the waypoint
+HEADING_TOLERANCE_DEG: float = 1.0  # face the target when |heading error| <= this
 POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |dx| and |dy| are both <= this
+PHASE_PAUSE_S: float = 1.0  # stopped dwell after heading aligns (and after drive)
+WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next target
 
 
 def _normalize_angle(angle: float) -> float:
     """Wrap an angle (rad) to the range (-pi, pi]."""
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _ramp_speed(started_at: float | None, cruise: float) -> float:
+    """Linear soft-start ramp from ROTATE_RAMP_START_SPEED to cruise over ROTATE_RAMP_S."""
+    if started_at is None:
+        return cruise
+    elapsed = time.monotonic() - started_at
+    if elapsed >= ROTATE_RAMP_S:
+        return cruise
+    t = elapsed / ROTATE_RAMP_S
+    return ROTATE_RAMP_START_SPEED + t * (cruise - ROTATE_RAMP_START_SPEED)
 
 
 def _parse_waypoint(text: str) -> tuple[float, float] | None:
@@ -170,20 +188,13 @@ class Motor:
         return -steps if self._invert_encoder else steps
 
     def _current_rotate_speed(self, error: int) -> float:
-        if abs(error) < ROTATE_SLOWDOWN_COUNTS:
-            rotate_speed = ROTATE_SLOW_SPEED + (abs(error) / ROTATE_SLOWDOWN_COUNTS) * (1 - ROTATE_SLOW_SPEED)
-            return rotate_speed
-
-        if self._rotate_started_at is not None:
-            elapsed = time.monotonic() - self._rotate_started_at
-            if elapsed < ROTATE_RAMP_S:
-                t = elapsed / ROTATE_RAMP_S
-                return (
-                    ROTATE_RAMP_START_SPEED
-                    + t * (self._rotate_speed - ROTATE_RAMP_START_SPEED)
-                )
-
-        return self._rotate_speed
+        proximity = (
+            ROTATE_SLOW_SPEED
+            if abs(error) < ROTATE_SLOWDOWN_COUNTS
+            else self._rotate_speed
+        )
+        ramp = _ramp_speed(self._rotate_started_at, self._rotate_speed)
+        return min(proximity, ramp)
 
     def rotate(self, rc: int, speed: float = FULL_SPEED, tolerance: int = 1) -> None:
         """Start non-blocking move to encoder count rc (reference count)."""
@@ -262,6 +273,8 @@ class MotionControlNode(Node):
         self.declare_parameter('rotate_speed', ROTATE_SPEED)
         self.declare_parameter('heading_tolerance_deg', HEADING_TOLERANCE_DEG)
         self.declare_parameter('position_tolerance_m', POSITION_TOLERANCE_M)
+        self.declare_parameter('phase_pause_s', PHASE_PAUSE_S)
+        self.declare_parameter('waypoint_reached_pause_s', WAYPOINT_REACHED_PAUSE_S)
         time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
         self._counts_per_rev = float(self.get_parameter('counts_per_rev').get_parameter_value().double_value) or COUNTS_PER_REV
         encoder_debug_hz = float(self.get_parameter('encoder_debug_hz').get_parameter_value().double_value) or ENCODER_DEBUG_HZ
@@ -310,6 +323,14 @@ class MotionControlNode(Node):
             float(self.get_parameter('position_tolerance_m').get_parameter_value().double_value)
             or POSITION_TOLERANCE_M
         )
+        self._phase_pause_s = (
+            float(self.get_parameter('phase_pause_s').get_parameter_value().double_value)
+            or PHASE_PAUSE_S
+        )
+        self._waypoint_reached_pause_s = (
+            float(self.get_parameter('waypoint_reached_pause_s').get_parameter_value().double_value)
+            or WAYPOINT_REACHED_PAUSE_S
+        )
 
         self._run_enabled = False
         self._motion_started = False
@@ -327,6 +348,19 @@ class MotionControlNode(Node):
         self._target_x: float | None = None
         self._target_y: float | None = None
         self._last_waypoint_status: str | None = None
+        # Waypoint motion phases: navigate -> pause -> reached -> ready.
+        # During navigate, forward is allowed only when heading is within tolerance.
+        self._motion_phase: str | None = None
+        self._needs_heading_settle: bool = False
+        self._heading_settle_until: float | None = None
+        self._pause_until: float | None = None
+        self._pause_next_phase: str | None = None
+        self._reached_pause_until: float | None = None
+        self._pending_target: tuple[float, float] | None = None
+        self._active_target: tuple[float, float] | None = None
+        self._nav_motion_mode: str | None = None  # 'rotate' or 'drive' during navigate
+        self._rotate_started_at: float | None = None
+        self._drive_started_at: float | None = None
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
         self._left_enc = None
@@ -395,11 +429,77 @@ class MotionControlNode(Node):
         parsed = _parse_waypoint(msg.data if msg.data else '')
         if parsed is None:
             return
+        if self._motion_phase == 'reached' and self._reached_pause_until is not None:
+            if time.monotonic() < self._reached_pause_until:
+                self._pending_target = parsed
+                return
         self._target_x, self._target_y = parsed
 
+    def _reset_motion_phase(self) -> None:
+        self._motion_phase = None
+        self._needs_heading_settle = False
+        self._heading_settle_until = None
+        self._pause_until = None
+        self._pause_next_phase = None
+        self._reached_pause_until = None
+        self._pending_target = None
+        self._active_target = None
+        self._nav_motion_mode = None
+        self._rotate_started_at = None
+        self._drive_started_at = None
+
+    def _heading_error_rad(self, dx: float, dy: float) -> float:
+        desired_heading = math.atan2(dy, dx)
+        return _normalize_angle(desired_heading - self._current_theta)
+
+    def _heading_within_tolerance(self, dx: float, dy: float) -> bool:
+        return abs(self._heading_error_rad(dx, dy)) <= math.radians(self._heading_tolerance_deg)
+
+    def _heading_rotate_pwm(self, heading_error: float) -> float:
+        error_deg = abs(math.degrees(heading_error))
+        proximity = (
+            ROTATE_SLOW_SPEED
+            if error_deg < ROTATE_HEADING_SLOWDOWN_DEG
+            else FULL_SPEED
+        )
+        ramp = _ramp_speed(self._rotate_started_at, FULL_SPEED)
+        return min(proximity, ramp)
+
+    def _drive_pwm(self) -> float:
+        return _ramp_speed(self._drive_started_at, self._drive_speed)
+
+    def _begin_nav_motion(self, mode: str) -> None:
+        if self._nav_motion_mode == mode:
+            return
+        self._nav_motion_mode = mode
+        now = time.monotonic()
+        if mode == 'rotate':
+            self._rotate_started_at = now
+        elif mode == 'drive':
+            self._drive_started_at = now
+
+    def _rotate_toward_heading(self, heading_error: float) -> None:
+        speed = self._heading_rotate_pwm(heading_error)
+        # Positive error = CCW (turn left): right wheel forward, left wheel reverse.
+        if heading_error > 0.0:
+            self._left.reverse(speed)
+            self._right.forward(speed)
+        else:
+            self._left.forward(speed)
+            self._right.reverse(speed)
+
+    def _begin_phase_pause(self, next_phase: str) -> None:
+        """Stop motors, publish 'stopped', and wait before entering the next phase."""
+        self._stop()
+        self._publish_motion_status_now('stopped')
+        self._motion_phase = 'pause'
+        self._pause_until = time.monotonic() + self._phase_pause_s
+        self._pause_next_phase = next_phase
+
     def _control_loop(self) -> None:
-        """Face-then-drive controller toward /dynamic_waypoint, with waypoint_status."""
+        """Heading-gated controller: rotate until aligned, then drive; re-rotate as needed."""
         if not self._run_enabled:
+            self._reset_motion_phase()
             self._stop()
             return
 
@@ -410,37 +510,108 @@ class MotionControlNode(Node):
         )
         have_waypoint = self._target_x is not None and self._target_y is not None
         if not have_pose or not have_waypoint:
+            self._reset_motion_phase()
             self._stop()
             return
 
+        target = (self._target_x, self._target_y)
+        if self._active_target != target:
+            if self._motion_phase == 'reached':
+                self._pending_target = target
+            elif self._motion_phase != 'ready':
+                self._active_target = target
+                self._motion_phase = 'navigate'
+                self._needs_heading_settle = False
+                self._heading_settle_until = None
+                self._pause_until = None
+                self._pause_next_phase = None
+
         dx = self._target_x - self._current_x
         dy = self._target_y - self._current_y
+        at_target = (
+            abs(dx) <= self._position_tolerance_m
+            and abs(dy) <= self._position_tolerance_m
+        )
 
-        # 'reached' when both x and y are within tolerance; otherwise still 'going'.
-        if abs(dx) <= self._position_tolerance_m and abs(dy) <= self._position_tolerance_m:
+        if self._motion_phase == 'pause':
+            self._stop()
+            self._publish_motion_status_now('stopped')
+            if self._pause_until is not None and time.monotonic() >= self._pause_until:
+                next_phase = self._pause_next_phase
+                self._motion_phase = next_phase
+                self._pause_until = None
+                self._pause_next_phase = None
+                if next_phase == 'reached':
+                    self._reached_pause_until = time.monotonic() + self._waypoint_reached_pause_s
+            return
+
+        if self._motion_phase == 'reached':
             self._publish_waypoint_status('reached')
             self._stop()
+            self._publish_motion_status_now('stopped')
+            if self._reached_pause_until is not None and time.monotonic() >= self._reached_pause_until:
+                self._reached_pause_until = None
+                self._motion_phase = 'ready'
+                if self._pending_target is not None:
+                    self._target_x, self._target_y = self._pending_target
+                    self._pending_target = None
+            return
+
+        if self._motion_phase == 'ready':
+            self._publish_waypoint_status('reached')
+            self._stop()
+            self._publish_motion_status_now('stopped')
+            if self._pending_target is not None:
+                self._target_x, self._target_y = self._pending_target
+                self._pending_target = None
+                target = (self._target_x, self._target_y)
+            if self._active_target != target:
+                self._active_target = target
+                self._motion_phase = 'navigate'
+                self._needs_heading_settle = False
+                self._heading_settle_until = None
+            return
+
+        if at_target:
+            self._needs_heading_settle = False
+            self._heading_settle_until = None
+            self._begin_phase_pause('reached')
             return
 
         self._publish_waypoint_status('going')
 
-        # Heading error toward the target point, wrapped to (-pi, pi].
-        desired_heading = math.atan2(dy, dx)
-        heading_error = _normalize_angle(desired_heading - self._current_theta)
+        if self._motion_phase is None:
+            self._motion_phase = 'navigate'
 
-        if abs(heading_error) > math.radians(self._heading_tolerance_deg):
-            # Rotate in place to face the target. Positive error = CCW (turn left):
-            # right wheel forward, left wheel reverse (matches odometry yaw sign).
-            if heading_error > 0.0:
-                self._left.reverse(self._rotate_speed)
-                self._right.forward(self._rotate_speed)
-            else:
-                self._left.forward(self._rotate_speed)
-                self._right.reverse(self._rotate_speed)
-        else:
-            # Within the heading deadband: drive straight toward the target.
-            self._left.forward(self._drive_speed)
-            self._right.forward(self._drive_speed)
+        if self._motion_phase != 'navigate':
+            return
+
+        heading_error = self._heading_error_rad(dx, dy)
+        if not self._heading_within_tolerance(dx, dy):
+            self._needs_heading_settle = True
+            self._heading_settle_until = None
+            self._begin_nav_motion('rotate')
+            self._rotate_toward_heading(heading_error)
+            return
+
+        if self._needs_heading_settle:
+            now = time.monotonic()
+            if self._heading_settle_until is None:
+                self._stop()
+                self._publish_motion_status_now('stopped')
+                self._heading_settle_until = now + self._phase_pause_s
+                return
+            if now < self._heading_settle_until:
+                self._stop()
+                self._publish_motion_status_now('stopped')
+                return
+            self._needs_heading_settle = False
+            self._heading_settle_until = None
+
+        self._begin_nav_motion('drive')
+        drive_speed = self._drive_pwm()
+        self._left.forward(drive_speed)
+        self._right.forward(drive_speed)
 
     def _publish_waypoint_status(self, status: str) -> None:
         msg = String()
@@ -451,18 +622,19 @@ class MotionControlNode(Node):
             self._last_waypoint_status = status
             self.get_logger().info(f'[waypoint_status] {status}')
 
+    def _publish_motion_status_now(self, status: str) -> None:
+        msg = String()
+        msg.data = status
+        self._motion_status_pub.publish(msg)
+        if status != self._last_motion_status:
+            self._last_motion_status = status
+            self.get_logger().info(f'[motion_status] {status}')
+
     def _publish_motion_status(self) -> None:
         """Publish 'moving' if either motor is being driven, else 'stopped'."""
         moving = self._left.is_active or self._right.is_active
         status = 'moving' if moving else 'stopped'
-
-        msg = String()
-        msg.data = status
-        self._motion_status_pub.publish(msg)
-
-        if status != self._last_motion_status:
-            self._last_motion_status = status
-            self.get_logger().info(f'[motion_status] {status}')
+        self._publish_motion_status_now(status)
 
     def _signed_wheel_counts(self) -> tuple[int, int]:
         """Encoder counts in robot frame (forward motion = positive for both wheels)."""
@@ -537,6 +709,7 @@ class MotionControlNode(Node):
         self._motion_started = False
         self._start_left_steps = 0
         self._start_right_steps = 0
+        self._reset_motion_phase()
 
     def _on_run(self, msg: String) -> None:
         enabled = (msg.data or '').strip().lower() != 'off'
@@ -570,6 +743,9 @@ class MotionControlNode(Node):
             self.get_logger().info('/time > 0: waypoint-following control active')
 
     def _stop(self) -> None:
+        self._nav_motion_mode = None
+        self._rotate_started_at = None
+        self._drive_started_at = None
         self._left.stop()
         self._right.stop()
 
