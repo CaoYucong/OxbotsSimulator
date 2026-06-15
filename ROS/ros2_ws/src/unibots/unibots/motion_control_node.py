@@ -35,12 +35,28 @@ Motion status output:
   - 'moving'  when either motor is being driven (non-zero PWM)
   - 'stopped' when neither wheel has a drive command
 
+Waypoint following:
+  - Inputs:
+      /current_position (geometry_msgs/PoseStamped) -> robot x, y, heading
+      /dynamic_waypoint (std_msgs/String '(x, y, theta_deg)') -> target x, y
+  - Behavior (face-then-drive):
+      * If the heading error to the target is outside +/-5 deg, rotate in place
+        to face the target.
+      * If within +/-5 deg, drive straight forward.
+      * Stop once |dx| and |dy| to the target are both within +/-0.1 m.
+  - Waypoint status output:
+      /waypoint_status (std_msgs/String)
+        'reached' when |dx| and |dy| are both within +/-0.1 m, else 'going'.
+
 """
+
+from __future__ import annotations
 
 import math
 import time
 
 import rclpy
+from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
@@ -83,10 +99,39 @@ WHEEL_JOINT_STATE_TOPIC: str = '/wheel_joint_states'
 LEFT_WHEEL_JOINT_NAME: str = 'left_wheel_joint'
 RIGHT_WHEEL_JOINT_NAME: str = 'right_wheel_joint'
 ENCODER_DEBUG_HZ: float = 10.0  # how often to print encoder debug
-ROTATE_SWITCH_INTERVAL_S: int = 10  # alternate rotate target every N seconds
-ROTATE_PHASE_TARGET: int = 3000  # encoder count target per wheel in each phase
 MOTION_STATUS_TOPIC: str = '/robot_motion_status'  # 'moving' / 'stopped'
 MOTION_STATUS_HZ: float = 20.0  # how often to publish robot motion status
+
+# --- Waypoint-following control ---
+POSITION_TOPIC: str = '/current_position'  # geometry_msgs/PoseStamped robot pose
+WAYPOINT_TOPIC: str = '/dynamic_waypoint'  # std_msgs/String '(x, y, theta_deg)'
+WAYPOINT_STATUS_TOPIC: str = '/waypoint_status'  # 'going' / 'reached'
+CONTROL_HZ: float = 10.0  # waypoint-following control loop rate
+DRIVE_SPEED: float = 0.5  # PWM duty cycle when driving forward toward the waypoint
+ROTATE_SPEED: float = 0.4  # PWM duty cycle when rotating in place to face the waypoint
+HEADING_TOLERANCE_DEG: float = 5.0  # face the target when |heading error| <= this
+POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |dx| and |dy| are both <= this
+
+
+def _normalize_angle(angle: float) -> float:
+    """Wrap an angle (rad) to the range (-pi, pi]."""
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _parse_waypoint(text: str) -> tuple[float, float] | None:
+    """Parse '(x, y, theta_deg)' (theta optional/None) into (x, y) or None."""
+    if not text:
+        return None
+    cleaned = text.strip().strip('()')
+    if not cleaned:
+        return None
+    parts = [p.strip() for p in cleaned.split(',')]
+    if len(parts) < 2:
+        return None
+    try:
+        return float(parts[0]), float(parts[1])
+    except (TypeError, ValueError):
+        return None
 
 
 class Motor:
@@ -209,6 +254,14 @@ class MotionControlNode(Node):
         self.declare_parameter('wheel_state_topic', WHEEL_JOINT_STATE_TOPIC)
         self.declare_parameter('motion_status_topic', MOTION_STATUS_TOPIC)
         self.declare_parameter('motion_status_hz', MOTION_STATUS_HZ)
+        self.declare_parameter('position_topic', POSITION_TOPIC)
+        self.declare_parameter('waypoint_topic', WAYPOINT_TOPIC)
+        self.declare_parameter('waypoint_status_topic', WAYPOINT_STATUS_TOPIC)
+        self.declare_parameter('control_hz', CONTROL_HZ)
+        self.declare_parameter('drive_speed', DRIVE_SPEED)
+        self.declare_parameter('rotate_speed', ROTATE_SPEED)
+        self.declare_parameter('heading_tolerance_deg', HEADING_TOLERANCE_DEG)
+        self.declare_parameter('position_tolerance_m', POSITION_TOLERANCE_M)
         time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
         self._counts_per_rev = float(self.get_parameter('counts_per_rev').get_parameter_value().double_value) or COUNTS_PER_REV
         encoder_debug_hz = float(self.get_parameter('encoder_debug_hz').get_parameter_value().double_value) or ENCODER_DEBUG_HZ
@@ -225,16 +278,55 @@ class MotionControlNode(Node):
             float(self.get_parameter('motion_status_hz').get_parameter_value().double_value)
             or MOTION_STATUS_HZ
         )
+        position_topic = (
+            self.get_parameter('position_topic').get_parameter_value().string_value
+            or POSITION_TOPIC
+        )
+        waypoint_topic = (
+            self.get_parameter('waypoint_topic').get_parameter_value().string_value
+            or WAYPOINT_TOPIC
+        )
+        waypoint_status_topic = (
+            self.get_parameter('waypoint_status_topic').get_parameter_value().string_value
+            or WAYPOINT_STATUS_TOPIC
+        )
+        control_hz = (
+            float(self.get_parameter('control_hz').get_parameter_value().double_value)
+            or CONTROL_HZ
+        )
+        self._drive_speed = (
+            float(self.get_parameter('drive_speed').get_parameter_value().double_value)
+            or DRIVE_SPEED
+        )
+        self._rotate_speed = (
+            float(self.get_parameter('rotate_speed').get_parameter_value().double_value)
+            or ROTATE_SPEED
+        )
+        self._heading_tolerance_deg = (
+            float(self.get_parameter('heading_tolerance_deg').get_parameter_value().double_value)
+            or HEADING_TOLERANCE_DEG
+        )
+        self._position_tolerance_m = (
+            float(self.get_parameter('position_tolerance_m').get_parameter_value().double_value)
+            or POSITION_TOLERANCE_M
+        )
 
         self._run_enabled = False
         self._motion_started = False
         self._last_motion_status: str | None = None
-        self._rotate_targets: tuple[int, int] | None = None
         self._start_left_steps = 0
         self._start_right_steps = 0
         self._prev_left_count: int | None = None
         self._prev_right_count: int | None = None
         self._prev_wheel_state_time: float | None = None
+
+        # Latest robot pose (/current_position) and target (/dynamic_waypoint).
+        self._current_x: float | None = None
+        self._current_y: float | None = None
+        self._current_theta: float | None = None
+        self._target_x: float | None = None
+        self._target_y: float | None = None
+        self._last_waypoint_status: str | None = None
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
         self._left_enc = None
@@ -256,13 +348,18 @@ class MotionControlNode(Node):
 
         self.create_subscription(String, time_topic, self._on_time, 10)
         self.create_subscription(String, '/run', self._on_run, 10)
-        self.create_timer(ROTATE_POLL_S, self._update_rotates)
+        self.create_subscription(PoseStamped, position_topic, self._on_current_position, 10)
+        self.create_subscription(String, waypoint_topic, self._on_waypoint, 10)
 
         self._wheel_state_pub = self.create_publisher(JointState, wheel_state_topic, 10)
 
         self._motion_status_pub = self.create_publisher(String, motion_status_topic, 10)
         status_period = 0.05 if motion_status_hz <= 0.0 else (1.0 / motion_status_hz)
         self.create_timer(status_period, self._publish_motion_status)
+
+        self._waypoint_status_pub = self.create_publisher(String, waypoint_status_topic, 10)
+        control_period = 0.1 if control_hz <= 0.0 else (1.0 / control_hz)
+        self.create_timer(control_period, self._control_loop)
 
         if self._left_enc is not None and self._right_enc is not None:
             period = 0.2 if encoder_debug_hz <= 0.0 else (1.0 / encoder_debug_hz)
@@ -273,17 +370,86 @@ class MotionControlNode(Node):
         self.get_logger().info(
             f'motion_control_node started (MDD3A dual-PWM): '
             f'left=({LEFT_MOTOR_A},{LEFT_MOTOR_B}) right=({RIGHT_MOTOR_A},{RIGHT_MOTOR_B}), '
-            f'every {ROTATE_SWITCH_INTERVAL_S}s alternate left/right rotate to count={ROTATE_PHASE_TARGET}, '
+            f'following {waypoint_topic} from {position_topic} @ {control_hz:.1f} Hz '
+            f'(heading_tol={self._heading_tolerance_deg:.1f}deg, pos_tol={self._position_tolerance_m:.2f}m, '
+            f'drive={self._drive_speed:.2f}, rotate={self._rotate_speed:.2f}), '
             f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}, '
             f'wheel_state={wheel_state_topic} @ {wheel_state_hz:.1f} Hz, '
-            f'motion_status={motion_status_topic} @ {motion_status_hz:.1f} Hz'
+            f'motion_status={motion_status_topic} @ {motion_status_hz:.1f} Hz, '
+            f'waypoint_status={waypoint_status_topic}'
         )
 
-    def _update_rotates(self) -> None:
-        if not self._run_enabled:
+    def _on_current_position(self, msg: PoseStamped) -> None:
+        self._current_x = float(msg.pose.position.x)
+        self._current_y = float(msg.pose.position.y)
+
+        qx = float(msg.pose.orientation.x)
+        qy = float(msg.pose.orientation.y)
+        qz = float(msg.pose.orientation.z)
+        qw = float(msg.pose.orientation.w)
+        siny_cosp = 2.0 * (qw * qz + qx * qy)
+        cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+        self._current_theta = math.atan2(siny_cosp, cosy_cosp)
+
+    def _on_waypoint(self, msg: String) -> None:
+        parsed = _parse_waypoint(msg.data if msg.data else '')
+        if parsed is None:
             return
-        self._left.update_rotate()
-        self._right.update_rotate()
+        self._target_x, self._target_y = parsed
+
+    def _control_loop(self) -> None:
+        """Face-then-drive controller toward /dynamic_waypoint, with waypoint_status."""
+        if not self._run_enabled:
+            self._stop()
+            return
+
+        have_pose = (
+            self._current_x is not None
+            and self._current_y is not None
+            and self._current_theta is not None
+        )
+        have_waypoint = self._target_x is not None and self._target_y is not None
+        if not have_pose or not have_waypoint:
+            self._stop()
+            return
+
+        dx = self._target_x - self._current_x
+        dy = self._target_y - self._current_y
+
+        # 'reached' when both x and y are within tolerance; otherwise still 'going'.
+        if abs(dx) <= self._position_tolerance_m and abs(dy) <= self._position_tolerance_m:
+            self._publish_waypoint_status('reached')
+            self._stop()
+            return
+
+        self._publish_waypoint_status('going')
+
+        # Heading error toward the target point, wrapped to (-pi, pi].
+        desired_heading = math.atan2(dy, dx)
+        heading_error = _normalize_angle(desired_heading - self._current_theta)
+
+        if abs(heading_error) > math.radians(self._heading_tolerance_deg):
+            # Rotate in place to face the target. Positive error = CCW (turn left):
+            # right wheel forward, left wheel reverse (matches odometry yaw sign).
+            if heading_error > 0.0:
+                self._left.reverse(self._rotate_speed)
+                self._right.forward(self._rotate_speed)
+            else:
+                self._left.forward(self._rotate_speed)
+                self._right.reverse(self._rotate_speed)
+        else:
+            # Within the heading deadband: drive straight toward the target.
+            self._left.forward(self._drive_speed)
+            self._right.forward(self._drive_speed)
+
+    def _publish_waypoint_status(self, status: str) -> None:
+        msg = String()
+        msg.data = status
+        self._waypoint_status_pub.publish(msg)
+
+        if status != self._last_waypoint_status:
+            self._last_waypoint_status = status
+            self.get_logger().info(f'[waypoint_status] {status}')
 
     def _publish_motion_status(self) -> None:
         """Publish 'moving' if either motor is being driven, else 'stopped'."""
@@ -369,7 +535,6 @@ class MotionControlNode(Node):
 
     def _reset_motion_state(self) -> None:
         self._motion_started = False
-        self._rotate_targets = None
         self._start_left_steps = 0
         self._start_right_steps = 0
 
@@ -402,20 +567,7 @@ class MotionControlNode(Node):
                 self._start_left_steps = self._left_enc.steps
                 self._start_right_steps = self._right_enc.steps
             self._motion_started = True
-            self.get_logger().info(
-                f'/time > 0: even phases left={ROTATE_PHASE_TARGET}/right=0, '
-                f'odd phases left=0/right={ROTATE_PHASE_TARGET}, '
-                f'each phase lasts {ROTATE_SWITCH_INTERVAL_S}s'
-            )
-
-        phase = int(t) // ROTATE_SWITCH_INTERVAL_S
-        target_left = -ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
-        target_right = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
-        targets = (target_left, target_right)
-        if self._rotate_targets != targets:
-            self._rotate_targets = targets
-            self._left.rotate(target_left)
-            self._right.rotate(target_right)
+            self.get_logger().info('/time > 0: waypoint-following control active')
 
     def _stop(self) -> None:
         self._left.stop()

@@ -2301,7 +2301,7 @@ def mode_planned(
 
     status = _read_status(status_file)
     if status == "reached":
-        if returning_home:
+        # if returning_home:
             # Just arrived home — advance to the next waypoint
             idx = (idx + 1) % len(wps)
             returning_home = False
@@ -2310,12 +2310,12 @@ def mode_planned(
             tx, ty = wps[idx]
             _debug_log(f"[planned] Arrived home, now heading to waypoint {idx} ({tx:.2f}, {ty:.2f})")
             goto(tx, ty)
-        else:
-            # Just reached a waypoint — go home first
-            returning_home = True
-            _update_decision_making_local("planned_returning_home", "1")
-            _debug_log(f"[planned] Reached waypoint {idx}, heading home {HOME}")
-            goto(*HOME, waypoint_type="home")
+        # else:
+        #     # Just reached a waypoint — go home first
+        #     returning_home = True
+        #     _update_decision_making_local("planned_returning_home", "1")
+        #     _debug_log(f"[planned] Reached waypoint {idx}, heading home {HOME}")
+        #     goto(*HOME, waypoint_type="home")
     else:
         # Still travelling — keep heading to the current destination
         _update_decision_making_local("planned_waypoint_index", str(idx))

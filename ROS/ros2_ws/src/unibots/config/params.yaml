@@ -224,7 +224,7 @@ decision_node:
     # Decision loop tick rate (Hz).
     tick_hz: 10.0
     # Decision mode string (selects handler in decision_cruise). improved_nearest_v3_5
-    mode: improved_nearest_v3_5
+    mode: planned
     # Fallback speed when not provided by planner.
     default_speed: 0.3
 
@@ -249,17 +249,23 @@ pose_estimation_camera:
 
 motion_control_node:
   ros__parameters:
-    # Motor control tick rate (Hz).
+    # Waypoint-following control loop rate (Hz).
     control_hz: 10.0
-    # Position input topic consumed by motion controller.
+    # Robot pose input (geometry_msgs/PoseStamped) used for navigation.
     position_topic: /current_position
-    # Speed command topic consumed by motion controller.
-    speed_topic: /speed
-    # Angle closed-loop target heading (degrees).
-    target_heading_deg: 10.0
-    # Stop rotating when heading is within this inclusive band (degrees).
-    heading_deadband_min_deg: 9.0
-    heading_deadband_max_deg: 11.0
+    # Target waypoint input (std_msgs/String '(x, y, theta_deg)').
+    waypoint_topic: /dynamic_waypoint
+    # Output topic publishing 'going' / 'reached' for the active waypoint.
+    waypoint_status_topic: /waypoint_status
+    # PWM duty cycle (0..1) when driving straight toward the waypoint.
+    drive_speed: 0.5
+    # PWM duty cycle (0..1) when rotating in place to face the waypoint.
+    rotate_speed: 0.4
+    # Drive forward only when |heading error| is within this band (degrees);
+    # otherwise rotate in place to face the target.
+    heading_tolerance_deg: 5.0
+    # 'reached' (and stop) when both |dx| and |dy| to the target are within this (meters).
+    position_tolerance_m: 0.1
     # Quadrature encoder counts per wheel output-shaft revolution.
     counts_per_rev: 488.0
     # Wheel JointState publish rate (Hz) for differential-drive odometry.

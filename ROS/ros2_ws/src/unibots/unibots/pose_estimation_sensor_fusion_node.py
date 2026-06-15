@@ -50,7 +50,7 @@ COUNTS_PER_REV: float = 488.0  # encoder counts per wheel revolution
 #   COUNT_AVERAGE_PER_METER = COUNTS_PER_REV / (2*pi*0.0235)
 #   COUNT_DIFF_PER_DEGREE   = COUNT_AVERAGE_PER_METER * 0.19 * (pi/180)
 COUNT_AVERAGE_PER_METER: float = 3333.3333
-COUNT_DIFF_PER_DEGREE: float = 26.9
+COUNT_DIFF_PER_DEGREE: float = 10.2
 ORIGIN_FORWARD_OFFSET_M: float = 0.04  # robot origin is 40mm ahead of the axle midpoint
 ODOM_HISTORY_SEC: float = 3.0
 LEFT_WHEEL_JOINT_NAME: str = 'left_wheel_joint'
@@ -67,6 +67,11 @@ def _yaw_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> float:
 
 def _quaternion_from_yaw(yaw: float) -> tuple[float, float, float, float]:
     return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
+
+
+def _normalize_yaw_rad(yaw: float) -> float:
+    """Wrap yaw (rad) to (-pi, pi], i.e. ±180 deg."""
+    return math.atan2(math.sin(yaw), math.cos(yaw))
 
 
 class PoseEstimationSensorFusionNode(Node):
@@ -310,7 +315,7 @@ class PoseEstimationSensorFusionNode(Node):
         sin_r = math.sin(rot)
         axle_x = self._anchor_x + cos_r * dx - sin_r * dy
         axle_y = self._anchor_y + sin_r * dx + cos_r * dy
-        axle_yaw = self._anchor_yaw + d_yaw
+        axle_yaw = _normalize_yaw_rad(self._anchor_yaw + d_yaw)
 
         # Convert the axle-midpoint pose back to the robot origin (40mm forward).
         origin_x = axle_x + self._origin_offset * math.cos(axle_yaw)
