@@ -280,3 +280,9 @@ motion_control_node:
     wheel_state_hz: 50.0
     # Topic publishing left/right wheel position (rad) and velocity (rad/s).
     wheel_state_topic: /wheel_joint_states
+    # Topic for raw ToF sensor readings (String: 'time,front,right,left,rear', meters).
+    radar_sensor_topic: /radar_sensor
+    # Topic for strategic collision-avoiding waypoint override (String: '(x,y,theta_deg)' or '').
+    collision_avoiding_waypoint_topic: /collision_avoiding_waypoint
+    # Emergency brake: stop forward drive when front ToF distance is below this (meters).
+    emergency_brake_threshold_m: 0.15

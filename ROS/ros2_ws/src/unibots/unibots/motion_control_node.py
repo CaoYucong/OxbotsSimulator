@@ -71,6 +71,8 @@ except Exception:
     PWMOutputDevice = None
     RotaryEncoder = None
 
+from .motion_obstacle_avoidance import parse_radar_sensor, select_target, should_emergency_brake
+
 
 # --- Motor control pins (BCM numbering, MDD3A channel labels) ---
 M1A: int = 18
@@ -118,6 +120,10 @@ HEADING_TOLERANCE_DEG: float = 1.0  # face the target when |heading error| <= th
 POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |dx| and |dy| are both <= this
 PHASE_PAUSE_S: float = 1.0  # stopped dwell after heading aligns (and after drive)
 WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next target
+
+RADAR_SENSOR_TOPIC: str = '/radar_sensor'
+COLLISION_AVOIDING_WAYPOINT_TOPIC: str = '/collision_avoiding_waypoint'
+EMERGENCY_BRAKE_THRESHOLD_M: float = 0.15
 
 
 def _normalize_angle(angle: float) -> float:
@@ -275,6 +281,9 @@ class MotionControlNode(Node):
         self.declare_parameter('position_tolerance_m', POSITION_TOLERANCE_M)
         self.declare_parameter('phase_pause_s', PHASE_PAUSE_S)
         self.declare_parameter('waypoint_reached_pause_s', WAYPOINT_REACHED_PAUSE_S)
+        self.declare_parameter('radar_sensor_topic', RADAR_SENSOR_TOPIC)
+        self.declare_parameter('collision_avoiding_waypoint_topic', COLLISION_AVOIDING_WAYPOINT_TOPIC)
+        self.declare_parameter('emergency_brake_threshold_m', EMERGENCY_BRAKE_THRESHOLD_M)
         time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
         self._counts_per_rev = float(self.get_parameter('counts_per_rev').get_parameter_value().double_value) or COUNTS_PER_REV
         encoder_debug_hz = float(self.get_parameter('encoder_debug_hz').get_parameter_value().double_value) or ENCODER_DEBUG_HZ
@@ -331,6 +340,9 @@ class MotionControlNode(Node):
             float(self.get_parameter('waypoint_reached_pause_s').get_parameter_value().double_value)
             or WAYPOINT_REACHED_PAUSE_S
         )
+        radar_sensor_topic = self.get_parameter('radar_sensor_topic').get_parameter_value().string_value or RADAR_SENSOR_TOPIC
+        collision_avoiding_waypoint_topic = self.get_parameter('collision_avoiding_waypoint_topic').get_parameter_value().string_value or COLLISION_AVOIDING_WAYPOINT_TOPIC
+        self._emergency_brake_threshold_m = float(self.get_parameter('emergency_brake_threshold_m').get_parameter_value().double_value) or EMERGENCY_BRAKE_THRESHOLD_M
 
         self._run_enabled = False
         self._motion_started = False
@@ -361,6 +373,8 @@ class MotionControlNode(Node):
         self._nav_motion_mode: str | None = None  # 'rotate' or 'drive' during navigate
         self._rotate_started_at: float | None = None
         self._drive_started_at: float | None = None
+        self._radar_text: str = ''
+        self._collision_wp_text: str = ''
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
         self._left_enc = None
@@ -384,6 +398,8 @@ class MotionControlNode(Node):
         self.create_subscription(String, '/run', self._on_run, 10)
         self.create_subscription(PoseStamped, position_topic, self._on_current_position, 10)
         self.create_subscription(String, waypoint_topic, self._on_waypoint, 10)
+        self.create_subscription(String, radar_sensor_topic, self._on_radar_sensor, 10)
+        self.create_subscription(String, collision_avoiding_waypoint_topic, self._on_collision_waypoint, 10)
 
         self._wheel_state_pub = self.create_publisher(JointState, wheel_state_topic, 10)
 
@@ -424,6 +440,12 @@ class MotionControlNode(Node):
         siny_cosp = 2.0 * (qw * qz + qx * qy)
         cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
         self._current_theta = math.atan2(siny_cosp, cosy_cosp)
+
+    def _on_radar_sensor(self, msg: String) -> None:
+        self._radar_text = msg.data if msg.data else ''
+
+    def _on_collision_waypoint(self, msg: String) -> None:
+        self._collision_wp_text = msg.data if msg.data else ''
 
     def _on_waypoint(self, msg: String) -> None:
         parsed = _parse_waypoint(msg.data if msg.data else '')
@@ -526,8 +548,14 @@ class MotionControlNode(Node):
                 self._pause_until = None
                 self._pause_next_phase = None
 
-        dx = self._target_x - self._current_x
-        dy = self._target_y - self._current_y
+        # Layer 1: use collision-avoiding waypoint when active.
+        _coll_wp = _parse_waypoint(self._collision_wp_text)
+        _effective_target = select_target(target if self._target_x is not None else None, _coll_wp)
+        if _effective_target is None:
+            self._stop(); return
+
+        dx = _effective_target[0] - self._current_x
+        dy = _effective_target[1] - self._current_y
         at_target = (
             abs(dx) <= self._position_tolerance_m
             and abs(dy) <= self._position_tolerance_m
@@ -609,6 +637,12 @@ class MotionControlNode(Node):
             self._heading_settle_until = None
 
         self._begin_nav_motion('drive')
+        _radar = parse_radar_sensor(self._radar_text)
+        if should_emergency_brake(_radar, self._nav_motion_mode, self._emergency_brake_threshold_m):
+            self._left.stop()   # Direct Motor.stop() — preserves _drive_started_at for smooth ramp resume
+            self._right.stop()
+            self._publish_waypoint_status('going')
+            return
         drive_speed = self._drive_pwm()
         self._left.forward(drive_speed)
         self._right.forward(drive_speed)
