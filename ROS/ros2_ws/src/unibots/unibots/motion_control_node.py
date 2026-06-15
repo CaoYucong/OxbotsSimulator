@@ -409,7 +409,7 @@ class MotionControlNode(Node):
             )
 
         phase = int(t) // ROTATE_SWITCH_INTERVAL_S
-        target_left = -ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
+        target_left = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
         target_right = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
         targets = (target_left, target_right)
         if self._rotate_targets != targets:
