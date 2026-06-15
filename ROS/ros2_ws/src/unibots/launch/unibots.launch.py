@@ -71,6 +71,7 @@ def generate_launch_description() -> LaunchDescription:
             executable='motion_control_node',
             name='motion_control_node',
             output='screen',
+            emulate_tty=True,
             parameters=[params],
         ),
         Node(

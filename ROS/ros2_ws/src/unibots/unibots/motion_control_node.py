@@ -30,6 +30,11 @@ Wheel state output (for differential-drive odometry):
   - position: cumulative wheel angle (rad), forward = positive
   - velocity: wheel angular velocity (rad/s)
 
+Motion status output:
+  - Topic: /robot_motion_status (std_msgs/String)
+  - 'moving'  when either motor is being driven (non-zero PWM)
+  - 'stopped' when neither wheel has a drive command
+
 """
 
 import math
@@ -79,7 +84,9 @@ LEFT_WHEEL_JOINT_NAME: str = 'left_wheel_joint'
 RIGHT_WHEEL_JOINT_NAME: str = 'right_wheel_joint'
 ENCODER_DEBUG_HZ: float = 10.0  # how often to print encoder debug
 ROTATE_SWITCH_INTERVAL_S: int = 10  # alternate rotate target every N seconds
-ROTATE_PHASE_TARGET: int = COUNTS_PER_REV *5  # encoder count target per wheel in each phase
+ROTATE_PHASE_TARGET: int = 3000  # encoder count target per wheel in each phase
+MOTION_STATUS_TOPIC: str = '/robot_motion_status'  # 'moving' / 'stopped'
+MOTION_STATUS_HZ: float = 20.0  # how often to publish robot motion status
 
 
 class Motor:
@@ -105,6 +112,11 @@ class Motor:
     @property
     def is_rotating(self) -> bool:
         return self._rotate_rc is not None
+
+    @property
+    def is_active(self) -> bool:
+        """True when this motor is currently being driven (non-zero PWM output)."""
+        return self._a.value > 0.0 or self._b.value > 0.0
 
     def _encoder_count(self) -> int:
         if self._enc is None:
@@ -195,6 +207,8 @@ class MotionControlNode(Node):
         self.declare_parameter('encoder_debug_hz', ENCODER_DEBUG_HZ)
         self.declare_parameter('wheel_state_hz', WHEEL_STATE_HZ)
         self.declare_parameter('wheel_state_topic', WHEEL_JOINT_STATE_TOPIC)
+        self.declare_parameter('motion_status_topic', MOTION_STATUS_TOPIC)
+        self.declare_parameter('motion_status_hz', MOTION_STATUS_HZ)
         time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
         self._counts_per_rev = float(self.get_parameter('counts_per_rev').get_parameter_value().double_value) or COUNTS_PER_REV
         encoder_debug_hz = float(self.get_parameter('encoder_debug_hz').get_parameter_value().double_value) or ENCODER_DEBUG_HZ
@@ -203,9 +217,18 @@ class MotionControlNode(Node):
             self.get_parameter('wheel_state_topic').get_parameter_value().string_value
             or WHEEL_JOINT_STATE_TOPIC
         )
+        motion_status_topic = (
+            self.get_parameter('motion_status_topic').get_parameter_value().string_value
+            or MOTION_STATUS_TOPIC
+        )
+        motion_status_hz = (
+            float(self.get_parameter('motion_status_hz').get_parameter_value().double_value)
+            or MOTION_STATUS_HZ
+        )
 
         self._run_enabled = False
         self._motion_started = False
+        self._last_motion_status: str | None = None
         self._rotate_targets: tuple[int, int] | None = None
         self._start_left_steps = 0
         self._start_right_steps = 0
@@ -237,6 +260,10 @@ class MotionControlNode(Node):
 
         self._wheel_state_pub = self.create_publisher(JointState, wheel_state_topic, 10)
 
+        self._motion_status_pub = self.create_publisher(String, motion_status_topic, 10)
+        status_period = 0.05 if motion_status_hz <= 0.0 else (1.0 / motion_status_hz)
+        self.create_timer(status_period, self._publish_motion_status)
+
         if self._left_enc is not None and self._right_enc is not None:
             period = 0.2 if encoder_debug_hz <= 0.0 else (1.0 / encoder_debug_hz)
             self.create_timer(period, self._print_encoders)
@@ -248,7 +275,8 @@ class MotionControlNode(Node):
             f'left=({LEFT_MOTOR_A},{LEFT_MOTOR_B}) right=({RIGHT_MOTOR_A},{RIGHT_MOTOR_B}), '
             f'every {ROTATE_SWITCH_INTERVAL_S}s alternate left/right rotate to count={ROTATE_PHASE_TARGET}, '
             f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}, '
-            f'wheel_state={wheel_state_topic} @ {wheel_state_hz:.1f} Hz'
+            f'wheel_state={wheel_state_topic} @ {wheel_state_hz:.1f} Hz, '
+            f'motion_status={motion_status_topic} @ {motion_status_hz:.1f} Hz'
         )
 
     def _update_rotates(self) -> None:
@@ -256,6 +284,19 @@ class MotionControlNode(Node):
             return
         self._left.update_rotate()
         self._right.update_rotate()
+
+    def _publish_motion_status(self) -> None:
+        """Publish 'moving' if either motor is being driven, else 'stopped'."""
+        moving = self._left.is_active or self._right.is_active
+        status = 'moving' if moving else 'stopped'
+
+        msg = String()
+        msg.data = status
+        self._motion_status_pub.publish(msg)
+
+        if status != self._last_motion_status:
+            self._last_motion_status = status
+            self.get_logger().info(f'[motion_status] {status}')
 
     def _signed_wheel_counts(self) -> tuple[int, int]:
         """Encoder counts in robot frame (forward motion = positive for both wheels)."""
@@ -368,7 +409,7 @@ class MotionControlNode(Node):
             )
 
         phase = int(t) // ROTATE_SWITCH_INTERVAL_S
-        target_left = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
+        target_left = -ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
         target_right = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
         targets = (target_left, target_right)
         if self._rotate_targets != targets:

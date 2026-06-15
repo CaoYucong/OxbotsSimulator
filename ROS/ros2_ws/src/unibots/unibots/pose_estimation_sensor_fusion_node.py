@@ -9,6 +9,9 @@ Inputs:
   - /wheel_joint_states (sensor_msgs/JointState):
       High-rate (~50 Hz) left/right wheel angle (rad) and angular velocity
       (rad/s) from the encoders. Used to dead-reckon between camera fixes.
+  - /robot_motion_status (std_msgs/String):
+      'moving' or 'stopped' from motion_control_node. Debug logs are emitted
+      only while the robot is stopped.
 
 Output:
   - /current_position (geometry_msgs/PoseStamped):
@@ -17,11 +20,14 @@ Output:
       i.e. take the most recent camera pose and add the relative wheel motion
       accumulated since that camera frame's timestamp.
 
-Geometry:
+Geometry / calibration:
   - Differential drive, both driven wheels are at the REAR.
-  - 488 encoder counts per wheel revolution.
-  - Wheel diameter 47 mm  -> radius 0.0235 m.
-  - Wheel track (distance between the two wheels) 0.19 m.
+  - 488 encoder counts per wheel revolution. The wheel angles arrive in rad and
+    are converted back to counts here so calibration is done in raw counts.
+  - count_average_per_meter: mean of both wheels' count change per 1 m of
+    straight travel (drive straight 1 m, read the average count delta).
+  - count_diff_per_degree: (right_count_change - left_count_change) per 1 deg of
+    in-place rotation (rotate a known angle, divide the count diff by degrees).
   - The robot coordinate origin is NOT on the wheel axle: it sits 40 mm
     forward of the midpoint of the two rear wheels. Odometry is integrated at
     the wheel-axle midpoint and converted to the robot origin on publish.
@@ -34,15 +40,23 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 
-COUNTS_PER_REV: float = 488.0
-WHEEL_DIAMETER_M: float = 0.047
-WHEEL_RADIUS_M: float = WHEEL_DIAMETER_M / 2.0
-WHEEL_TRACK_M: float = 0.19  # distance between the two rear wheels
+COUNTS_PER_REV: float = 488.0  # encoder counts per wheel revolution
+# Calibration constants (measured on the real robot):
+#   count_average_per_meter: mean of both wheels' count change per 1 m of straight travel.
+#   count_diff_per_degree:   (right_count_change - left_count_change) per 1 deg of in-place rotation.
+# Defaults reproduce the previous geometry (radius 0.0235 m, track 0.19 m):
+#   COUNT_AVERAGE_PER_METER = COUNTS_PER_REV / (2*pi*0.0235)
+#   COUNT_DIFF_PER_DEGREE   = COUNT_AVERAGE_PER_METER * 0.19 * (pi/180)
+COUNT_AVERAGE_PER_METER: float = 3333.3333
+COUNT_DIFF_PER_DEGREE: float = 26.9
 ORIGIN_FORWARD_OFFSET_M: float = 0.04  # robot origin is 40mm ahead of the axle midpoint
 ODOM_HISTORY_SEC: float = 3.0
 LEFT_WHEEL_JOINT_NAME: str = 'left_wheel_joint'
 RIGHT_WHEEL_JOINT_NAME: str = 'right_wheel_joint'
+FUSION_DEBUG_HZ: float = 1.0  # how often to log wheel counts + camera/fused pose (Hz)
+ROBOT_MOTION_STATUS_TOPIC: str = '/robot_motion_status'
 
 
 def _yaw_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> float:
@@ -64,12 +78,15 @@ class PoseEstimationSensorFusionNode(Node):
         self.declare_parameter('camera_pose_topic', '/current_position_camera')
         self.declare_parameter('wheel_state_topic', '/wheel_joint_states')
         self.declare_parameter('output_topic', '/current_position')
-        self.declare_parameter('wheel_radius_m', WHEEL_RADIUS_M)
-        self.declare_parameter('wheel_track_m', WHEEL_TRACK_M)
+        self.declare_parameter('counts_per_rev', COUNTS_PER_REV)
+        self.declare_parameter('count_average_per_meter', COUNT_AVERAGE_PER_METER)
+        self.declare_parameter('count_diff_per_degree', COUNT_DIFF_PER_DEGREE)
         self.declare_parameter('origin_forward_offset_m', ORIGIN_FORWARD_OFFSET_M)
         self.declare_parameter('left_wheel_joint', LEFT_WHEEL_JOINT_NAME)
         self.declare_parameter('right_wheel_joint', RIGHT_WHEEL_JOINT_NAME)
         self.declare_parameter('odom_history_sec', ODOM_HISTORY_SEC)
+        self.declare_parameter('fusion_debug_hz', FUSION_DEBUG_HZ)
+        self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
 
         self._camera_topic = (
             self.get_parameter('camera_pose_topic').get_parameter_value().string_value
@@ -83,13 +100,17 @@ class PoseEstimationSensorFusionNode(Node):
             self.get_parameter('output_topic').get_parameter_value().string_value
             or '/current_position'
         )
-        self._wheel_radius = (
-            float(self.get_parameter('wheel_radius_m').get_parameter_value().double_value)
-            or WHEEL_RADIUS_M
+        self._counts_per_rev = (
+            float(self.get_parameter('counts_per_rev').get_parameter_value().double_value)
+            or COUNTS_PER_REV
         )
-        self._wheel_track = (
-            float(self.get_parameter('wheel_track_m').get_parameter_value().double_value)
-            or WHEEL_TRACK_M
+        self._count_avg_per_m = (
+            float(self.get_parameter('count_average_per_meter').get_parameter_value().double_value)
+            or COUNT_AVERAGE_PER_METER
+        )
+        self._count_diff_per_deg = (
+            float(self.get_parameter('count_diff_per_degree').get_parameter_value().double_value)
+            or COUNT_DIFF_PER_DEGREE
         )
         self._origin_offset = float(
             self.get_parameter('origin_forward_offset_m').get_parameter_value().double_value
@@ -107,6 +128,14 @@ class PoseEstimationSensorFusionNode(Node):
             or ODOM_HISTORY_SEC
         )
         self._history_window_ns = int(history_sec * 1e9)
+        fusion_debug_hz = (
+            float(self.get_parameter('fusion_debug_hz').get_parameter_value().double_value)
+            or FUSION_DEBUG_HZ
+        )
+        self._motion_status_topic = (
+            self.get_parameter('robot_motion_status_topic').get_parameter_value().string_value
+            or ROBOT_MOTION_STATUS_TOPIC
+        )
 
         # Free-running wheel-axle-midpoint odometry pose (drifts; corrected by camera).
         self._odom_x = 0.0
@@ -114,6 +143,13 @@ class PoseEstimationSensorFusionNode(Node):
         self._odom_yaw = 0.0  # kept unwrapped/continuous for exact deltas
         self._prev_left_rad: float | None = None
         self._prev_right_rad: float | None = None
+        self._left_rad: float | None = None
+        self._right_rad: float | None = None
+        self._camera_x: float | None = None
+        self._camera_y: float | None = None
+        self._camera_yaw_deg: float | None = None
+        self._fused_yaw_deg: float | None = None
+        self._robot_motion_status: str | None = None
         # History of (stamp_ns, x, y, yaw) for interpolating odom at camera time.
         self._odom_history: deque[tuple[int, float, float, float]] = deque()
 
@@ -129,13 +165,24 @@ class PoseEstimationSensorFusionNode(Node):
         self._pub = self.create_publisher(PoseStamped, self._output_topic, 10)
         self.create_subscription(JointState, self._wheel_topic, self._on_wheel_state, 50)
         self.create_subscription(PoseStamped, self._camera_topic, self._on_camera_pose, 10)
+        self.create_subscription(
+            String, self._motion_status_topic, self._on_robot_motion_status, 10
+        )
+        if fusion_debug_hz > 0.0:
+            self.create_timer(1.0 / fusion_debug_hz, self._log_fusion_debug)
 
         self.get_logger().info(
             'pose_estimation_sensor_fusion started; fusing '
             f'{self._camera_topic} (anchor) + {self._wheel_topic} (odom) -> {self._output_topic}; '
-            f'wheel_radius={self._wheel_radius:.4f}m, track={self._wheel_track:.3f}m, '
-            f'origin_forward_offset={self._origin_offset:.3f}m'
+            f'counts_per_rev={self._counts_per_rev:.1f}, '
+            f'count_average_per_meter={self._count_avg_per_m:.1f}, '
+            f'count_diff_per_degree={self._count_diff_per_deg:.3f}, '
+            f'origin_forward_offset={self._origin_offset:.3f}m, '
+            f'debug_when={self._motion_status_topic}=stopped'
         )
+
+    def _on_robot_motion_status(self, msg: String) -> None:
+        self._robot_motion_status = (msg.data or '').strip().lower()
 
     # ----- wheel odometry -----------------------------------------------------
 
@@ -149,6 +196,8 @@ class PoseEstimationSensorFusionNode(Node):
         if left_rad is None or right_rad is None:
             return
 
+        self._left_rad = left_rad
+        self._right_rad = right_rad
         stamp_ns = self._stamp_to_ns(msg)
 
         if self._prev_left_rad is None or self._prev_right_rad is None:
@@ -157,13 +206,17 @@ class PoseEstimationSensorFusionNode(Node):
             self._record_odom(stamp_ns)
             return
 
-        d_left = (left_rad - self._prev_left_rad) * self._wheel_radius
-        d_right = (right_rad - self._prev_right_rad) * self._wheel_radius
+        # Incoming wheel angles are in rad; convert back to encoder counts so the
+        # calibration constants are expressed directly in counts.
+        rad_to_counts = self._counts_per_rev / (2.0 * math.pi)
+        d_left_count = (left_rad - self._prev_left_rad) * rad_to_counts
+        d_right_count = (right_rad - self._prev_right_rad) * rad_to_counts
         self._prev_left_rad = left_rad
         self._prev_right_rad = right_rad
 
-        d_center = 0.5 * (d_left + d_right)
-        d_yaw = (d_right - d_left) / self._wheel_track
+        d_center = 0.5 * (d_left_count + d_right_count) / self._count_avg_per_m
+        d_yaw_deg = (d_right_count - d_left_count) / self._count_diff_per_deg
+        d_yaw = math.radians(d_yaw_deg)
 
         # Integrate at the heading midpoint (2nd-order exact for constant-curvature arc).
         yaw_mid = self._odom_yaw + 0.5 * d_yaw
@@ -234,6 +287,9 @@ class PoseEstimationSensorFusionNode(Node):
         self._anchor_odom_y = odom_y
         self._anchor_odom_yaw = odom_yaw
         self._anchor_valid = True
+        self._camera_x = ox
+        self._camera_y = oy
+        self._camera_yaw_deg = math.degrees(yaw)
 
         self._publish_fused(self._latest_stamp_ns())
 
@@ -259,6 +315,7 @@ class PoseEstimationSensorFusionNode(Node):
         # Convert the axle-midpoint pose back to the robot origin (40mm forward).
         origin_x = axle_x + self._origin_offset * math.cos(axle_yaw)
         origin_y = axle_y + self._origin_offset * math.sin(axle_yaw)
+        self._fused_yaw_deg = math.degrees(axle_yaw)
 
         qx, qy, qz, qw = _quaternion_from_yaw(axle_yaw)
         out = PoseStamped()
@@ -274,6 +331,35 @@ class PoseEstimationSensorFusionNode(Node):
         self._pub.publish(out)
 
     # ----- helpers ------------------------------------------------------------
+
+    def _rad_to_count(self, rad: float) -> int:
+        return int(round(rad * self._counts_per_rev / (2.0 * math.pi)))
+
+    def _log_fusion_debug(self) -> None:
+        if self._robot_motion_status != 'stopped':
+            return
+        if self._left_rad is None or self._right_rad is None:
+            return
+        left_cnt = self._rad_to_count(self._left_rad)
+        right_cnt = self._rad_to_count(self._right_rad)
+        if self._camera_x is None or self._camera_y is None:
+            camera_xy = 'N/A'
+        else:
+            camera_xy = f'({self._camera_x:.3f}, {self._camera_y:.3f})'
+        cam_yaw = (
+            'N/A'
+            if self._camera_yaw_deg is None
+            else f'{self._camera_yaw_deg:.1f}deg'
+        )
+        fused_yaw = (
+            'N/A'
+            if self._fused_yaw_deg is None
+            else f'{self._fused_yaw_deg:.1f}deg'
+        )
+        self.get_logger().info(
+            f'[fusion] left_count={left_cnt}, right_count={right_cnt}, '
+            f'camera_xy={camera_xy}, camera_yaw={cam_yaw}, fused_yaw={fused_yaw}'
+        )
 
     def _stamp_to_ns(self, msg) -> int:
         stamp = msg.header.stamp
