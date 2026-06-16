@@ -57,6 +57,11 @@ LEFT_WHEEL_JOINT_NAME: str = 'left_wheel_joint'
 RIGHT_WHEEL_JOINT_NAME: str = 'right_wheel_joint'
 FUSION_DEBUG_HZ: float = 1.0  # how often to log wheel counts + camera/fused pose (Hz)
 ROBOT_MOTION_STATUS_TOPIC: str = '/robot_motion_status'
+# While the robot is stopped its true pose is constant, so camera frames can be
+# accumulated and averaged (after outlier rejection) for a far less noisy anchor.
+STOPPED_AVG_OUTLIER_FACTOR: float = 3.0  # MAD multiplier for outlier rejection
+STOPPED_AVG_POS_FLOOR_M: float = 0.01  # don't reject samples within this position spread
+STOPPED_AVG_YAW_FLOOR_DEG: float = 1.0  # don't reject samples within this yaw spread
 
 
 def _yaw_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> float:
@@ -72,6 +77,65 @@ def _quaternion_from_yaw(yaw: float) -> tuple[float, float, float, float]:
 def _normalize_yaw_rad(yaw: float) -> float:
     """Wrap yaw (rad) to (-pi, pi], i.e. ±180 deg."""
     return math.atan2(math.sin(yaw), math.cos(yaw))
+
+
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    if n % 2 == 1:
+        return s[mid]
+    return 0.5 * (s[mid - 1] + s[mid])
+
+
+def _circular_mean_rad(yaws: list[float]) -> float:
+    sin_sum = sum(math.sin(y) for y in yaws)
+    cos_sum = sum(math.cos(y) for y in yaws)
+    return math.atan2(sin_sum, cos_sum)
+
+
+def _robust_average_pose(
+    samples: list[tuple[float, float, float]],
+    pos_floor_m: float,
+    yaw_floor_rad: float,
+    outlier_factor: float,
+) -> tuple[float, float, float, int]:
+    """Outlier-rejected average of (x, y, yaw) camera poses.
+
+    Returns (mean_x, mean_y, mean_yaw, kept_count). Outliers are detected with a
+    robust MAD-style test on both position (euclidean distance from the median
+    point) and yaw (angular distance from the circular mean); a sample must pass
+    both tests to be kept.
+    """
+    n = len(samples)
+    xs = [s[0] for s in samples]
+    ys = [s[1] for s in samples]
+    yaws = [s[2] for s in samples]
+    if n < 3:
+        return sum(xs) / n, sum(ys) / n, _circular_mean_rad(yaws), n
+
+    median_x = _median(xs)
+    median_y = _median(ys)
+    pos_dists = [math.hypot(x - median_x, y - median_y) for x, y in zip(xs, ys)]
+    pos_thresh = max(_median(pos_dists) * outlier_factor, pos_floor_m)
+
+    yaw_center = _circular_mean_rad(yaws)
+    yaw_dists = [abs(_normalize_yaw_rad(y - yaw_center)) for y in yaws]
+    yaw_thresh = max(_median(yaw_dists) * outlier_factor, yaw_floor_rad)
+
+    kept = [
+        s
+        for s, pd, yd in zip(samples, pos_dists, yaw_dists)
+        if pd <= pos_thresh and yd <= yaw_thresh
+    ]
+    if not kept:
+        kept = samples
+
+    k = len(kept)
+    kx = sum(s[0] for s in kept) / k
+    ky = sum(s[1] for s in kept) / k
+    kyaw = _circular_mean_rad([s[2] for s in kept])
+    return kx, ky, kyaw, k
 
 
 class PoseEstimationSensorFusionNode(Node):
@@ -92,6 +156,9 @@ class PoseEstimationSensorFusionNode(Node):
         self.declare_parameter('odom_history_sec', ODOM_HISTORY_SEC)
         self.declare_parameter('fusion_debug_hz', FUSION_DEBUG_HZ)
         self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
+        self.declare_parameter('stopped_avg_outlier_factor', STOPPED_AVG_OUTLIER_FACTOR)
+        self.declare_parameter('stopped_avg_pos_floor_m', STOPPED_AVG_POS_FLOOR_M)
+        self.declare_parameter('stopped_avg_yaw_floor_deg', STOPPED_AVG_YAW_FLOOR_DEG)
 
         self._camera_topic = (
             self.get_parameter('camera_pose_topic').get_parameter_value().string_value
@@ -141,6 +208,18 @@ class PoseEstimationSensorFusionNode(Node):
             self.get_parameter('robot_motion_status_topic').get_parameter_value().string_value
             or ROBOT_MOTION_STATUS_TOPIC
         )
+        self._stopped_avg_outlier_factor = (
+            float(self.get_parameter('stopped_avg_outlier_factor').get_parameter_value().double_value)
+            or STOPPED_AVG_OUTLIER_FACTOR
+        )
+        self._stopped_avg_pos_floor_m = (
+            float(self.get_parameter('stopped_avg_pos_floor_m').get_parameter_value().double_value)
+            or STOPPED_AVG_POS_FLOOR_M
+        )
+        self._stopped_avg_yaw_floor_rad = math.radians(
+            float(self.get_parameter('stopped_avg_yaw_floor_deg').get_parameter_value().double_value)
+            or STOPPED_AVG_YAW_FLOOR_DEG
+        )
 
         # Free-running wheel-axle-midpoint odometry pose (drifts; corrected by camera).
         self._odom_x = 0.0
@@ -155,6 +234,12 @@ class PoseEstimationSensorFusionNode(Node):
         self._camera_yaw_deg: float | None = None
         self._fused_yaw_deg: float | None = None
         self._robot_motion_status: str | None = None
+        # Camera (robot-origin) poses collected while the robot is stopped; averaged
+        # (with outlier rejection) into the anchor. Cleared when the robot moves
+        # because the true pose then changes.
+        self._stopped_camera_samples: list[tuple[float, float, float]] = []
+        self._stopped_sample_count: int = 0
+        self._stopped_kept_count: int = 0
         # History of (stamp_ns, x, y, yaw) for interpolating odom at camera time.
         self._odom_history: deque[tuple[int, float, float, float]] = deque()
 
@@ -187,7 +272,13 @@ class PoseEstimationSensorFusionNode(Node):
         )
 
     def _on_robot_motion_status(self, msg: String) -> None:
-        self._robot_motion_status = (msg.data or '').strip().lower()
+        status = (msg.data or '').strip().lower()
+        # The robot moved, so the pose averaged while stopped is no longer valid.
+        if status == 'moving' and self._stopped_camera_samples:
+            self._stopped_camera_samples.clear()
+            self._stopped_sample_count = 0
+            self._stopped_kept_count = 0
+        self._robot_motion_status = status
 
     # ----- wheel odometry -----------------------------------------------------
 
@@ -277,6 +368,19 @@ class PoseEstimationSensorFusionNode(Node):
         if not all(math.isfinite(v) for v in (ox, oy, yaw)):
             return
 
+        # While stopped the true pose is constant: accumulate camera frames and use
+        # their outlier-rejected average as the anchor instead of a single noisy fix.
+        if self._robot_motion_status == 'stopped':
+            self._stopped_camera_samples.append((ox, oy, yaw))
+            ox, oy, yaw, kept = _robust_average_pose(
+                self._stopped_camera_samples,
+                self._stopped_avg_pos_floor_m,
+                self._stopped_avg_yaw_floor_rad,
+                self._stopped_avg_outlier_factor,
+            )
+            self._stopped_sample_count = len(self._stopped_camera_samples)
+            self._stopped_kept_count = kept
+
         # Camera gives the robot-origin pose; convert to the wheel-axle midpoint,
         # which is the point odometry integrates.
         axle_x = ox - self._origin_offset * math.cos(yaw)
@@ -363,7 +467,8 @@ class PoseEstimationSensorFusionNode(Node):
         )
         self.get_logger().info(
             f'[fusion] left_count={left_cnt}, right_count={right_cnt}, '
-            f'camera_xy={camera_xy}, camera_yaw={cam_yaw}, fused_yaw={fused_yaw}'
+            f'camera_xy={camera_xy}, camera_yaw={cam_yaw}, fused_yaw={fused_yaw}, '
+            f'cam_samples={self._stopped_kept_count}/{self._stopped_sample_count}'
         )
 
     def _stamp_to_ns(self, msg) -> int:

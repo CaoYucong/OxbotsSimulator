@@ -40,17 +40,18 @@ Waypoint following:
       /current_position (geometry_msgs/PoseStamped) -> robot x, y, heading
       /dynamic_waypoint (std_msgs/String '(x, y, theta_deg)') -> target x, y
   - Behavior (heading-gated drive toward each waypoint):
-      * Rotate in place whenever |heading error| exceeds tolerance.
+      * Rotate in place until |heading error| is within heading_tolerance_deg (1 deg).
       * After heading enters tolerance, pause 1 s; if heading drifts out during
         that interval, rotate again instead of driving forward.
-      * Drive forward only while |heading error| is within tolerance; re-rotate
-        immediately if heading drifts out while moving.
+      * Drive forward while moving; only stop to re-rotate when the target's lateral
+        offset in the robot frame (|y_robot|) exceeds heading_lateral_tolerance_m.
       * Pause: publish 'stopped', wait 1 s, then mark the waypoint 'reached'.
       * Dwell: publish 'stopped', wait 5 s, then accept the next /dynamic_waypoint.
-      * Stop once |dx| and |dy| to the target are both within +/-0.1 m.
+      * Stop once the target in robot frame lies on forward axis in [0, -0.2] m
+        and |lateral offset| <= 0.1 m.
   - Waypoint status output:
       /waypoint_status (std_msgs/String)
-        'reached' when |dx| and |dy| are both within +/-0.1 m, else 'going'.
+        'reached' when the robot-frame stop band is satisfied, else 'going'.
 
 """
 
@@ -92,9 +93,9 @@ RIGHT_ENC_B: int = 23
 FULL_SPEED: float = 1.0  # PWM duty cycle for full-speed forward/reverse
 ROTATE_RAMP_S: float = 0.5  # soft-start ramp duration after rotate() begins
 ROTATE_RAMP_START_SPEED: float = 0.2  # PWM duty cycle at rotate() start
-ROTATE_SLOW_SPEED: float = 0.1  # PWM duty cycle when close to target
+ROTATE_SLOW_SPEED: float = 0.05  # PWM duty cycle when close to target
 ROTATE_SLOWDOWN_COUNTS: int = 30  # switch to slow speed when |encoder error| < this
-ROTATE_HEADING_SLOWDOWN_DEG: float = 30.0  # switch to slow speed when |heading error| < this
+ROTATE_HEADING_SLOWDOWN_DEG: float = 45.0  # switch to slow speed when |heading error| < this
 ROTATE_POLL_S: float = 0.01  # closed-loop polling interval for rotate()
 
 COUNTS_PER_REV: float = 488.0  # quadrature counts per output-shaft revolution
@@ -111,11 +112,18 @@ MOTION_STATUS_HZ: float = 20.0  # how often to publish robot motion status
 POSITION_TOPIC: str = '/current_position'  # geometry_msgs/PoseStamped robot pose
 WAYPOINT_TOPIC: str = '/dynamic_waypoint'  # std_msgs/String '(x, y, theta_deg)'
 WAYPOINT_STATUS_TOPIC: str = '/waypoint_status'  # 'going' / 'reached'
-CONTROL_HZ: float = 10.0  # waypoint-following control loop rate
+CONTROL_HZ: float = 50.0  # waypoint-following control loop rate
 DRIVE_SPEED: float = 0.05  # PWM duty cycle when driving forward toward the waypoint
 ROTATE_SPEED: float = 0.05  # PWM duty cycle when rotating in place to face the waypoint
-HEADING_TOLERANCE_DEG: float = 1.0  # face the target when |heading error| <= this
-POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |dx| and |dy| are both <= this
+HEADING_TOLERANCE_DEG: float = 1.0  # rotate in place until |heading error| <= this
+# While already driving forward, only stop to re-rotate if the target's lateral
+# offset in the robot frame (|y_robot|) exceeds this band (meters). This hysteresis
+# keeps the robot moving straight instead of re-calibrating for small drift; the
+# in-place rotation accuracy stays at HEADING_TOLERANCE_DEG (1 deg).
+HEADING_LATERAL_TOLERANCE_M: float = 0.05
+POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |y_robot| <= this (lateral, meters)
+LONGITUDINAL_STOP_MIN_M: float = -0.2  # 'reached' when x_robot >= this (meters)
+LONGITUDINAL_STOP_MAX_M: float = 0.0  # 'reached' when x_robot <= this (meters)
 PHASE_PAUSE_S: float = 1.0  # stopped dwell after heading aligns (and after drive)
 WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next target
 
@@ -123,6 +131,15 @@ WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next t
 def _normalize_angle(angle: float) -> float:
     """Wrap an angle (rad) to the range (-pi, pi]."""
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _world_to_robot(dx: float, dy: float, theta: float) -> tuple[float, float]:
+    """Express world-frame delta (target - robot) in robot frame (x forward, y left)."""
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    x_forward = dx * cos_t + dy * sin_t
+    y_left = -dx * sin_t + dy * cos_t
+    return x_forward, y_left
 
 
 def _ramp_speed(started_at: float | None, cruise: float) -> float:
@@ -272,7 +289,10 @@ class MotionControlNode(Node):
         self.declare_parameter('drive_speed', DRIVE_SPEED)
         self.declare_parameter('rotate_speed', ROTATE_SPEED)
         self.declare_parameter('heading_tolerance_deg', HEADING_TOLERANCE_DEG)
+        self.declare_parameter('heading_lateral_tolerance_m', HEADING_LATERAL_TOLERANCE_M)
         self.declare_parameter('position_tolerance_m', POSITION_TOLERANCE_M)
+        self.declare_parameter('longitudinal_stop_min_m', LONGITUDINAL_STOP_MIN_M)
+        self.declare_parameter('longitudinal_stop_max_m', LONGITUDINAL_STOP_MAX_M)
         self.declare_parameter('phase_pause_s', PHASE_PAUSE_S)
         self.declare_parameter('waypoint_reached_pause_s', WAYPOINT_REACHED_PAUSE_S)
         time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
@@ -319,9 +339,19 @@ class MotionControlNode(Node):
             float(self.get_parameter('heading_tolerance_deg').get_parameter_value().double_value)
             or HEADING_TOLERANCE_DEG
         )
+        self._heading_lateral_tolerance_m = (
+            float(self.get_parameter('heading_lateral_tolerance_m').get_parameter_value().double_value)
+            or HEADING_LATERAL_TOLERANCE_M
+        )
         self._position_tolerance_m = (
             float(self.get_parameter('position_tolerance_m').get_parameter_value().double_value)
             or POSITION_TOLERANCE_M
+        )
+        self._longitudinal_stop_min_m = float(
+            self.get_parameter('longitudinal_stop_min_m').get_parameter_value().double_value
+        )
+        self._longitudinal_stop_max_m = float(
+            self.get_parameter('longitudinal_stop_max_m').get_parameter_value().double_value
         )
         self._phase_pause_s = (
             float(self.get_parameter('phase_pause_s').get_parameter_value().double_value)
@@ -405,7 +435,10 @@ class MotionControlNode(Node):
             f'motion_control_node started (MDD3A dual-PWM): '
             f'left=({LEFT_MOTOR_A},{LEFT_MOTOR_B}) right=({RIGHT_MOTOR_A},{RIGHT_MOTOR_B}), '
             f'following {waypoint_topic} from {position_topic} @ {control_hz:.1f} Hz '
-            f'(heading_tol={self._heading_tolerance_deg:.1f}deg, pos_tol={self._position_tolerance_m:.2f}m, '
+            f'(heading_tol={self._heading_tolerance_deg:.1f}deg, '
+            f'heading_lateral_tol={self._heading_lateral_tolerance_m:.2f}m, '
+            f'lateral_tol={self._position_tolerance_m:.2f}m, '
+            f'long_stop=[{self._longitudinal_stop_min_m:.2f}, {self._longitudinal_stop_max_m:.2f}]m, '
             f'drive={self._drive_speed:.2f}, rotate={self._rotate_speed:.2f}), '
             f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}, '
             f'wheel_state={wheel_state_topic} @ {wheel_state_hz:.1f} Hz, '
@@ -452,8 +485,22 @@ class MotionControlNode(Node):
         desired_heading = math.atan2(dy, dx)
         return _normalize_angle(desired_heading - self._current_theta)
 
+    def _at_target(self, dx: float, dy: float) -> bool:
+        """True when target lies in robot-frame stop band (x forward in [min, max], |y| <= lateral tol)."""
+        x_forward, y_left = _world_to_robot(dx, dy, self._current_theta)
+        return (
+            self._longitudinal_stop_min_m <= x_forward <= self._longitudinal_stop_max_m
+            and abs(y_left) <= self._position_tolerance_m
+        )
+
     def _heading_within_tolerance(self, dx: float, dy: float) -> bool:
+        """True when |heading error| to the target is within heading_tolerance_deg."""
         return abs(self._heading_error_rad(dx, dy)) <= math.radians(self._heading_tolerance_deg)
+
+    def _lateral_within_tolerance(self, dx: float, dy: float) -> bool:
+        """True when the target's lateral offset in the robot frame is within tolerance."""
+        _, y_left = _world_to_robot(dx, dy, self._current_theta)
+        return abs(y_left) <= self._heading_lateral_tolerance_m
 
     def _heading_rotate_pwm(self, heading_error: float) -> float:
         error_deg = abs(math.degrees(heading_error))
@@ -528,10 +575,7 @@ class MotionControlNode(Node):
 
         dx = self._target_x - self._current_x
         dy = self._target_y - self._current_y
-        at_target = (
-            abs(dx) <= self._position_tolerance_m
-            and abs(dy) <= self._position_tolerance_m
-        )
+        at_target = self._at_target(dx, dy)
 
         if self._motion_phase == 'pause':
             self._stop()
@@ -587,7 +631,17 @@ class MotionControlNode(Node):
             return
 
         heading_error = self._heading_error_rad(dx, dy)
-        if not self._heading_within_tolerance(dx, dy):
+        # In-place rotation aligns precisely to heading_tolerance_deg (1 deg). While
+        # already driving straight, use the looser lateral band (|y_robot| <=
+        # heading_lateral_tolerance_m) so the robot only stops to re-rotate when it
+        # has actually drifted off-track, instead of re-calibrating for small drift.
+        already_driving = self._nav_motion_mode == 'drive'
+        aligned = (
+            self._lateral_within_tolerance(dx, dy)
+            if already_driving
+            else self._heading_within_tolerance(dx, dy)
+        )
+        if not aligned:
             self._needs_heading_settle = True
             self._heading_settle_until = None
             self._begin_nav_motion('rotate')

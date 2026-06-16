@@ -20,6 +20,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
+ROBOT_MOTION_STATUS_TOPIC: str = '/robot_motion_status'
+
 
 class BallDetectionNode(Node):
     def __init__(self) -> None:
@@ -55,6 +57,7 @@ class BallDetectionNode(Node):
         self.declare_parameter('metal_ball_center_height_m', 0.100)
         self.declare_parameter('camera_offset_x_robot', 0.105)
         self.declare_parameter('camera_offset_y_robot', 0.0)
+        self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
 
         front_camera_topic = self.get_parameter('front_camera_topic').get_parameter_value().string_value
         self._ball_detection_enabled = bool(
@@ -122,6 +125,10 @@ class BallDetectionNode(Node):
         self._camera_offset_y_robot = float(
             self.get_parameter('camera_offset_y_robot').get_parameter_value().double_value
         )
+        self._motion_status_topic = (
+            self.get_parameter('robot_motion_status_topic').get_parameter_value().string_value
+            or ROBOT_MOTION_STATUS_TOPIC
+        )
         self._crop_y_start = 10
 
         if self._request_timeout_sec <= 0.0:
@@ -165,6 +172,7 @@ class BallDetectionNode(Node):
         self._front_image_buffer: dict[int, np.ndarray] = {}
         # A matched (image, cam_world, r_wc) pair ready for the next infer tick.
         self._pending_infer_item: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None
+        self._robot_motion_status: str | None = None
 
         self._pub_ball_detection_image = self.create_publisher(Image, ball_detection_image_topic, 10)
         self._pub_ball_pose = self.create_publisher(PoseStamped, self._ball_pose_topic, 10)
@@ -178,6 +186,9 @@ class BallDetectionNode(Node):
         self.create_subscription(String, waypoint_type_topic, self._on_waypoint_type, 10)
         self._run_enabled: bool = False
         self.create_subscription(String, '/run', self._on_run, 10)
+        self.create_subscription(
+            String, self._motion_status_topic, self._on_robot_motion_status, 10
+        )
 
         self.create_timer(1.0 / self._infer_hz, self._infer_tick)
 
@@ -191,7 +202,8 @@ class BallDetectionNode(Node):
             f'infer_image_height={self._infer_image_height}, '
             f'crop_y_start={self._crop_y_start}, '
             f'camera_pose_topic={self._camera_pose_topic}, '
-            f'visible_balls_topic={self._visible_balls_topic}'
+            f'visible_balls_topic={self._visible_balls_topic}, '
+            f'infer_when={self._motion_status_topic}=stopped'
         )
         self._debug(
             'debug config: '
@@ -229,7 +241,27 @@ class BallDetectionNode(Node):
             self._last_perf_log[key] = now
             self.get_logger().info(f'[perf] {message}')
 
+    def _robot_is_stopped(self) -> bool:
+        return self._robot_motion_status == 'stopped'
+
+    def _clear_image_state(self) -> None:
+        self._latest_front_image = None
+        self._latest_front_stamp = None
+        self._front_image_buffer.clear()
+        self._pending_infer_item = None
+        self._camera_pose_history_entries.clear()
+
+    def _on_robot_motion_status(self, msg: String) -> None:
+        status = (msg.data or '').strip().lower()
+        if status == self._robot_motion_status:
+            return
+        self._robot_motion_status = status
+        if status != 'stopped':
+            self._clear_image_state()
+
     def _on_front_image(self, msg: Image) -> None:
+        if not self._robot_is_stopped():
+            return
         try:
             full_image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             self._latest_front_stamp = msg.header.stamp
@@ -279,6 +311,8 @@ class BallDetectionNode(Node):
         )
 
     def _on_camera_pose(self, msg: PoseStamped) -> None:
+        if not self._robot_is_stopped():
+            return
         x = float(msg.pose.position.x)
         y = float(msg.pose.position.y)
         z = float(msg.pose.position.z)
@@ -301,6 +335,8 @@ class BallDetectionNode(Node):
             self._pending_infer_item = (image, cam_world, r_wc)
 
     def _on_camera_pose_history(self, msg: PathMsg) -> None:
+        if not self._robot_is_stopped():
+            return
         entries: list[tuple[int, np.ndarray, np.ndarray]] = []
         for p in msg.poses:
             stamp_ns = int(p.header.stamp.sec) * 1_000_000_000 + int(p.header.stamp.nanosec)
@@ -623,6 +659,13 @@ class BallDetectionNode(Node):
 
     def _infer_tick(self) -> None:
         tick_start = time.perf_counter()
+        if not self._robot_is_stopped():
+            self._debug_throttled(
+                'robot_moving',
+                f'infer tick skipped: {self._motion_status_topic}!=stopped '
+                f'({self._robot_motion_status!r})',
+            )
+            return
         if self._waypoint_type == 'home':
             self._latest_detections = []
             self._publish_sticky_detection_image_or_fallback('home - no inference')
