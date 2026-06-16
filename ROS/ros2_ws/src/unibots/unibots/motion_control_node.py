@@ -47,7 +47,13 @@ Waypoint following:
       * Drive forward with proportional differential steering (drive_heading_kp) to
         correct small heading drift without stopping.
       * Only stop to re-rotate in place when |heading error| exceeds
-        drive_rotate_heading_deg while already driving.
+        drive_rotate_heading_deg while driving (far) or near_target_heading_tolerance_deg
+        when within near_target_distance_m.
+      * Within near_target_distance_m, use near_target_heading_tolerance_deg (wider than
+        heading_tolerance_deg) for align / re-rotate so small noisy errors do not hunt,
+        but large errors (e.g. target behind) still trigger in-place rotation.
+      * Near-target in-place rotate PWM is scaled by near_target_rotate_pwm_scale (lower
+        effective P-gain) to reduce overshoot on large apparent heading errors.
       * Pause: publish 'stopped', wait 1 s, then mark the waypoint 'reached'.
       * Dwell: publish 'stopped', wait 5 s, then accept the next /dynamic_waypoint.
       * Stop once the target in robot frame lies on forward axis in [0, -0.2] m
@@ -126,6 +132,9 @@ DRIVE_HEADING_KP: float = 0.8  # differential PWM per rad of heading error while
 DRIVE_HEADING_MAX_DIFF: float = 0.35  # cap |left_pwm - right_pwm| during drive correction
 DRIVE_ROTATE_HEADING_DEG: float = 15.0  # stop and in-place rotate if |error| exceeds this while driving
 HEADING_TOLERANCE_DEG: float = 1.0  # rotate in place until |heading error| <= this
+NEAR_TARGET_DISTANCE_M: float = 0.20  # use near_target_heading_tolerance below this range (0 disables)
+NEAR_TARGET_HEADING_TOLERANCE_DEG: float = 10.0  # wider align band when near the target
+NEAR_TARGET_ROTATE_PWM_SCALE: float = 0.5  # scale in-place rotate PWM when near (1 = same as far)
 POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |y_robot| <= this (lateral, meters)
 LONGITUDINAL_STOP_MIN_M: float = -0.2  # 'reached' when x_robot >= this (meters)
 LONGITUDINAL_STOP_MAX_M: float = 0.0  # 'reached' when x_robot <= this (meters)
@@ -319,6 +328,9 @@ class MotionControlNode(Node):
         self.declare_parameter('rotate_direction_flip_deg', ROTATE_DIRECTION_FLIP_DEG)
         self.declare_parameter('rotate_pwm_slew_per_s', ROTATE_PWM_SLEW_PER_S)
         self.declare_parameter('heading_tolerance_deg', HEADING_TOLERANCE_DEG)
+        self.declare_parameter('near_target_distance_m', NEAR_TARGET_DISTANCE_M)
+        self.declare_parameter('near_target_heading_tolerance_deg', NEAR_TARGET_HEADING_TOLERANCE_DEG)
+        self.declare_parameter('near_target_rotate_pwm_scale', NEAR_TARGET_ROTATE_PWM_SCALE)
         self.declare_parameter('position_tolerance_m', POSITION_TOLERANCE_M)
         self.declare_parameter('longitudinal_stop_min_m', LONGITUDINAL_STOP_MIN_M)
         self.declare_parameter('longitudinal_stop_max_m', LONGITUDINAL_STOP_MAX_M)
@@ -401,6 +413,18 @@ class MotionControlNode(Node):
         self._heading_tolerance_deg = (
             float(self.get_parameter('heading_tolerance_deg').get_parameter_value().double_value)
             or HEADING_TOLERANCE_DEG
+        )
+        self._near_target_distance_m = float(
+            self.get_parameter('near_target_distance_m').get_parameter_value().double_value
+        )
+        self._near_target_heading_tolerance_deg = (
+            float(
+                self.get_parameter('near_target_heading_tolerance_deg').get_parameter_value().double_value
+            )
+            or NEAR_TARGET_HEADING_TOLERANCE_DEG
+        )
+        self._near_target_rotate_pwm_scale = float(
+            self.get_parameter('near_target_rotate_pwm_scale').get_parameter_value().double_value
         )
         self._position_tolerance_m = (
             float(self.get_parameter('position_tolerance_m').get_parameter_value().double_value)
@@ -498,6 +522,9 @@ class MotionControlNode(Node):
             f'left=({LEFT_MOTOR_A},{LEFT_MOTOR_B}) right=({RIGHT_MOTOR_A},{RIGHT_MOTOR_B}), '
             f'following {waypoint_topic} from {position_topic} @ {control_hz:.1f} Hz '
             f'(heading_tol={self._heading_tolerance_deg:.1f}deg, '
+            f'near_dist={self._near_target_distance_m:.2f}m@'
+            f'{self._near_target_heading_tolerance_deg:.1f}deg, '
+            f'near_rotate_scale={self._near_target_rotate_pwm_scale:.2f}, '
             f'drive_rotate={self._drive_rotate_heading_deg:.1f}deg, '
             f'lateral_tol={self._position_tolerance_m:.2f}m, '
             f'long_stop=[{self._longitudinal_stop_min_m:.2f}, {self._longitudinal_stop_max_m:.2f}]m, '
@@ -562,17 +589,32 @@ class MotionControlNode(Node):
             and abs(y_left) <= self._position_tolerance_m
         )
 
-    def _needs_drive_rotate(self, heading_error: float) -> bool:
-        """True when |heading error| is large enough to require in-place rotation while driving."""
-        if self._drive_rotate_heading_deg <= 0.0:
+    def _is_near_target(self, dx: float, dy: float) -> bool:
+        """True when the target is close enough to use the relaxed heading tolerance."""
+        if self._near_target_distance_m <= 0.0:
             return False
-        return abs(math.degrees(heading_error)) > self._drive_rotate_heading_deg
+        return math.hypot(dx, dy) < self._near_target_distance_m
+
+    def _heading_tolerance_deg_for(self, dx: float, dy: float) -> float:
+        if self._is_near_target(dx, dy):
+            return self._near_target_heading_tolerance_deg
+        return self._heading_tolerance_deg
+
+    def _needs_drive_rotate(self, heading_error: float, dx: float, dy: float) -> bool:
+        """True when |heading error| requires in-place rotation while driving."""
+        if self._is_near_target(dx, dy):
+            limit = self._near_target_heading_tolerance_deg
+        else:
+            limit = self._drive_rotate_heading_deg
+        if limit <= 0.0:
+            return False
+        return abs(math.degrees(heading_error)) > limit
 
     def _heading_rotate_aligned(self, dx: float, dy: float) -> bool:
         """Latched heading align with hysteresis to avoid hunting at the tolerance edge."""
         error_abs_deg = abs(math.degrees(self._heading_error_rad(dx, dy)))
-        enter_tol = self._heading_tolerance_deg
-        exit_tol = self._heading_tolerance_deg + self._rotate_align_hysteresis_deg
+        enter_tol = self._heading_tolerance_deg_for(dx, dy)
+        exit_tol = enter_tol + self._rotate_align_hysteresis_deg
         if not self._heading_align_latched:
             if error_abs_deg <= enter_tol:
                 self._heading_align_latched = True
@@ -602,8 +644,12 @@ class MotionControlNode(Node):
         self._rotate_last_cmd = cmd
         return cmd
 
-    def _heading_rotate_command(self, heading_error: float) -> float:
-        """Signed PWM for in-place heading rotation (positive = CCW / turn left)."""
+    def _heading_rotate_command(self, heading_error: float, dx: float, dy: float) -> float:
+        """Signed PWM for in-place heading rotation (positive = CCW / turn left).
+
+        Proximity PWM is proportional (saturated) in |error|; near the target the output
+        is scaled by near_target_rotate_pwm_scale to reduce overshoot.
+        """
         error_deg = math.degrees(heading_error)
         error_abs_deg = abs(error_deg)
 
@@ -615,6 +661,8 @@ class MotionControlNode(Node):
         )
         ramp = _ramp_speed(self._rotate_started_at, self._rotate_pwm_high)
         pwm_cap = min(proximity, ramp)
+        if self._is_near_target(dx, dy) and self._near_target_rotate_pwm_scale < 1.0:
+            pwm_cap *= max(0.0, self._near_target_rotate_pwm_scale)
         if pwm_cap <= 0.0:
             self._rotate_last_cmd = 0.0
             return 0.0
@@ -650,8 +698,8 @@ class MotionControlNode(Node):
         elif mode == 'drive':
             self._drive_started_at = now
 
-    def _rotate_toward_heading(self, heading_error: float) -> None:
-        cmd = self._heading_rotate_command(heading_error)
+    def _rotate_toward_heading(self, heading_error: float, dx: float, dy: float) -> None:
+        cmd = self._heading_rotate_command(heading_error, dx, dy)
         if cmd == 0.0:
             self._left.stop()
             self._right.stop()
@@ -762,19 +810,19 @@ class MotionControlNode(Node):
             return
 
         heading_error = self._heading_error_rad(dx, dy)
-        # Initial in-place rotation aligns to heading_tolerance_deg. While driving,
-        # small heading drift is corrected via differential steering; only stop to
-        # re-rotate when |heading error| exceeds drive_rotate_heading_deg.
+        # In-place rotation aligns to heading_tolerance_deg (wider near the target).
+        # While driving, small drift is corrected via differential steering; re-rotate
+        # only when |heading error| exceeds the active tolerance band.
         already_driving = self._nav_motion_mode == 'drive'
         if already_driving:
-            aligned = not self._needs_drive_rotate(heading_error)
+            aligned = not self._needs_drive_rotate(heading_error, dx, dy)
         else:
             aligned = self._heading_rotate_aligned(dx, dy)
         if not aligned:
             self._needs_heading_settle = True
             self._heading_settle_until = None
             self._begin_nav_motion('rotate')
-            self._rotate_toward_heading(heading_error)
+            self._rotate_toward_heading(heading_error, dx, dy)
             return
 
         if self._needs_heading_settle:
