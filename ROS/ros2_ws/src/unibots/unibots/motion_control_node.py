@@ -44,8 +44,10 @@ Waypoint following:
         within heading_tolerance_deg (1 deg).
       * After heading enters tolerance, pause 1 s; if heading drifts out during
         that interval, rotate again instead of driving forward.
-      * Drive forward while moving; only stop to re-rotate when the target's lateral
-        offset in the robot frame (|y_robot|) exceeds heading_lateral_tolerance_m.
+      * Drive forward with proportional differential steering (drive_heading_kp) to
+        correct small heading drift without stopping.
+      * Only stop to re-rotate in place when |heading error| exceeds
+        drive_rotate_heading_deg while already driving.
       * Pause: publish 'stopped', wait 1 s, then mark the waypoint 'reached'.
       * Dwell: publish 'stopped', wait 5 s, then accept the next /dynamic_waypoint.
       * Stop once the target in robot frame lies on forward axis in [0, -0.2] m
@@ -120,12 +122,10 @@ WAYPOINT_TOPIC: str = '/dynamic_waypoint'  # std_msgs/String '(x, y, theta_deg)'
 WAYPOINT_STATUS_TOPIC: str = '/waypoint_status'  # 'going' / 'reached'
 CONTROL_HZ: float = 50.0  # waypoint-following control loop rate
 DRIVE_SPEED: float = 0.05  # PWM duty cycle when driving forward toward the waypoint
+DRIVE_HEADING_KP: float = 0.8  # differential PWM per rad of heading error while driving
+DRIVE_HEADING_MAX_DIFF: float = 0.35  # cap |left_pwm - right_pwm| during drive correction
+DRIVE_ROTATE_HEADING_DEG: float = 15.0  # stop and in-place rotate if |error| exceeds this while driving
 HEADING_TOLERANCE_DEG: float = 1.0  # rotate in place until |heading error| <= this
-# While already driving forward, only stop to re-rotate if the target's lateral
-# offset in the robot frame (|y_robot|) exceeds this band (meters). This hysteresis
-# keeps the robot moving straight instead of re-calibrating for small drift; the
-# in-place rotation accuracy stays at HEADING_TOLERANCE_DEG (1 deg).
-HEADING_LATERAL_TOLERANCE_M: float = 0.05
 POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |y_robot| <= this (lateral, meters)
 LONGITUDINAL_STOP_MIN_M: float = -0.2  # 'reached' when x_robot >= this (meters)
 LONGITUDINAL_STOP_MAX_M: float = 0.0  # 'reached' when x_robot <= this (meters)
@@ -309,6 +309,9 @@ class MotionControlNode(Node):
         self.declare_parameter('waypoint_status_topic', WAYPOINT_STATUS_TOPIC)
         self.declare_parameter('control_hz', CONTROL_HZ)
         self.declare_parameter('drive_speed', DRIVE_SPEED)
+        self.declare_parameter('drive_heading_kp', DRIVE_HEADING_KP)
+        self.declare_parameter('drive_heading_max_diff', DRIVE_HEADING_MAX_DIFF)
+        self.declare_parameter('drive_rotate_heading_deg', DRIVE_ROTATE_HEADING_DEG)
         self.declare_parameter('rotate_heading_slowdown_deg', ROTATE_HEADING_SLOWDOWN_DEG)
         self.declare_parameter('rotate_pwm_high', ROTATE_PWM_HIGH)
         self.declare_parameter('rotate_pwm_min', ROTATE_PWM_MIN)
@@ -316,7 +319,6 @@ class MotionControlNode(Node):
         self.declare_parameter('rotate_direction_flip_deg', ROTATE_DIRECTION_FLIP_DEG)
         self.declare_parameter('rotate_pwm_slew_per_s', ROTATE_PWM_SLEW_PER_S)
         self.declare_parameter('heading_tolerance_deg', HEADING_TOLERANCE_DEG)
-        self.declare_parameter('heading_lateral_tolerance_m', HEADING_LATERAL_TOLERANCE_M)
         self.declare_parameter('position_tolerance_m', POSITION_TOLERANCE_M)
         self.declare_parameter('longitudinal_stop_min_m', LONGITUDINAL_STOP_MIN_M)
         self.declare_parameter('longitudinal_stop_max_m', LONGITUDINAL_STOP_MAX_M)
@@ -358,6 +360,18 @@ class MotionControlNode(Node):
             float(self.get_parameter('drive_speed').get_parameter_value().double_value)
             or DRIVE_SPEED
         )
+        self._drive_heading_kp = (
+            float(self.get_parameter('drive_heading_kp').get_parameter_value().double_value)
+            or DRIVE_HEADING_KP
+        )
+        self._drive_heading_max_diff = (
+            float(self.get_parameter('drive_heading_max_diff').get_parameter_value().double_value)
+            or DRIVE_HEADING_MAX_DIFF
+        )
+        self._drive_rotate_heading_deg = (
+            float(self.get_parameter('drive_rotate_heading_deg').get_parameter_value().double_value)
+            or DRIVE_ROTATE_HEADING_DEG
+        )
         self._rotate_heading_slowdown_deg = (
             float(self.get_parameter('rotate_heading_slowdown_deg').get_parameter_value().double_value)
             or ROTATE_HEADING_SLOWDOWN_DEG
@@ -387,10 +401,6 @@ class MotionControlNode(Node):
         self._heading_tolerance_deg = (
             float(self.get_parameter('heading_tolerance_deg').get_parameter_value().double_value)
             or HEADING_TOLERANCE_DEG
-        )
-        self._heading_lateral_tolerance_m = (
-            float(self.get_parameter('heading_lateral_tolerance_m').get_parameter_value().double_value)
-            or HEADING_LATERAL_TOLERANCE_M
         )
         self._position_tolerance_m = (
             float(self.get_parameter('position_tolerance_m').get_parameter_value().double_value)
@@ -488,10 +498,11 @@ class MotionControlNode(Node):
             f'left=({LEFT_MOTOR_A},{LEFT_MOTOR_B}) right=({RIGHT_MOTOR_A},{RIGHT_MOTOR_B}), '
             f'following {waypoint_topic} from {position_topic} @ {control_hz:.1f} Hz '
             f'(heading_tol={self._heading_tolerance_deg:.1f}deg, '
-            f'heading_lateral_tol={self._heading_lateral_tolerance_m:.2f}m, '
+            f'drive_rotate={self._drive_rotate_heading_deg:.1f}deg, '
             f'lateral_tol={self._position_tolerance_m:.2f}m, '
             f'long_stop=[{self._longitudinal_stop_min_m:.2f}, {self._longitudinal_stop_max_m:.2f}]m, '
-            f'drive={self._drive_speed:.2f}, rotate_pwm=[{self._rotate_pwm_min:.2f}, '
+            f'drive={self._drive_speed:.2f}, drive_kp={self._drive_heading_kp:.2f}, '
+            f'drive_max_diff={self._drive_heading_max_diff:.2f}, rotate_pwm=[{self._rotate_pwm_min:.2f}, '
             f'{self._rotate_pwm_high:.2f}]@{self._rotate_heading_slowdown_deg:.1f}deg), '
             f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}, '
             f'wheel_state={wheel_state_topic} @ {wheel_state_hz:.1f} Hz, '
@@ -551,14 +562,11 @@ class MotionControlNode(Node):
             and abs(y_left) <= self._position_tolerance_m
         )
 
-    def _heading_within_tolerance(self, dx: float, dy: float) -> bool:
-        """True when |heading error| to the target is within heading_tolerance_deg."""
-        return abs(self._heading_error_rad(dx, dy)) <= math.radians(self._heading_tolerance_deg)
-
-    def _lateral_within_tolerance(self, dx: float, dy: float) -> bool:
-        """True when the target's lateral offset in the robot frame is within tolerance."""
-        _, y_left = _world_to_robot(dx, dy, self._current_theta)
-        return abs(y_left) <= self._heading_lateral_tolerance_m
+    def _needs_drive_rotate(self, heading_error: float) -> bool:
+        """True when |heading error| is large enough to require in-place rotation while driving."""
+        if self._drive_rotate_heading_deg <= 0.0:
+            return False
+        return abs(math.degrees(heading_error)) > self._drive_rotate_heading_deg
 
     def _heading_rotate_aligned(self, dx: float, dy: float) -> bool:
         """Latched heading align with hysteresis to avoid hunting at the tolerance edge."""
@@ -617,6 +625,19 @@ class MotionControlNode(Node):
 
     def _drive_pwm(self) -> float:
         return _ramp_speed(self._drive_started_at, self._drive_speed)
+
+    def _drive_wheel_speeds(self, heading_error: float) -> tuple[float, float]:
+        """Forward PWM for left/right wheels with proportional heading correction."""
+        base = self._drive_pwm()
+        if self._drive_heading_kp <= 0.0 or self._drive_heading_max_diff <= 0.0:
+            return base, base
+
+        # Positive heading_error -> target left -> turn left -> slow left, speed up right.
+        diff = self._drive_heading_kp * heading_error
+        diff = max(-self._drive_heading_max_diff, min(self._drive_heading_max_diff, diff))
+        left = max(0.0, min(1.0, base - diff))
+        right = max(0.0, min(1.0, base + diff))
+        return left, right
 
     def _begin_nav_motion(self, mode: str) -> None:
         if self._nav_motion_mode == mode:
@@ -741,16 +762,14 @@ class MotionControlNode(Node):
             return
 
         heading_error = self._heading_error_rad(dx, dy)
-        # In-place rotation aligns precisely to heading_tolerance_deg (1 deg). While
-        # already driving straight, use the looser lateral band (|y_robot| <=
-        # heading_lateral_tolerance_m) so the robot only stops to re-rotate when it
-        # has actually drifted off-track, instead of re-calibrating for small drift.
+        # Initial in-place rotation aligns to heading_tolerance_deg. While driving,
+        # small heading drift is corrected via differential steering; only stop to
+        # re-rotate when |heading error| exceeds drive_rotate_heading_deg.
         already_driving = self._nav_motion_mode == 'drive'
-        aligned = (
-            self._lateral_within_tolerance(dx, dy)
-            if already_driving
-            else self._heading_rotate_aligned(dx, dy)
-        )
+        if already_driving:
+            aligned = not self._needs_drive_rotate(heading_error)
+        else:
+            aligned = self._heading_rotate_aligned(dx, dy)
         if not aligned:
             self._needs_heading_settle = True
             self._heading_settle_until = None
@@ -773,9 +792,9 @@ class MotionControlNode(Node):
             self._heading_settle_until = None
 
         self._begin_nav_motion('drive')
-        drive_speed = self._drive_pwm()
-        self._left.forward(drive_speed)
-        self._right.forward(drive_speed)
+        left_speed, right_speed = self._drive_wheel_speeds(heading_error)
+        self._left.forward(left_speed)
+        self._right.forward(right_speed)
 
     def _publish_waypoint_status(self, status: str) -> None:
         msg = String()
