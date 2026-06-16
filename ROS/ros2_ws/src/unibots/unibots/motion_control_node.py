@@ -40,7 +40,8 @@ Waypoint following:
       /current_position (geometry_msgs/PoseStamped) -> robot x, y, heading
       /dynamic_waypoint (std_msgs/String '(x, y, theta_deg)') -> target x, y
   - Behavior (heading-gated drive toward each waypoint):
-      * Rotate in place until |heading error| is within heading_tolerance_deg (1 deg).
+      * Rotate in place (proximity PWM + align hysteresis) until |heading error| is
+        within heading_tolerance_deg (1 deg).
       * After heading enters tolerance, pause 1 s; if heading drifts out during
         that interval, rotate again instead of driving forward.
       * Drive forward while moving; only stop to re-rotate when the target's lateral
@@ -95,7 +96,12 @@ ROTATE_RAMP_S: float = 0.5  # soft-start ramp duration after rotate() begins
 ROTATE_RAMP_START_SPEED: float = 0.2  # PWM duty cycle at rotate() start
 ROTATE_SLOW_SPEED: float = 0.05  # PWM duty cycle when close to target
 ROTATE_SLOWDOWN_COUNTS: int = 30  # switch to slow speed when |encoder error| < this
-ROTATE_HEADING_SLOWDOWN_DEG: float = 45.0  # switch to slow speed when |heading error| < this
+ROTATE_HEADING_SLOWDOWN_DEG: float = 45.0  # linear PWM ramp below this |heading error| (deg)
+ROTATE_PWM_HIGH: float = FULL_SPEED  # heading-rotate PWM at/above slowdown threshold
+ROTATE_PWM_MIN: float = ROTATE_SLOW_SPEED  # heading-rotate PWM when |heading error| -> 0
+ROTATE_ALIGN_HYSTERESIS_DEG: float = 2.0  # exit aligned only above tolerance + this
+ROTATE_DIRECTION_FLIP_DEG: float = 3.0  # suppress direction reversals below this |error|
+ROTATE_PWM_SLEW_PER_S: float = 3.0  # max |dPWM/dt| (0..1 scale); 0 disables slew limit
 ROTATE_POLL_S: float = 0.01  # closed-loop polling interval for rotate()
 
 COUNTS_PER_REV: float = 488.0  # quadrature counts per output-shaft revolution
@@ -114,7 +120,6 @@ WAYPOINT_TOPIC: str = '/dynamic_waypoint'  # std_msgs/String '(x, y, theta_deg)'
 WAYPOINT_STATUS_TOPIC: str = '/waypoint_status'  # 'going' / 'reached'
 CONTROL_HZ: float = 50.0  # waypoint-following control loop rate
 DRIVE_SPEED: float = 0.05  # PWM duty cycle when driving forward toward the waypoint
-ROTATE_SPEED: float = 0.05  # PWM duty cycle when rotating in place to face the waypoint
 HEADING_TOLERANCE_DEG: float = 1.0  # rotate in place until |heading error| <= this
 # While already driving forward, only stop to re-rotate if the target's lateral
 # offset in the robot frame (|y_robot|) exceeds this band (meters). This hysteresis
@@ -151,6 +156,23 @@ def _ramp_speed(started_at: float | None, cruise: float) -> float:
         return cruise
     t = elapsed / ROTATE_RAMP_S
     return ROTATE_RAMP_START_SPEED + t * (cruise - ROTATE_RAMP_START_SPEED)
+
+
+def _proximity_pwm(
+    error_abs: float,
+    threshold: float,
+    pwm_high: float,
+    pwm_min: float,
+) -> float:
+    """PWM vs error: pwm_high at/above threshold, linear down to pwm_min at zero."""
+    if threshold <= 0.0:
+        return max(0.0, min(1.0, pwm_high))
+    if error_abs >= threshold:
+        pwm = pwm_high
+    else:
+        t = error_abs / threshold
+        pwm = pwm_min + t * (pwm_high - pwm_min)
+    return max(0.0, min(1.0, pwm))
 
 
 def _parse_waypoint(text: str) -> tuple[float, float] | None:
@@ -287,7 +309,12 @@ class MotionControlNode(Node):
         self.declare_parameter('waypoint_status_topic', WAYPOINT_STATUS_TOPIC)
         self.declare_parameter('control_hz', CONTROL_HZ)
         self.declare_parameter('drive_speed', DRIVE_SPEED)
-        self.declare_parameter('rotate_speed', ROTATE_SPEED)
+        self.declare_parameter('rotate_heading_slowdown_deg', ROTATE_HEADING_SLOWDOWN_DEG)
+        self.declare_parameter('rotate_pwm_high', ROTATE_PWM_HIGH)
+        self.declare_parameter('rotate_pwm_min', ROTATE_PWM_MIN)
+        self.declare_parameter('rotate_align_hysteresis_deg', ROTATE_ALIGN_HYSTERESIS_DEG)
+        self.declare_parameter('rotate_direction_flip_deg', ROTATE_DIRECTION_FLIP_DEG)
+        self.declare_parameter('rotate_pwm_slew_per_s', ROTATE_PWM_SLEW_PER_S)
         self.declare_parameter('heading_tolerance_deg', HEADING_TOLERANCE_DEG)
         self.declare_parameter('heading_lateral_tolerance_m', HEADING_LATERAL_TOLERANCE_M)
         self.declare_parameter('position_tolerance_m', POSITION_TOLERANCE_M)
@@ -331,9 +358,31 @@ class MotionControlNode(Node):
             float(self.get_parameter('drive_speed').get_parameter_value().double_value)
             or DRIVE_SPEED
         )
-        self._rotate_speed = (
-            float(self.get_parameter('rotate_speed').get_parameter_value().double_value)
-            or ROTATE_SPEED
+        self._rotate_heading_slowdown_deg = (
+            float(self.get_parameter('rotate_heading_slowdown_deg').get_parameter_value().double_value)
+            or ROTATE_HEADING_SLOWDOWN_DEG
+        )
+        self._rotate_pwm_high = (
+            float(self.get_parameter('rotate_pwm_high').get_parameter_value().double_value)
+            or ROTATE_PWM_HIGH
+        )
+        self._rotate_pwm_min = (
+            float(self.get_parameter('rotate_pwm_min').get_parameter_value().double_value)
+            or ROTATE_PWM_MIN
+        )
+        self._rotate_align_hysteresis_deg = (
+            float(
+                self.get_parameter('rotate_align_hysteresis_deg').get_parameter_value().double_value
+            )
+            or ROTATE_ALIGN_HYSTERESIS_DEG
+        )
+        self._rotate_direction_flip_deg = (
+            float(self.get_parameter('rotate_direction_flip_deg').get_parameter_value().double_value)
+            or ROTATE_DIRECTION_FLIP_DEG
+        )
+        self._rotate_pwm_slew_per_s = (
+            float(self.get_parameter('rotate_pwm_slew_per_s').get_parameter_value().double_value)
+            or ROTATE_PWM_SLEW_PER_S
         )
         self._heading_tolerance_deg = (
             float(self.get_parameter('heading_tolerance_deg').get_parameter_value().double_value)
@@ -391,6 +440,9 @@ class MotionControlNode(Node):
         self._nav_motion_mode: str | None = None  # 'rotate' or 'drive' during navigate
         self._rotate_started_at: float | None = None
         self._drive_started_at: float | None = None
+        self._rotate_last_cmd: float = 0.0
+        self._heading_align_latched: bool = False
+        self._control_period = 0.1 if control_hz <= 0.0 else (1.0 / control_hz)
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
         self._left_enc = None
@@ -422,7 +474,7 @@ class MotionControlNode(Node):
         self.create_timer(status_period, self._publish_motion_status)
 
         self._waypoint_status_pub = self.create_publisher(String, waypoint_status_topic, 10)
-        control_period = 0.1 if control_hz <= 0.0 else (1.0 / control_hz)
+        control_period = self._control_period
         self.create_timer(control_period, self._control_loop)
 
         if self._left_enc is not None and self._right_enc is not None:
@@ -439,7 +491,8 @@ class MotionControlNode(Node):
             f'heading_lateral_tol={self._heading_lateral_tolerance_m:.2f}m, '
             f'lateral_tol={self._position_tolerance_m:.2f}m, '
             f'long_stop=[{self._longitudinal_stop_min_m:.2f}, {self._longitudinal_stop_max_m:.2f}]m, '
-            f'drive={self._drive_speed:.2f}, rotate={self._rotate_speed:.2f}), '
+            f'drive={self._drive_speed:.2f}, rotate_pwm=[{self._rotate_pwm_min:.2f}, '
+            f'{self._rotate_pwm_high:.2f}]@{self._rotate_heading_slowdown_deg:.1f}deg), '
             f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}, '
             f'wheel_state={wheel_state_topic} @ {wheel_state_hz:.1f} Hz, '
             f'motion_status={motion_status_topic} @ {motion_status_hz:.1f} Hz, '
@@ -480,6 +533,11 @@ class MotionControlNode(Node):
         self._nav_motion_mode = None
         self._rotate_started_at = None
         self._drive_started_at = None
+        self._heading_align_latched = False
+        self._reset_rotate_command_state()
+
+    def _reset_rotate_command_state(self) -> None:
+        self._rotate_last_cmd = 0.0
 
     def _heading_error_rad(self, dx: float, dy: float) -> float:
         desired_heading = math.atan2(dy, dx)
@@ -502,15 +560,60 @@ class MotionControlNode(Node):
         _, y_left = _world_to_robot(dx, dy, self._current_theta)
         return abs(y_left) <= self._heading_lateral_tolerance_m
 
-    def _heading_rotate_pwm(self, heading_error: float) -> float:
-        error_deg = abs(math.degrees(heading_error))
-        proximity = (
-            ROTATE_SLOW_SPEED
-            if error_deg < ROTATE_HEADING_SLOWDOWN_DEG
-            else FULL_SPEED
+    def _heading_rotate_aligned(self, dx: float, dy: float) -> bool:
+        """Latched heading align with hysteresis to avoid hunting at the tolerance edge."""
+        error_abs_deg = abs(math.degrees(self._heading_error_rad(dx, dy)))
+        enter_tol = self._heading_tolerance_deg
+        exit_tol = self._heading_tolerance_deg + self._rotate_align_hysteresis_deg
+        if not self._heading_align_latched:
+            if error_abs_deg <= enter_tol:
+                self._heading_align_latched = True
+        elif error_abs_deg > exit_tol:
+            self._heading_align_latched = False
+        return self._heading_align_latched
+
+    def _apply_rotate_direction_hysteresis(self, cmd: float, error_deg: float) -> float:
+        if cmd == 0.0 or self._rotate_direction_flip_deg <= 0.0:
+            return cmd
+        if abs(error_deg) >= self._rotate_direction_flip_deg:
+            return cmd
+        if self._rotate_last_cmd == 0.0:
+            return cmd
+        if (cmd > 0.0) == (self._rotate_last_cmd > 0.0):
+            return cmd
+        return math.copysign(abs(cmd), self._rotate_last_cmd)
+
+    def _apply_rotate_pwm_slew(self, cmd: float) -> float:
+        if self._rotate_pwm_slew_per_s <= 0.0:
+            self._rotate_last_cmd = cmd
+            return cmd
+        max_delta = self._rotate_pwm_slew_per_s * self._control_period
+        low = self._rotate_last_cmd - max_delta
+        high = self._rotate_last_cmd + max_delta
+        cmd = max(low, min(high, cmd))
+        self._rotate_last_cmd = cmd
+        return cmd
+
+    def _heading_rotate_command(self, heading_error: float) -> float:
+        """Signed PWM for in-place heading rotation (positive = CCW / turn left)."""
+        error_deg = math.degrees(heading_error)
+        error_abs_deg = abs(error_deg)
+
+        proximity = _proximity_pwm(
+            error_abs_deg,
+            self._rotate_heading_slowdown_deg,
+            self._rotate_pwm_high,
+            self._rotate_pwm_min,
         )
-        ramp = _ramp_speed(self._rotate_started_at, FULL_SPEED)
-        return min(proximity, ramp)
+        ramp = _ramp_speed(self._rotate_started_at, self._rotate_pwm_high)
+        pwm_cap = min(proximity, ramp)
+        if pwm_cap <= 0.0:
+            self._rotate_last_cmd = 0.0
+            return 0.0
+
+        u = math.copysign(pwm_cap, heading_error)
+        u = self._apply_rotate_direction_hysteresis(u, error_deg)
+        return self._apply_rotate_pwm_slew(u)
 
     def _drive_pwm(self) -> float:
         return _ramp_speed(self._drive_started_at, self._drive_speed)
@@ -522,13 +625,19 @@ class MotionControlNode(Node):
         now = time.monotonic()
         if mode == 'rotate':
             self._rotate_started_at = now
+            self._reset_rotate_command_state()
         elif mode == 'drive':
             self._drive_started_at = now
 
     def _rotate_toward_heading(self, heading_error: float) -> None:
-        speed = self._heading_rotate_pwm(heading_error)
-        # Positive error = CCW (turn left): right wheel forward, left wheel reverse.
-        if heading_error > 0.0:
+        cmd = self._heading_rotate_command(heading_error)
+        if cmd == 0.0:
+            self._left.stop()
+            self._right.stop()
+            return
+        speed = abs(cmd)
+        # Positive cmd = CCW (turn left): right wheel forward, left wheel reverse.
+        if cmd > 0.0:
             self._left.reverse(speed)
             self._right.forward(speed)
         else:
@@ -570,6 +679,7 @@ class MotionControlNode(Node):
                 self._motion_phase = 'navigate'
                 self._needs_heading_settle = False
                 self._heading_settle_until = None
+                self._heading_align_latched = False
                 self._pause_until = None
                 self._pause_next_phase = None
 
@@ -639,7 +749,7 @@ class MotionControlNode(Node):
         aligned = (
             self._lateral_within_tolerance(dx, dy)
             if already_driving
-            else self._heading_within_tolerance(dx, dy)
+            else self._heading_rotate_aligned(dx, dy)
         )
         if not aligned:
             self._needs_heading_settle = True

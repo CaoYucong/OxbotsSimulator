@@ -226,7 +226,7 @@ decision_node:
     # Decision loop tick rate (Hz).
     tick_hz: 10.0
     # Decision mode string (selects handler in decision_cruise). improved_nearest_v3_5, planned
-    mode: improved_nearest_v3_5
+    mode: Planned
     # Fallback speed when not provided by planner.
     default_speed: 0.3
 
@@ -265,8 +265,19 @@ motion_control_node:
     waypoint_status_topic: /waypoint_status
     # PWM duty cycle (0..1) when driving straight toward the waypoint.
     drive_speed: 1.0
-    # PWM duty cycle (0..1) when rotating in place to face the waypoint.
-    rotate_speed: 0.05
+    # |heading error| (deg) at/above which rotate PWM stays at rotate_pwm_high; below
+    # this, PWM ramps linearly down to rotate_pwm_min as error approaches zero.
+    rotate_heading_slowdown_deg: 45.0
+    # Heading-rotate PWM (0..1) at/above rotate_heading_slowdown_deg.
+    rotate_pwm_high: 0.75
+    # Heading-rotate PWM (0..1) when |heading error| approaches zero.
+    rotate_pwm_min: 0.05
+    # Exit aligned only when |error| > heading_tolerance_deg + this (prevents edge hunting).
+    rotate_align_hysteresis_deg: 2.0
+    # Suppress left/right flip below this |error| (deg) to reduce near-target jitter.
+    rotate_direction_flip_deg: 3.0
+    # Max |dPWM/dt| on 0..1 scale; 0 disables slew limiting.
+    rotate_pwm_slew_per_s: 10.0
     # In-place rotation aligns heading until |heading error| is within this band (degrees).
     heading_tolerance_deg: 1.0
     # While already driving straight, only stop to re-rotate if the target's lateral
@@ -280,9 +291,9 @@ motion_control_node:
     longitudinal_stop_min_m: -0.2
     longitudinal_stop_max_m: 0.05
     # Stopped dwell (seconds) between rotate and drive, and after drive completes.
-    phase_pause_s: 2.0
+    phase_pause_s: 3.0
     # Stopped dwell (seconds) at a reached waypoint before starting the next target.
-    waypoint_reached_pause_s: 2.0
+    waypoint_reached_pause_s: 0.01
     # Quadrature encoder counts per wheel output-shaft revolution.
     counts_per_rev: 488.0
     # Wheel JointState publish rate (Hz) for differential-drive odometry.
