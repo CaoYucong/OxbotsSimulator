@@ -291,7 +291,7 @@ motion_control_node:
     # Relaxed |heading error| band (degrees) for align / mid-drive re-rotate when near target.
     near_target_heading_tolerance_deg: 10.0
     # Scale in-place rotate PWM when near target (0..1); lowers effective P-gain vs far.
-    near_target_rotate_pwm_scale: 0.4
+    near_target_rotate_pwm_scale: 0.3
     # 'reached' (and stop) when |lateral offset| in robot frame is within this (meters).
     position_tolerance_m: 0.1
     # Robot-frame forward axis stop band (meters): target x_robot must lie in [min, max].
