@@ -258,6 +258,25 @@ WEB_ONLY_FILES = {
 DEFAULT_MODE = 'improved_nearest_v3_5'
 DECISION_DEBUG = True
 
+# Visible-ball / memory-tile target filters (overridable via decide_from_ros_state).
+TARGET_FIELD_BOUND_M: float = 0.7
+TARGET_MIN_DISTANCE_M: float = 0.15
+TARGET_RETARGET_MIN_DISTANCE_M: float = 0.1
+
+
+def _apply_target_filter_config(
+    field_bound_m: Optional[float] = None,
+    min_distance_m: Optional[float] = None,
+    retarget_min_distance_m: Optional[float] = None,
+) -> None:
+    global TARGET_FIELD_BOUND_M, TARGET_MIN_DISTANCE_M, TARGET_RETARGET_MIN_DISTANCE_M
+    if field_bound_m is not None and field_bound_m > 0.0:
+        TARGET_FIELD_BOUND_M = float(field_bound_m)
+    if min_distance_m is not None and min_distance_m >= 0.0:
+        TARGET_MIN_DISTANCE_M = float(min_distance_m)
+    if retarget_min_distance_m is not None and retarget_min_distance_m >= 0.0:
+        TARGET_RETARGET_MIN_DISTANCE_M = float(retarget_min_distance_m)
+
 TILE_SIZE = 0.1
 
 TILE_HALF = TILE_SIZE / 2.0
@@ -2150,9 +2169,13 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
         _debug_log("[decision] No current position data, skip")
         return 0
     
+    field_bound = TARGET_FIELD_BOUND_M
+    min_distance = TARGET_MIN_DISTANCE_M
+    retarget_min = TARGET_RETARGET_MIN_DISTANCE_M
+
     bx = [
         b for b in _read_visible_ball_positions(visible_balls_file)
-        if (abs(b[0]) <= 0.7 and abs(b[1]) <= 0.7)
+        if (abs(b[0]) <= field_bound and abs(b[1]) <= field_bound)
         # or (
         #     b[2].lower() == 'ping'
         #     and (abs(b[0]) > 0.75) != (abs(b[1]) > 0.75)
@@ -2169,9 +2192,9 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     best_d2 = None
     for (x, y, typ) in bx:
         distance = math.hypot(x - cx, y - cy)
-        if distance < 0.15:
+        if distance < min_distance:
             continue  # too close to navigate to (motion_control would immediately "reach" it)
-        if cur_dyn_x is not None and math.hypot(x - cur_dyn_x, y - cur_dyn_y) < 0.1:
+        if cur_dyn_x is not None and math.hypot(x - cur_dyn_x, y - cur_dyn_y) < retarget_min:
             continue  # same as current dynamic waypoint, skip to avoid re-targeting
         d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
         if best_d2 is None or d2 < best_d2:
@@ -2212,13 +2235,13 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
             for c in range(cols):
                 v = memory_ball[r][c]
                 tx, ty = FIELD_TILES[r][c]
-                if abs(tx) > 0.7 or abs(ty) > 0.7:
+                if abs(tx) > field_bound or abs(ty) > field_bound:
                     continue
-                if cur_dyn_x is not None and math.hypot(tx - cur_dyn_x, ty - cur_dyn_y) < 0.1:
+                if cur_dyn_x is not None and math.hypot(tx - cur_dyn_x, ty - cur_dyn_y) < retarget_min:
                     continue  # same as current dynamic waypoint, skip
                 dist = math.hypot(tx - cx, ty - cy)
                 time_cost = next_point_time_cost((cx, cy), bearing, (tx, ty), None)
-                if time_cost <  best_ball_time_cost and dist >= 0.15 and v > 0.0:
+                if time_cost <  best_ball_time_cost and dist >= min_distance and v > 0.0:
                     best_ball_time_cost = time_cost
                     best_ball_val = v
                     best_ball_rc = (r, c)
@@ -2450,6 +2473,9 @@ def decide_from_ros_state(
     waypoint_status: str = 'going',
     mode: str = 'mode_improved_nearest_v3_5',
     default_speed: float = DEFAULT_LINEAR_VELOCITY,
+    target_field_bound_m: Optional[float] = None,
+    target_min_distance_m: Optional[float] = None,
+    target_retarget_min_distance_m: Optional[float] = None,
 ):
     """ROS planner entrypoint used by decision_node.
 
@@ -2458,6 +2484,12 @@ def decide_from_ros_state(
     """
     global _ROS_MODE
     _ROS_MODE = True  # Permanently disable web I/O for this process.
+
+    _apply_target_filter_config(
+        field_bound_m=target_field_bound_m,
+        min_distance_m=target_min_distance_m,
+        retarget_min_distance_m=target_retarget_min_distance_m,
+    )
 
     _sync_ros_topic_state(
         current_x=current_x,

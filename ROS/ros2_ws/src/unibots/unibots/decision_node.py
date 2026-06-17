@@ -19,12 +19,24 @@ class DecisionNode(Node):
         self.declare_parameter('mode', '')
         self.declare_parameter('default_speed', 0.3)
         self.declare_parameter('time_topic', '/time')
+        self.declare_parameter('target_field_bound_m', 0.7)
+        self.declare_parameter('target_min_distance_m', 0.15)
+        self.declare_parameter('target_retarget_min_distance_m', 0.1)
 
         tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)  # kept for launch-file compat, unused
         fallback_tick_hz = float(self.get_parameter('fallback_tick_hz').get_parameter_value().double_value)
         self._mode_param = self.get_parameter('mode').get_parameter_value().string_value
         self._default_speed = float(self.get_parameter('default_speed').get_parameter_value().double_value)
         self._time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
+        self._target_field_bound_m = float(
+            self.get_parameter('target_field_bound_m').get_parameter_value().double_value
+        )
+        self._target_min_distance_m = float(
+            self.get_parameter('target_min_distance_m').get_parameter_value().double_value
+        )
+        self._target_retarget_min_distance_m = float(
+            self.get_parameter('target_retarget_min_distance_m').get_parameter_value().double_value
+        )
 
         self._current_x: Optional[float] = 0.0
         self._current_y: Optional[float] = 0.0
@@ -54,7 +66,11 @@ class DecisionNode(Node):
         self.create_timer(fallback_period, self._tick)
 
         self.get_logger().info(
-            f'decision_node started, tick_hz={fallback_tick_hz} (fixed), input_source=topics, time_topic={self._time_topic}'
+            f'decision_node started, tick_hz={fallback_tick_hz} (fixed), input_source=topics, '
+            f'time_topic={self._time_topic}, '
+            f'target_field_bound_m={self._target_field_bound_m:.3f}, '
+            f'target_min_distance_m={self._target_min_distance_m:.3f}, '
+            f'target_retarget_min_distance_m={self._target_retarget_min_distance_m:.3f}'
         )
 
     def _on_current_position(self, msg: PoseStamped) -> None:
@@ -110,6 +126,9 @@ class DecisionNode(Node):
             waypoint_status=self._waypoint_status,
             mode=mode_key,
             default_speed=self._default_speed,
+            target_field_bound_m=self._target_field_bound_m,
+            target_min_distance_m=self._target_min_distance_m,
+            target_retarget_min_distance_m=self._target_retarget_min_distance_m,
         )
         if result is None:
             return
