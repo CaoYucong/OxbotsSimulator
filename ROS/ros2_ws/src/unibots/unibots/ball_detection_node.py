@@ -242,7 +242,10 @@ class BallDetectionNode(Node):
             self.get_logger().info(f'[perf] {message}')
 
     def _robot_is_stopped(self) -> bool:
-        return self._robot_motion_status == 'stopped'
+        status = (self._robot_motion_status or '').strip().lower()
+        if not status:
+            return True
+        return status == 'stopped'
 
     def _clear_image_state(self) -> None:
         self._latest_front_image = None

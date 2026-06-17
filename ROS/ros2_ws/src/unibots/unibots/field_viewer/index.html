@@ -1170,72 +1170,23 @@
         }
       }
 
-      let processedImageRequestActive = false;
-      let processedImageLastOkAt = 0;
-      let ballDetectionImageRequestActive = false;
-      let ballDetectionImageLastOkAt = 0;
-
-      function refreshImageFeed(imageNode, metaNode, dataPath, state) {
-        if (state.requestActive) {
-          return;
-        }
-
-        state.requestActive = true;
+      function refreshImageFeed(imageNode, metaNode, dataPath) {
         const stamp = Date.now();
-
-        const release = () => {
-          state.requestActive = false;
-        };
-
         imageNode.onload = () => {
-          state.lastOkAt = stamp;
           metaNode.textContent = `Updated ${new Date(stamp).toLocaleTimeString()}`;
-          release();
         };
-
         imageNode.onerror = () => {
-          const staleMs = state.lastOkAt ? stamp - state.lastOkAt : null;
-          metaNode.textContent = staleMs === null
-            ? "Waiting for image..."
-            : `Image unavailable, last success ${Math.round(staleMs / 1000)}s ago`;
-          release();
+          metaNode.textContent = "Waiting for image...";
         };
-
         imageNode.src = `${dataPath}?t=${stamp}`;
       }
 
       function refreshBallDetectionImage() {
-        refreshImageFeed(ballDetectionImage, ballDetectionImageMeta, "/data/ball_detection_image", {
-          get requestActive() {
-            return ballDetectionImageRequestActive;
-          },
-          set requestActive(value) {
-            ballDetectionImageRequestActive = value;
-          },
-          get lastOkAt() {
-            return ballDetectionImageLastOkAt;
-          },
-          set lastOkAt(value) {
-            ballDetectionImageLastOkAt = value;
-          }
-        });
+        refreshImageFeed(ballDetectionImage, ballDetectionImageMeta, "/data/ball_detection_image");
       }
 
       function refreshProcessedImage() {
-        refreshImageFeed(processedImage, processedImageMeta, "/data/processed_image", {
-          get requestActive() {
-            return processedImageRequestActive;
-          },
-          set requestActive(value) {
-            processedImageRequestActive = value;
-          },
-          get lastOkAt() {
-            return processedImageLastOkAt;
-          },
-          set lastOkAt(value) {
-            processedImageLastOkAt = value;
-          }
-        });
+        refreshImageFeed(processedImage, processedImageMeta, "/data/processed_image");
       }
 
       async function tick() {
