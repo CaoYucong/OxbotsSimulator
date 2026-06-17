@@ -726,6 +726,7 @@ class MotionControlNode(Node):
         if not self._run_enabled:
             self._reset_motion_phase()
             self._stop()
+            self._publish_motion_status_now('stopped')
             return
 
         have_pose = (
@@ -948,6 +949,7 @@ class MotionControlNode(Node):
             self._run_enabled = False
             self._reset_motion_state()
             self._stop()
+            self._publish_motion_status_now('stopped')
             return
         self._run_enabled = True
 
