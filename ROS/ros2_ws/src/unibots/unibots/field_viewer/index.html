@@ -1170,23 +1170,72 @@
         }
       }
 
-      function refreshImageFeed(imageNode, metaNode, dataPath) {
+      let processedImageRequestActive = false;
+      let processedImageLastOkAt = 0;
+      let ballDetectionImageRequestActive = false;
+      let ballDetectionImageLastOkAt = 0;
+
+      function refreshImageFeed(imageNode, metaNode, dataPath, state) {
+        if (state.requestActive) {
+          return;
+        }
+
+        state.requestActive = true;
         const stamp = Date.now();
+
+        const release = () => {
+          state.requestActive = false;
+        };
+
         imageNode.onload = () => {
+          state.lastOkAt = stamp;
           metaNode.textContent = `Updated ${new Date(stamp).toLocaleTimeString()}`;
+          release();
         };
+
         imageNode.onerror = () => {
-          metaNode.textContent = "Waiting for image...";
+          const staleMs = state.lastOkAt ? stamp - state.lastOkAt : null;
+          metaNode.textContent = staleMs === null
+            ? "Waiting for image..."
+            : `Image unavailable, last success ${Math.round(staleMs / 1000)}s ago`;
+          release();
         };
+
         imageNode.src = `${dataPath}?t=${stamp}`;
       }
 
       function refreshBallDetectionImage() {
-        refreshImageFeed(ballDetectionImage, ballDetectionImageMeta, "/data/ball_detection_image");
+        refreshImageFeed(ballDetectionImage, ballDetectionImageMeta, "/data/ball_detection_image", {
+          get requestActive() {
+            return ballDetectionImageRequestActive;
+          },
+          set requestActive(value) {
+            ballDetectionImageRequestActive = value;
+          },
+          get lastOkAt() {
+            return ballDetectionImageLastOkAt;
+          },
+          set lastOkAt(value) {
+            ballDetectionImageLastOkAt = value;
+          }
+        });
       }
 
       function refreshProcessedImage() {
-        refreshImageFeed(processedImage, processedImageMeta, "/data/processed_image");
+        refreshImageFeed(processedImage, processedImageMeta, "/data/processed_image", {
+          get requestActive() {
+            return processedImageRequestActive;
+          },
+          set requestActive(value) {
+            processedImageRequestActive = value;
+          },
+          get lastOkAt() {
+            return processedImageLastOkAt;
+          },
+          set lastOkAt(value) {
+            processedImageLastOkAt = value;
+          }
+        });
       }
 
       async function tick() {
