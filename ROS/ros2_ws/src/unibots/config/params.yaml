@@ -1,3 +1,19 @@
+# =============================================================================
+# LOOP RATES (Hz) — edit the matching node section below when debugging
+#
+#   timer.publish_hz                 /time simulation clock
+#   decision_node.fallback_tick_hz   target selection + dynamic waypoint (actual timer)
+#   decision_node.tick_hz            launch-file compat only; unused by timer
+#   ball_detection_node.infer_hz      ball inference (runs only when stopped)
+#   motion_control_node.control_hz   waypoint-following control loop
+#   motion_control_node.motion_status_hz   moving/stopped (gates ball infer)
+#   front_camera_node.camera_poll_hz  camera JPEG capture / upstream poll
+#   pose_estimation_camera.tick_hz    AprilTag + processed_image
+#   motion_control_node.wheel_state_hz   wheel odometry JointState
+#
+# web_bridge_node.common_hz is unused (legacy); poll_hz is upstream mirror only.
+# =============================================================================
+
 web_bridge_node:
   ros__parameters:
     # Master switch for using pose_estimation to publish /current_position.
@@ -145,7 +161,7 @@ front_camera_node:
     camera_path: /data/front_camera
     # ROS topic to publish the front camera image.
     camera_topic: /front_camera
-    # Poll rate for front camera JPEG (Hz).
+    # Poll rate for front camera JPEG (Hz). USB capture or upstream HTTP fetch.
     camera_poll_hz: 10.0
     # HTTP timeout for front camera JPEG requests (sec).
     camera_request_timeout: 1.0
@@ -185,7 +201,7 @@ ball_detection_node:
     roboflow_api_key: ''
     # HTTP timeout for Roboflow inference request (sec).
     request_timeout_sec: 1.0
-    # Inference loop frequency (Hz). 0.1 = once every 10 seconds.
+    # Inference timer frequency (Hz). Inference still runs only when robot_motion_status=stopped.
     infer_hz: 1.0
     # Downscale frame to this height (px) before inference; boxes are scaled back to
     # full resolution for drawing and 3D back-projection. 0 = no downscaling.
@@ -218,13 +234,15 @@ ball_detection_node:
 
 timer:
   ros__parameters:
-    # Timer publish rate for /time topic (Hz).
+    # Simulation clock publish rate on /time (Hz). Requires /run=on to advance.
     publish_hz: 10.0
 
 decision_node:
   ros__parameters:
     # Decision loop tick rate (Hz).
     tick_hz: 10.0
+    # Actual decision timer rate (Hz). Timer uses this, not tick_hz above.
+    fallback_tick_hz: 1.0
     # Decision mode string (selects handler in decision_cruise). improved_nearest_v3_5, planned
     mode: improved_nearest_v3_5
     # Fallback speed when not provided by planner.
@@ -242,7 +260,7 @@ pose_estimation_camera:
     tag_map_path: ''
     # Camera offset from robot center along +x (meters).
     camera_offset_x: 0.105
-    # Pose estimation processing tick rate (Hz). 1.0 = once per second; 0 = process every image.
+    # AprilTag / processed_image processing rate (Hz). 0 = run on every /front_camera frame.
     tick_hz: 10.0
     # Throttle pose logs to once per N seconds. 0 = log every run.
     log_every_sec: 0.0
@@ -257,6 +275,10 @@ motion_control_node:
   ros__parameters:
     # Waypoint-following control loop rate (Hz).
     control_hz: 10.0
+    # Publish /robot_motion_status moving|stopped (Hz). ball_detection waits for stopped.
+    motion_status_hz: 20.0
+    # Encoder debug print rate (Hz). 0 disables periodic prints.
+    encoder_debug_hz: 10.0
     # Robot pose input (geometry_msgs/PoseStamped) used for navigation.
     position_topic: /current_position
     # Target waypoint input (std_msgs/String '(x, y, theta_deg)').
