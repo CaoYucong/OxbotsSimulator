@@ -411,13 +411,16 @@ def _build_handler(state: _MirrorState):
         def _get_obstacles(self, sim_payload: dict):
             return []
 
-        def _get_dynamic_waypoint(self, decisions_payload: dict):
+        def _get_dynamic_waypoint(self, decisions_payload: dict, decision_making_payload: dict):
+            waypoint_type = _read_text_value(decision_making_payload, "dynamic_waypoints_type").strip().lower()
+            if not waypoint_type:
+                waypoint_type = "task"
             for line in _read_lines_from_text(_read_text_value(decisions_payload, "dynamic_waypoints")):
                 item = _extract_xy_from_line(line)
                 if item is None:
                     continue
                 x, y = item
-                return {"x": x, "y": y}
+                return {"x": x, "y": y, "type": waypoint_type}
             return None
 
         def _get_collision_avoiding_waypoint(self, decisions_payload: dict):
@@ -426,7 +429,7 @@ def _build_handler(state: _MirrorState):
                 if item is None:
                     continue
                 x, y = item
-                return {"x": x, "y": y}
+                return {"x": x, "y": y, "type": "collision"}
             return None
 
         def _get_robot_around(self, decision_making_payload: dict):
@@ -620,7 +623,7 @@ def _build_handler(state: _MirrorState):
             if path == "/data/waypoints":
                 self._send_json(
                     {
-                        "dynamic": self._get_dynamic_waypoint(decisions_payload),
+                        "dynamic": self._get_dynamic_waypoint(decisions_payload, decision_making_payload),
                         "collision_avoiding": self._get_collision_avoiding_waypoint(decisions_payload),
                     }
                 )

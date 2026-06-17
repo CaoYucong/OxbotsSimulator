@@ -328,6 +328,7 @@
           <h1>Field Viewer</h1>
           <div class="stat" id="simTimeStat">Simulation Time: --</div>
           <div class="stat" id="waypointStatusStat">Waypoint Status: --</div>
+          <div class="stat" id="waypointTypeStat">Target Type: --</div>
           <div class="stat" id="robotStat">Robot: --</div>
           <div class="stat" id="ballStat">Balls: --</div>
           <div class="stat" id="visibleStat">Visible: --</div>
@@ -338,6 +339,12 @@
             <div><span class="chip" style="background: var(--ping)"></span> Ping</div>
             <div><span class="chip" style="background: var(--metal)"></span> Metal</div>
             <div><span class="chip" style="background: var(--visible)"></span> Visible Highlight</div>
+            <div><span class="chip" style="background: #e4572e"></span> Ping Ball Target</div>
+            <div><span class="chip" style="background: #212529"></span> Steel Ball Target</div>
+            <div><span class="chip" style="background: #3d5a80"></span> Memory Tile</div>
+            <div><span class="chip" style="background: #6c5ce7"></span> Exploration</div>
+            <div><span class="chip" style="background: #1d7d7a"></span> Planned</div>
+            <div><span class="chip" style="background: #2ecc71"></span> Home</div>
           </div>
           <div class="note">Range: x,y in [-1, 1] meters</div>
           <div class="around-wrap">
@@ -455,6 +462,7 @@
       const obsStat = document.getElementById("obsStat");
       const simTimeStat = document.getElementById("simTimeStat");
       const waypointStatusStat = document.getElementById("waypointStatusStat");
+      const waypointTypeStat = document.getElementById("waypointTypeStat");
       const ballDetectionImage = document.getElementById("ballDetectionImage");
       const ballDetectionImageMeta = document.getElementById("ballDetectionImageMeta");
       const processedImage = document.getElementById("processedImage");
@@ -493,6 +501,43 @@
         plannedPath: "rgba(29, 125, 122, 0.75)",
         plannedNode: "#1d7d7a"
       };
+
+      const WAYPOINT_TYPE_LABELS = {
+        pingball: "Ping Ball",
+        steelball: "Steel Ball",
+        memory_tile: "Memory Tile",
+        exploration: "Exploration",
+        planned: "Planned",
+        home: "Home",
+        collision: "Collision",
+        task: "Algorithm"
+      };
+
+      const WAYPOINT_TYPE_COLORS = {
+        pingball: "#e4572e",
+        steelball: "#212529",
+        memory_tile: "#3d5a80",
+        exploration: "#6c5ce7",
+        planned: "#1d7d7a",
+        home: "#2ecc71",
+        collision: "#1d7d7a",
+        task: "#7a7a7a"
+      };
+
+      function normalizeWaypointType(rawType) {
+        const text = (rawType || "task").trim().toLowerCase();
+        return text || "task";
+      }
+
+      function waypointTypeLabel(typeKey) {
+        const key = normalizeWaypointType(typeKey);
+        return WAYPOINT_TYPE_LABELS[key] || key;
+      }
+
+      function waypointTypeColor(typeKey) {
+        const key = normalizeWaypointType(typeKey);
+        return WAYPOINT_TYPE_COLORS[key] || COLORS.dynamic;
+      }
 
       const RADAR_WINDOW_SEC = 2.0;
       const RADAR_MIN = -0.1;
@@ -615,6 +660,32 @@
         ctx.lineTo(px - half, py + half);
         ctx.closePath();
         ctx.fill();
+        ctx.restore();
+      }
+
+      function drawWaypointLabel(x, y, label, color) {
+        if (!label) return;
+        const [px, py] = worldToCanvas(x, y);
+        const fontSize = Math.max(11, canvas.width * 0.014);
+        ctx.save();
+        ctx.font = `600 ${fontSize}px "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif`;
+        const metrics = ctx.measureText(label);
+        const padX = 5;
+        const padY = 3;
+        const boxW = metrics.width + padX * 2;
+        const boxH = fontSize + padY * 2;
+        const boxX = px + 10;
+        const boxY = py - boxH - 8;
+        ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(boxX, boxY, boxW, boxH, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = color;
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, boxX + padX, boxY + boxH / 2);
         ctx.restore();
       }
 
@@ -1229,6 +1300,14 @@
         }
 
         if (dynamic) {
+          const dynamicType = normalizeWaypointType(
+            dynamic.type ||
+            (decisionMakingData ? decisionMakingData.dynamic_waypoints_type : "") ||
+            "task"
+          );
+          const dynamicColor = waypointTypeColor(dynamicType);
+          const dynamicLabel = waypointTypeLabel(dynamicType);
+
           if (robot) {
             if (collisionAvoidingWaypoint) {
               drawLine(robot.x, robot.y, collisionAvoidingWaypoint.x, collisionAvoidingWaypoint.y, COLORS.waypointLine, 2);
@@ -1238,9 +1317,18 @@
             }
           }
 
-          drawTriangle(dynamic.x, dynamic.y, COLORS.dynamic);
+          drawTriangle(dynamic.x, dynamic.y, dynamicColor);
+          drawWaypointLabel(dynamic.x, dynamic.y, dynamicLabel, dynamicColor);
           if (collisionAvoidingWaypoint) {
-            drawTriangle(collisionAvoidingWaypoint.x, collisionAvoidingWaypoint.y, COLORS.stack);
+            const collisionType = normalizeWaypointType(collisionAvoidingWaypoint.type || "collision");
+            const collisionColor = waypointTypeColor(collisionType);
+            drawTriangle(collisionAvoidingWaypoint.x, collisionAvoidingWaypoint.y, collisionColor);
+            drawWaypointLabel(
+              collisionAvoidingWaypoint.x,
+              collisionAvoidingWaypoint.y,
+              waypointTypeLabel(collisionType),
+              collisionColor
+            );
           }
         }
 
@@ -1283,6 +1371,16 @@
         obsStat.textContent = `Obstacles: ${obstacleList.length}`;
         simTimeStat.textContent = `Simulation Time: ${textStatus && textStatus.simulation_time !== undefined && textStatus.simulation_time !== null && textStatus.simulation_time !== "" ? `${Number(textStatus.simulation_time).toFixed(3)} s` : "--"}`;
         waypointStatusStat.textContent = `Waypoint Status: ${textStatus && textStatus.waypoint_status ? textStatus.waypoint_status : "--"}`;
+        if (dynamic) {
+          const dynamicType = normalizeWaypointType(
+            dynamic.type ||
+            (decisionMakingData ? decisionMakingData.dynamic_waypoints_type : "") ||
+            "task"
+          );
+          waypointTypeStat.textContent = `Target Type: ${waypointTypeLabel(dynamicType)}`;
+        } else {
+          waypointTypeStat.textContent = "Target Type: --";
+        }
 
         if (poseHistory && Array.isArray(poseHistory.poses)) {
           poseHistoryJson.textContent = JSON.stringify(poseHistory, null, 2);

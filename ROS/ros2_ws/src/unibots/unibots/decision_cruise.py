@@ -724,7 +724,7 @@ def _stack_current_waypoint(stack_file: str = WAYPOINTS_STACK_FILE,
     Line 1: waypoint (x, y, orientation)
     Line 2: timestamp (seconds)
     """
-    if _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE) != "task":
+    if not _is_algorithm_waypoint_type(_read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)):
         return
     if current_file is None:
         current = str(_require_decision_value("dynamic_waypoints", "dynamic_waypoints")).strip()
@@ -1453,7 +1453,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         
         destination_vector = None
         dynamic_type = _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)
-        if dynamic_type == "task":
+        if _is_algorithm_waypoint_type(dynamic_type):
             dynamic_wp = _read_stack_waypoint()
             if dynamic_wp is not None:
                 destination_vector = (dynamic_wp[0] - cx, dynamic_wp[1] - cy)
@@ -1585,8 +1585,8 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         
         if min_radar_distance / trigger_distance > 0.7:
             # If obstacle is not too close, try to orient towards the task waypoint to encourage progress
-          if dynamic_type == "task":
-              # If current waypoint is task, point towards dynamic waypoint
+          if _is_algorithm_waypoint_type(dynamic_type):
+              # If current waypoint is algorithm-driven, point towards dynamic waypoint
               dynamic_waypoint = _read_stack_waypoint()
               if dynamic_waypoint is not None:
                   dx_to_goal = dynamic_waypoint[0] - target_x
@@ -1694,6 +1694,13 @@ def _minimal_abs_angle_diff_deg(a_deg: float, b_deg: float) -> float:
     diff = (a_deg - b_deg + 180.0) % 360.0 - 180.0
     return abs(diff)
 
+ALGORITHM_WAYPOINT_TYPES = frozenset({"task", "memory_tile", "exploration", "planned"})
+
+
+def _is_algorithm_waypoint_type(waypoint_type: str) -> bool:
+    return (waypoint_type or "task").strip().lower() in ALGORITHM_WAYPOINT_TYPES
+
+
 def goto(x: float, y: float, orientation=None, waypoint_type: str = "task", rotation_avoidance_buffer: float = 0.1) -> bool:
     """Set the dynamic waypoint to the specified coordinates.
     
@@ -1701,7 +1708,8 @@ def goto(x: float, y: float, orientation=None, waypoint_type: str = "task", rota
         x: X coordinate
         y: Y coordinate
         orientation: Optional orientation angle in degrees (default None)
-        waypoint_type: "task" or "collision" (default "task")
+        waypoint_type: pingball, steelball, home, memory_tile, exploration,
+            planned, collision, or task (default "task")
     
     Returns:
         True on success, False on failure
@@ -1967,7 +1975,7 @@ def goto_unseen_region(cx: float,
     dx = tx - tx / math.hypot(ty, tx) * 0.4
     dy = ty - ty / math.hypot(ty, tx) * 0.4
     heading_deg = math.degrees(math.atan2(ty, tx))
-    goto(dx, dy, heading_deg)
+    goto(dx, dy, heading_deg, waypoint_type="exploration")
     # print(f"[waypoints_cruise] goto unseen region at tile ({tr}, {tc}, {heading_deg})", file=sys.stderr)
     return True
 
@@ -2224,7 +2232,7 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
             tr, tc = best_ball_rc
             tx, ty = FIELD_TILES[tr][tc]
             _debug_log(f"[decision] Heading to best memory ball tile ({tx:.2f}, {ty:.2f}), val={best_ball_val:.1f}, cost={best_ball_time_cost:.2f}s")
-            goto(tx, ty, rotation_avoidance_buffer=0.2)
+            goto(tx, ty, rotation_avoidance_buffer=0.2, waypoint_type="memory_tile")
             return 0
 
         if status != "reached":
@@ -2309,7 +2317,7 @@ def mode_planned(
             _update_decision_making_local("planned_returning_home", "0")
             tx, ty = wps[idx]
             _debug_log(f"[planned] Arrived home, now heading to waypoint {idx} ({tx:.2f}, {ty:.2f})")
-            goto(tx, ty)
+            goto(tx, ty, waypoint_type="planned")
         # else:
         #     # Just reached a waypoint — go home first
         #     returning_home = True
@@ -2325,7 +2333,7 @@ def mode_planned(
         else:
             tx, ty = wps[idx]
             _debug_log(f"[planned] Heading to waypoint {idx} ({tx:.2f}, {ty:.2f})")
-            goto(tx, ty)
+            goto(tx, ty, waypoint_type="planned")
     return 0
 
 
