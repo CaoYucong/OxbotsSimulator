@@ -247,6 +247,12 @@ decision_node:
     mode: improved_nearest_v3_5
     # Fallback speed when not provided by planner.
     default_speed: 0.3
+    # F1: visible-ball field bound (m); |x| and |y| must be <= this to enter candidate pool.
+    target_field_bound_m: 0.85
+    # F2: skip targets closer than this to the robot (m).
+    target_min_distance_m: 0.15
+    # F3: skip targets within this distance of the current dynamic waypoint (m).
+    target_retarget_min_distance_m: 0.1
 
 pose_estimation_camera:
   ros__parameters:
