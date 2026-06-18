@@ -5,6 +5,7 @@ from typing import Optional
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from std_msgs.msg import String
 
 from . import decision_cruise as planner
@@ -23,6 +24,11 @@ class DecisionNode(Node):
         self.declare_parameter('target_min_distance_m', 0.15)
         self.declare_parameter('target_retarget_min_distance_m', 0.1)
         self.declare_parameter('exploration_heading_scan_enabled', True)
+        self.declare_parameter('home_colour', Parameter.Type.STRING)
+        self.declare_parameter('home_yellow', Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter('home_green', Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter('home_purple', Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter('home_orange', Parameter.Type.DOUBLE_ARRAY)
 
         tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)  # kept for launch-file compat, unused
         fallback_tick_hz = float(self.get_parameter('fallback_tick_hz').get_parameter_value().double_value)
@@ -41,6 +47,15 @@ class DecisionNode(Node):
         self._exploration_heading_scan_enabled = bool(
             self.get_parameter('exploration_heading_scan_enabled').get_parameter_value().bool_value
         )
+
+        home_colour = self.get_parameter('home_colour').get_parameter_value().string_value.strip().lower()
+        _home_map = {
+            'yellow': list(self.get_parameter('home_yellow').get_parameter_value().double_array_value),
+            'green':  list(self.get_parameter('home_green').get_parameter_value().double_array_value),
+            'purple': list(self.get_parameter('home_purple').get_parameter_value().double_array_value),
+            'orange': list(self.get_parameter('home_orange').get_parameter_value().double_array_value),
+        }
+        self._home_position = tuple(_home_map.get(home_colour, _home_map['yellow']))
 
         self._current_x: Optional[float] = 0.0
         self._current_y: Optional[float] = 0.0
@@ -143,6 +158,7 @@ class DecisionNode(Node):
             target_retarget_min_distance_m=self._target_retarget_min_distance_m,
             exploration_phase=self._exploration_phase,
             exploration_heading_scan_enabled=self._exploration_heading_scan_enabled,
+            home=self._home_position,
         )
         if result is None:
             return

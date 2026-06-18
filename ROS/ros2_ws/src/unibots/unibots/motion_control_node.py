@@ -553,6 +553,7 @@ class MotionControlNode(Node):
         self._current_theta: float | None = None
         self._target_x: float | None = None
         self._target_y: float | None = None
+        self._target_theta: float | None = None  # radians; set for home_align waypoints
         self._last_waypoint_status: str | None = None
         # Waypoint motion phases: navigate -> pause -> reached -> ready.
         # During navigate, forward is allowed only when heading is within tolerance.
@@ -681,9 +682,21 @@ class MotionControlNode(Node):
         self._current_theta = math.atan2(siny_cosp, cosy_cosp)
 
     def _on_waypoint(self, msg: String) -> None:
-        parsed = _parse_waypoint(msg.data if msg.data else '')
+        text = msg.data if msg.data else ''
+        parsed = _parse_waypoint(text)
         if parsed is None:
             return
+        # Parse theta for home_align waypoints (degrees in string → radians internally).
+        theta_rad = None
+        try:
+            parts = text.strip().strip('()').split(',')
+            if len(parts) >= 3:
+                theta_str = parts[2].strip()
+                if theta_str.lower() != 'none':
+                    theta_rad = math.radians(float(theta_str))
+        except (ValueError, IndexError):
+            pass
+        self._target_theta = theta_rad
         if self._motion_phase == 'reached' and self._reached_pause_until is not None:
             if time.monotonic() < self._reached_pause_until:
                 self._pending_target = parsed
@@ -803,9 +816,29 @@ class MotionControlNode(Node):
         desired_heading = math.atan2(dy, dx)
         return _normalize_angle(desired_heading - self._current_theta)
 
+    def _heading_error_rad_reverse(self, dx: float, dy: float) -> float:
+        """Heading error for reverse driving: robot's back should face the target."""
+        desired_heading = math.atan2(dy, dx) + math.pi  # face away from target
+        return _normalize_angle(desired_heading - self._current_theta)
+
     def _at_target(self, dx: float, dy: float) -> bool:
         """True when target lies in robot-frame stop band (x forward in [min, max], |y| <= lateral tol)."""
+        if self._waypoint_type == 'home_align':
+            # Position is irrelevant; done when heading matches target_theta.
+            if self._target_theta is None or self._current_theta is None:
+                return True
+            error_deg = abs(math.degrees(_normalize_angle(self._target_theta - self._current_theta)))
+            return error_deg <= self._heading_tolerance_deg
         x_forward, y_left = _world_to_robot(dx, dy, self._current_theta)
+        if self._waypoint_type == 'home_reverse':
+            # For reverse docking, the robot backs toward the target.
+            # Target starts behind the robot (negative x_forward) and the robot is
+            # "at target" once it has reversed to where x_forward reaches [0, +max].
+            reverse_max = -self._longitudinal_stop_min_m   # e.g. 0.2
+            return (
+                0.0 <= x_forward <= reverse_max
+                and abs(y_left) <= self._position_tolerance_m
+            )
         return (
             self._longitudinal_stop_min_m <= x_forward <= self._longitudinal_stop_max_m
             and abs(y_left) <= self._position_tolerance_m
@@ -834,7 +867,14 @@ class MotionControlNode(Node):
 
     def _heading_rotate_aligned(self, dx: float, dy: float) -> bool:
         """Latched heading align with hysteresis to avoid hunting at the tolerance edge."""
-        error_abs_deg = abs(math.degrees(self._heading_error_rad(dx, dy)))
+        if self._waypoint_type == 'home_reverse':
+            error_abs_deg = abs(math.degrees(self._heading_error_rad_reverse(dx, dy)))
+        elif self._waypoint_type == 'home_align':
+            if self._target_theta is None or self._current_theta is None:
+                return True
+            error_abs_deg = abs(math.degrees(_normalize_angle(self._target_theta - self._current_theta)))
+        else:
+            error_abs_deg = abs(math.degrees(self._heading_error_rad(dx, dy)))
         enter_tol = self._heading_tolerance_deg_for(dx, dy)
         exit_tol = enter_tol + self._rotate_align_hysteresis_deg
         if not self._heading_align_latched:
@@ -1049,7 +1089,16 @@ class MotionControlNode(Node):
         if self._motion_phase != 'navigate':
             return
 
-        heading_error = self._heading_error_rad(dx, dy)
+        if self._waypoint_type == 'home_reverse':
+            heading_error = self._heading_error_rad_reverse(dx, dy)
+        elif self._waypoint_type == 'home_align':
+            heading_error = (
+                _normalize_angle(self._target_theta - self._current_theta)
+                if self._target_theta is not None and self._current_theta is not None
+                else 0.0
+            )
+        else:
+            heading_error = self._heading_error_rad(dx, dy)
 
         if self._waypoint_type == 'exploration' and self._exploration_heading_scan_enabled:
             if self._control_exploration_scan(dx, dy):
@@ -1083,9 +1132,16 @@ class MotionControlNode(Node):
             self._heading_settle_until = None
 
         self._begin_nav_motion('drive')
-        left_speed, right_speed = self._drive_wheel_speeds(heading_error)
-        self._left.forward(left_speed)
-        self._right.forward(right_speed)
+        if self._waypoint_type == 'home_align':
+            self._stop()  # heading-only waypoint — never drive, hold position
+        else:
+            left_speed, right_speed = self._drive_wheel_speeds(heading_error)
+            if self._waypoint_type == 'home_reverse':
+                self._left.reverse(left_speed)
+                self._right.reverse(right_speed)
+            else:
+                self._left.forward(left_speed)
+                self._right.forward(right_speed)
 
     def _publish_waypoint_status(self, status: str) -> None:
         msg = String()

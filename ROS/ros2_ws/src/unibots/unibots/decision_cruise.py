@@ -126,6 +126,11 @@ VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 
 HOME: tuple[float, float, float] = (-0.9, 0.0, -90.0)  # (x, y, orientation_deg) — end-of-game home position
 
+# Docking phase state machine for the 3-step home sequence.
+# None → 'pre_dock' → 'align' → 'reverse'
+_HOME_DOCK_PHASE: Optional[str] = None
+_HOME_DOCK_STEP_DISPATCHED: bool = False  # True once the current phase has sent its first goto
+
 INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball (meters)
 
 FIELD_OF_VIEW_DEGREES = 120.0
@@ -283,6 +288,87 @@ def _apply_exploration_scan_config(enabled: Optional[bool] = None) -> None:
     global EXPLORATION_HEADING_SCAN_ENABLED
     if enabled is not None:
         EXPLORATION_HEADING_SCAN_ENABLED = bool(enabled)
+
+
+def _apply_home_config(home: Optional[tuple] = None) -> None:
+    global HOME
+    if home is not None and len(home) == 3:
+        new_home = (float(home[0]), float(home[1]), float(home[2]))
+        if new_home != HOME:
+            HOME = new_home
+            _reset_home_dock()
+
+
+def _compute_pre_dock(home_x: float, home_y: float, offset: float = 0.1) -> tuple:
+    """Return a position offset metres toward the field centre from (home_x, home_y).
+
+    Moves the home position 0.1 m inward so the robot can approach, align,
+    then reverse the last 0.1 m into the dock.
+    """
+    dist = math.hypot(home_x, home_y)
+    if dist < 1e-6:
+        return home_x, home_y
+    scale = 1.0 - offset / dist
+    return home_x * scale, home_y * scale
+
+
+def _reset_home_dock() -> None:
+    """Reset the home docking state machine.
+
+    Call on game restart or, for mid-game re-docking, call this before
+    triggering the docking sequence a second time.
+    """
+    global _HOME_DOCK_PHASE, _HOME_DOCK_STEP_DISPATCHED
+    _HOME_DOCK_PHASE = None
+    _HOME_DOCK_STEP_DISPATCHED = False
+
+
+def _home_dock_step(status: str, bearing) -> None:
+    """Execute one tick of the 3-phase home docking sequence.
+
+    Phases: pre_dock → align → reverse (holds at reverse once complete).
+    Call every tick whenever the robot should be docking at HOME, regardless
+    of what triggered the decision.  To re-run the sequence (e.g. for a
+    second mid-game dock), call _reset_home_dock() first.
+    """
+    global _HOME_DOCK_PHASE, _HOME_DOCK_STEP_DISPATCHED
+
+    if _HOME_DOCK_PHASE is None:
+        _HOME_DOCK_PHASE = 'pre_dock'
+        _HOME_DOCK_STEP_DISPATCHED = False
+
+    home_x, home_y, home_deg = HOME
+    pre_dock_x, pre_dock_y = _compute_pre_dock(home_x, home_y)
+
+    if _HOME_DOCK_PHASE == 'pre_dock':
+        if _HOME_DOCK_STEP_DISPATCHED and status == 'reached':
+            _HOME_DOCK_PHASE = 'align'
+            _HOME_DOCK_STEP_DISPATCHED = False
+            _debug_log(f"[dock] Reached pre-dock ({pre_dock_x:.2f}, {pre_dock_y:.2f}), aligning")
+        else:
+            _debug_log(f"[dock] pre_dock → ({pre_dock_x:.2f}, {pre_dock_y:.2f})")
+            goto(pre_dock_x, pre_dock_y, waypoint_type='home')
+            _HOME_DOCK_STEP_DISPATCHED = True
+            return
+
+    if _HOME_DOCK_PHASE == 'align':
+        if _HOME_DOCK_STEP_DISPATCHED and status == 'reached':
+            _HOME_DOCK_PHASE = 'reverse'
+            _HOME_DOCK_STEP_DISPATCHED = False
+            _debug_log(f"[dock] Aligned, reversing into home")
+        else:
+            # Stay at pre-dock and rotate to the reverse-ready heading.
+            # motion_control handles the rotation and reports 'reached' when done.
+            align_deg = math.degrees(math.atan2(pre_dock_y - home_y, pre_dock_x - home_x))
+            _debug_log(f"[dock] align → ({pre_dock_x:.2f}, {pre_dock_y:.2f}, {align_deg:.1f}°)")
+            goto(pre_dock_x, pre_dock_y, align_deg, waypoint_type='home_align')
+            _HOME_DOCK_STEP_DISPATCHED = True
+            return
+
+    if _HOME_DOCK_PHASE == 'reverse':
+        _debug_log(f"[dock] reverse → home ({home_x:.2f}, {home_y:.2f})")
+        goto(home_x, home_y, home_deg, waypoint_type='home_reverse')
+
 
 TILE_SIZE = 0.1
 
@@ -2206,9 +2292,11 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     cx, cy, bearing = cur if cur is not None else (0.0, 0.0, None)
 
     sim_time = _read_time_seconds(TIME_FILE)
+    if sim_time is not None and sim_time < 2.0:
+        _reset_home_dock()
     if sim_time is not None and sim_time > 120.0:
-        _debug_log(f"[decision] Time={sim_time:.1f}s > 120s, heading home {HOME}")
-        goto(*HOME, waypoint_type="home")
+        _debug_log(f"[decision] Time={sim_time:.1f}s > 120s, docking home {HOME}")
+        _home_dock_step(status, bearing)
         return 0
 
 
@@ -2639,6 +2727,7 @@ def decide_from_ros_state(
     target_retarget_min_distance_m: Optional[float] = None,
     exploration_phase: str = 'inactive',
     exploration_heading_scan_enabled: bool = True,
+    home: Optional[tuple] = None,
 ):
     """ROS planner entrypoint used by decision_node.
 
@@ -2655,6 +2744,8 @@ def decide_from_ros_state(
     )
 
     _apply_exploration_scan_config(enabled=exploration_heading_scan_enabled)
+
+    _apply_home_config(home=home)
 
     _sync_ros_topic_state(
         current_x=current_x,
