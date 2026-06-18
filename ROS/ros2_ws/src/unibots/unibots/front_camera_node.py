@@ -11,6 +11,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
+ROBOT_MOTION_STATUS_TOPIC: str = '/robot_motion_status'
+
 
 class FrontCameraNode(Node):
     def __init__(self) -> None:
@@ -32,6 +34,9 @@ class FrontCameraNode(Node):
         self.declare_parameter('output_height', 0)
         self.declare_parameter('snapshot_save_dir', default_snapshot_dir)
         self.declare_parameter('snapshot_interval_sec', 1.0)
+        self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
+        self.declare_parameter('capture_when_stopped_only', True)
+        self.declare_parameter('flush_frames_after_stopped', 3)
 
         self.use_real_sensor = self.get_parameter('use_real_sensor').get_parameter_value().bool_value
         self.usb_camera_device = self.get_parameter('usb_camera_device').get_parameter_value().string_value.strip()
@@ -52,6 +57,17 @@ class FrontCameraNode(Node):
         self.camera_height = int(self.get_parameter('camera_height').get_parameter_value().integer_value)
         self.output_width = int(self.get_parameter('output_width').get_parameter_value().integer_value)
         self.output_height = int(self.get_parameter('output_height').get_parameter_value().integer_value)
+        self._motion_status_topic = (
+            self.get_parameter('robot_motion_status_topic').get_parameter_value().string_value
+            or ROBOT_MOTION_STATUS_TOPIC
+        )
+        self._capture_when_stopped_only = bool(
+            self.get_parameter('capture_when_stopped_only').get_parameter_value().bool_value
+        )
+        self._flush_frames_after_stopped = max(
+            0,
+            int(self.get_parameter('flush_frames_after_stopped').get_parameter_value().integer_value),
+        )
 
         if self.output_width < 0:
             self.output_width = 0
@@ -77,6 +93,8 @@ class FrontCameraNode(Node):
         self._snapshot_dir = Path(self.snapshot_save_dir)
         self._snapshot_last_save_ts = 0.0
         self._snapshot_error_logged = False
+        self._robot_motion_status: str | None = None
+        self._flush_remaining: int = 0
 
         try:
             self._snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -114,8 +132,17 @@ class FrontCameraNode(Node):
 
         self._run_enabled: bool = False
         self.create_subscription(String, '/run', self._on_run, 10)
+        self.create_subscription(
+            String, self._motion_status_topic, self._on_robot_motion_status, 10
+        )
         camera_period = 0.1 if camera_poll_hz <= 0.0 else (1.0 / camera_poll_hz)
         self.create_timer(camera_period, self._poll_camera_once)
+
+        capture_when = (
+            f'{self._motion_status_topic}=stopped'
+            if self._capture_when_stopped_only
+            else 'always'
+        )
 
         if self.output_width > 0 and self.output_height > 0:
             output_desc = f'{self.output_width}x{self.output_height} (software downscale, full FOV)'
@@ -126,17 +153,59 @@ class FrontCameraNode(Node):
             self.get_logger().info(
                 f'front_camera_node started; source=usb_camera({self._usb_capture_source or "unavailable"}), '
                 f'topic={self.camera_topic}, poll_hz={camera_poll_hz}, output={output_desc}, '
+                f'capture_when={capture_when}, flush_frames_after_stopped={self._flush_frames_after_stopped}, '
                 f'snapshot_dir={self._snapshot_dir}, snapshot_interval_sec={self.snapshot_interval_sec}'
             )
         else:
             self.get_logger().info(
                 f'front_camera_node started; source=web, upstream={self._url}, topic={self.camera_topic}, poll_hz={camera_poll_hz}, '
-                f'output={output_desc}, '
+                f'output={output_desc}, capture_when={capture_when}, '
+                f'flush_frames_after_stopped={self._flush_frames_after_stopped}, '
                 f'snapshot_dir={self._snapshot_dir}, snapshot_interval_sec={self.snapshot_interval_sec}'
             )
 
     def _on_run(self, msg: String) -> None:
         self._run_enabled = (msg.data or '').strip().lower() != 'off'
+
+    def _on_robot_motion_status(self, msg: String) -> None:
+        status = (msg.data or '').strip().lower()
+        prev = self._robot_motion_status
+        if status == prev:
+            return
+        self._robot_motion_status = status
+        if not self._capture_when_stopped_only:
+            return
+        if prev == 'moving' and status == 'stopped':
+            self._flush_remaining = self._flush_frames_after_stopped
+            self.get_logger().info('camera capture enabled (robot_motion_status=stopped)')
+        elif status == 'moving':
+            self._flush_remaining = 0
+            self.get_logger().info('camera capture disabled (robot_motion_status=moving)')
+
+    def _robot_is_stopped(self) -> bool:
+        status = (self._robot_motion_status or '').strip().lower()
+        if not status:
+            return True
+        return status == 'stopped'
+
+    def _should_capture(self) -> bool:
+        if not self._capture_when_stopped_only:
+            return True
+        return self._robot_is_stopped()
+
+    def _discard_flush_frame(self) -> bool:
+        if self._flush_remaining > 0:
+            self._flush_remaining -= 1
+            return True
+        return False
+
+    def _publish_front_camera_image(self, image: np.ndarray) -> None:
+        if self._discard_flush_frame():
+            return
+        msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'front_camera'
+        self._pub_front_camera.publish(msg)
 
     def _configure_usb_capture(self, capture: cv2.VideoCapture) -> None:
         if self.camera_width > 0:
@@ -198,6 +267,9 @@ class FrontCameraNode(Node):
         self._snapshot_error_logged = False
 
     def _poll_camera_once(self) -> None:
+        if not self._should_capture():
+            return
+
         if self.use_real_sensor:
             if self._usb_capture is None:
                 if not self._usb_camera_error_logged:
@@ -216,10 +288,7 @@ class FrontCameraNode(Node):
             image = self._downscale_output(image)
 
             self._usb_camera_error_logged = False
-            msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = 'front_camera'
-            self._pub_front_camera.publish(msg)
+            self._publish_front_camera_image(image)
             # Snapshot auto-save disabled (no longer needed).
             # self._save_snapshot_if_due(image)
             return
@@ -252,10 +321,7 @@ class FrontCameraNode(Node):
         image = self._rotate_180(image)
         image = self._downscale_output(image)
 
-        msg = self._cv_bridge.cv2_to_imgmsg(image, encoding='bgr8')
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'front_camera'
-        self._pub_front_camera.publish(msg)
+        self._publish_front_camera_image(image)
         # Snapshot auto-save disabled (no longer needed).
         # self._save_snapshot_if_due(image)
 

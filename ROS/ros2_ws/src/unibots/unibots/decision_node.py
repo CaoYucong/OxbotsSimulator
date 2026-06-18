@@ -22,6 +22,7 @@ class DecisionNode(Node):
         self.declare_parameter('target_field_bound_m', 0.7)
         self.declare_parameter('target_min_distance_m', 0.15)
         self.declare_parameter('target_retarget_min_distance_m', 0.1)
+        self.declare_parameter('exploration_heading_scan_enabled', True)
 
         tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)  # kept for launch-file compat, unused
         fallback_tick_hz = float(self.get_parameter('fallback_tick_hz').get_parameter_value().double_value)
@@ -37,6 +38,9 @@ class DecisionNode(Node):
         self._target_retarget_min_distance_m = float(
             self.get_parameter('target_retarget_min_distance_m').get_parameter_value().double_value
         )
+        self._exploration_heading_scan_enabled = bool(
+            self.get_parameter('exploration_heading_scan_enabled').get_parameter_value().bool_value
+        )
 
         self._current_x: Optional[float] = 0.0
         self._current_y: Optional[float] = 0.0
@@ -44,6 +48,7 @@ class DecisionNode(Node):
         self._visible_balls_text = ''
         self._radar_sensor_text = ''
         self._waypoint_status = 'going'
+        self._exploration_phase = 'inactive'
         self._sim_time_seconds: Optional[float] = None
         self._run_enabled: bool = False
 
@@ -51,6 +56,7 @@ class DecisionNode(Node):
         self.create_subscription(String, '/visible_balls', self._on_visible_balls, 10)
         self.create_subscription(String, '/radar_sensor', self._on_radar_sensor, 10)
         self.create_subscription(String, '/waypoint_status', self._on_waypoint_status, 10)
+        self.create_subscription(String, '/exploration_phase', self._on_exploration_phase, 10)
         self.create_subscription(String, self._time_topic, self._on_time, 10)
         self.create_subscription(String, '/run', self._on_run, 10)
 
@@ -70,7 +76,8 @@ class DecisionNode(Node):
             f'time_topic={self._time_topic}, '
             f'target_field_bound_m={self._target_field_bound_m:.3f}, '
             f'target_min_distance_m={self._target_min_distance_m:.3f}, '
-            f'target_retarget_min_distance_m={self._target_retarget_min_distance_m:.3f}'
+            f'target_retarget_min_distance_m={self._target_retarget_min_distance_m:.3f}, '
+            f'exploration_heading_scan_enabled={self._exploration_heading_scan_enabled}'
         )
 
     def _on_current_position(self, msg: PoseStamped) -> None:
@@ -95,6 +102,11 @@ class DecisionNode(Node):
         text = (msg.data or '').strip().lower()
         if text:
             self._waypoint_status = text
+
+    def _on_exploration_phase(self, msg: String) -> None:
+        text = (msg.data or '').strip().lower()
+        if text:
+            self._exploration_phase = text
 
     def _on_time(self, msg: String) -> None:
         try:
@@ -129,6 +141,8 @@ class DecisionNode(Node):
             target_field_bound_m=self._target_field_bound_m,
             target_min_distance_m=self._target_min_distance_m,
             target_retarget_min_distance_m=self._target_retarget_min_distance_m,
+            exploration_phase=self._exploration_phase,
+            exploration_heading_scan_enabled=self._exploration_heading_scan_enabled,
         )
         if result is None:
             return

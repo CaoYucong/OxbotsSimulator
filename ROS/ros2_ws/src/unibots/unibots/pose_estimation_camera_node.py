@@ -362,6 +362,8 @@ class PoseEstimationNode(Node):
         self._last_image_time = 0.0
         self._latest_image: Optional[np.ndarray] = None
         self._latest_image_stamp: Optional[rclpy.time.Time] = None
+        # After moving->stopped, skip AprilTag until the first post-stop /front_camera frame.
+        self._awaiting_fresh_frame: bool = True
         self._pose_history: deque[tuple[int, PoseStamped]] = deque()
         self._camera_pose_history: deque[tuple[int, PoseStamped]] = deque()
         self._kf = None
@@ -406,12 +408,32 @@ class PoseEstimationNode(Node):
         self.get_logger().info(
             f'pose_estimation {state}; topic={camera_topic}, tick={tick_hz_text}, '
             f'intrinsics={intrinsic_path}, tag_map={tag_map_path}, '
-            f'pose_when={self._motion_status_topic}=stopped, '
+            f'pose_when={self._motion_status_topic}=stopped+fresh_frame, '
             f'kalman_filter={"on" if self._use_kalman_filter else "off"}'
         )
 
+    def _robot_is_stopped(self) -> bool:
+        status = (self._robot_motion_status or '').strip().lower()
+        if not status:
+            return True
+        return status == 'stopped'
+
+    def _clear_image_state(self) -> None:
+        self._latest_image = None
+        self._latest_image_stamp = None
+
     def _on_robot_motion_status(self, msg: String) -> None:
-        self._robot_motion_status = (msg.data or '').strip().lower()
+        status = (msg.data or '').strip().lower()
+        prev = self._robot_motion_status
+        if status == prev:
+            return
+        self._robot_motion_status = status
+        if status == 'moving':
+            self._clear_image_state()
+            self._awaiting_fresh_frame = False
+        elif status == 'stopped' and prev != 'stopped':
+            self._clear_image_state()
+            self._awaiting_fresh_frame = True
 
     def _on_run(self, msg: String) -> None:
         self._run_enabled = (msg.data or '').strip().lower() != 'off'
@@ -425,6 +447,8 @@ class PoseEstimationNode(Node):
     def _on_image(self, msg: Image) -> None:
         if not self._enabled:
             return
+        if not self._robot_is_stopped():
+            return
 
         try:
             image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -437,9 +461,10 @@ class PoseEstimationNode(Node):
 
         self._last_image_time = time.monotonic()
         self._latest_image_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+        self._latest_image = image
+        self._awaiting_fresh_frame = False
 
         if self.tick_hz > 0.0:
-            self._latest_image = image
             return
 
         self._process_image(image)
@@ -589,7 +614,9 @@ class PoseEstimationNode(Node):
         return x_f, y_f, h_f
 
     def _process_image(self, image: np.ndarray) -> None:
-        if self._robot_motion_status == 'moving':
+        if not self._robot_is_stopped():
+            return
+        if self._awaiting_fresh_frame:
             return
 
         t_process_start = time.perf_counter()

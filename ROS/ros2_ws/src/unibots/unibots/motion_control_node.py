@@ -32,8 +32,13 @@ Wheel state output (for differential-drive odometry):
 
 Motion status output:
   - Topic: /robot_motion_status (std_msgs/String)
-  - 'moving'  when either motor is being driven (non-zero PWM)
-  - 'stopped' when neither wheel has a drive command
+  - Mode (motion_status_mode):
+      pwm         — 'stopped' as soon as both motors' PWM is zero (default).
+      pwm_settle  — PWM zero starts a settle timer; 'stopped' only after
+                    motion_status_pwm_settle_s (mechanical coast / vibration decay).
+      Future modes (e.g. gyro) can extend _compute_motion_status().
+  - 'moving'  when motors are driven and/or (in pwm_settle) still within settle window.
+  - 'stopped' when idle criteria for the active mode are satisfied.
 
 Waypoint following:
   - Inputs:
@@ -121,6 +126,15 @@ RIGHT_WHEEL_JOINT_NAME: str = 'right_wheel_joint'
 ENCODER_DEBUG_HZ: float = 10.0  # how often to print encoder debug
 MOTION_STATUS_TOPIC: str = '/robot_motion_status'  # 'moving' / 'stopped'
 MOTION_STATUS_HZ: float = 20.0  # how often to publish robot motion status
+MOTION_STATUS_MODE: str = 'pwm'  # pwm | pwm_settle | (future: gyro, ...)
+MOTION_STATUS_PWM_SETTLE_S: float = 0.0  # pwm_settle: delay after PWM=0 before stopped
+WAYPOINT_TYPE_TOPIC: str = '/dynamic_waypoints_type'
+EXPLORATION_PHASE_TOPIC: str = '/exploration_phase'
+EXPLORATION_SCAN_STEP_DEG: float = 30.0
+EXPLORATION_SCAN_DETECT_MAX_WAIT_S: float = 1.5
+EXPLORATION_PRE_DRIVE_PAUSE_S: float = 1.0
+EXPLORATION_STEP_ROTATE_PWM_HIGH: float = 0.55
+EXPLORATION_STEP_ROTATE_PWM_MIN: float = 0.15
 
 # --- Waypoint-following control ---
 POSITION_TOPIC: str = '/current_position'  # geometry_msgs/PoseStamped robot pose
@@ -138,7 +152,8 @@ NEAR_TARGET_ROTATE_PWM_SCALE: float = 0.5  # scale in-place rotate PWM when near
 POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |y_robot| <= this (lateral, meters)
 LONGITUDINAL_STOP_MIN_M: float = -0.2  # 'reached' when x_robot >= this (meters)
 LONGITUDINAL_STOP_MAX_M: float = 0.0  # 'reached' when x_robot <= this (meters)
-PHASE_PAUSE_S: float = 1.0  # stopped dwell after heading aligns (and after drive)
+ROTATE_DRIVE_PAUSE_S: float = 1.0  # stopped dwell between rotate and drive (heading settle)
+DRIVE_COMPLETE_PAUSE_S: float = 1.0  # stopped dwell after drive completes, before 'reached'
 WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next target
 
 
@@ -313,6 +328,8 @@ class MotionControlNode(Node):
         self.declare_parameter('wheel_state_topic', WHEEL_JOINT_STATE_TOPIC)
         self.declare_parameter('motion_status_topic', MOTION_STATUS_TOPIC)
         self.declare_parameter('motion_status_hz', MOTION_STATUS_HZ)
+        self.declare_parameter('motion_status_mode', MOTION_STATUS_MODE)
+        self.declare_parameter('motion_status_pwm_settle_s', MOTION_STATUS_PWM_SETTLE_S)
         self.declare_parameter('position_topic', POSITION_TOPIC)
         self.declare_parameter('waypoint_topic', WAYPOINT_TOPIC)
         self.declare_parameter('waypoint_status_topic', WAYPOINT_STATUS_TOPIC)
@@ -334,8 +351,25 @@ class MotionControlNode(Node):
         self.declare_parameter('position_tolerance_m', POSITION_TOLERANCE_M)
         self.declare_parameter('longitudinal_stop_min_m', LONGITUDINAL_STOP_MIN_M)
         self.declare_parameter('longitudinal_stop_max_m', LONGITUDINAL_STOP_MAX_M)
-        self.declare_parameter('phase_pause_s', PHASE_PAUSE_S)
+        self.declare_parameter('rotate_drive_pause_s', ROTATE_DRIVE_PAUSE_S)
+        self.declare_parameter('drive_complete_pause_s', DRIVE_COMPLETE_PAUSE_S)
         self.declare_parameter('waypoint_reached_pause_s', WAYPOINT_REACHED_PAUSE_S)
+        self.declare_parameter('waypoint_type_topic', WAYPOINT_TYPE_TOPIC)
+        self.declare_parameter('exploration_phase_topic', EXPLORATION_PHASE_TOPIC)
+        self.declare_parameter('exploration_scan_step_deg', EXPLORATION_SCAN_STEP_DEG)
+        self.declare_parameter(
+            'exploration_scan_detect_max_wait_s', EXPLORATION_SCAN_DETECT_MAX_WAIT_S
+        )
+        self.declare_parameter(
+            'exploration_pre_drive_pause_s', EXPLORATION_PRE_DRIVE_PAUSE_S
+        )
+        self.declare_parameter(
+            'exploration_step_rotate_pwm_high', EXPLORATION_STEP_ROTATE_PWM_HIGH
+        )
+        self.declare_parameter(
+            'exploration_step_rotate_pwm_min', EXPLORATION_STEP_ROTATE_PWM_MIN
+        )
+        self.declare_parameter('exploration_heading_scan_enabled', True)
         time_topic = self.get_parameter('time_topic').get_parameter_value().string_value or '/time'
         self._counts_per_rev = float(self.get_parameter('counts_per_rev').get_parameter_value().double_value) or COUNTS_PER_REV
         encoder_debug_hz = float(self.get_parameter('encoder_debug_hz').get_parameter_value().double_value) or ENCODER_DEBUG_HZ
@@ -351,6 +385,23 @@ class MotionControlNode(Node):
         motion_status_hz = (
             float(self.get_parameter('motion_status_hz').get_parameter_value().double_value)
             or MOTION_STATUS_HZ
+        )
+        motion_status_mode = (
+            self.get_parameter('motion_status_mode').get_parameter_value().string_value
+            or MOTION_STATUS_MODE
+        ).strip().lower()
+        if motion_status_mode not in ('pwm', 'pwm_settle'):
+            self.get_logger().warn(
+                f'Unknown motion_status_mode={motion_status_mode!r}; using pwm. '
+                f'Supported: pwm, pwm_settle (future: gyro, ...).'
+            )
+            motion_status_mode = 'pwm'
+        self._motion_status_mode = motion_status_mode
+        self._motion_status_pwm_settle_s = max(
+            0.0,
+            float(
+                self.get_parameter('motion_status_pwm_settle_s').get_parameter_value().double_value
+            ),
         )
         position_topic = (
             self.get_parameter('position_topic').get_parameter_value().string_value
@@ -436,18 +487,60 @@ class MotionControlNode(Node):
         self._longitudinal_stop_max_m = float(
             self.get_parameter('longitudinal_stop_max_m').get_parameter_value().double_value
         )
-        self._phase_pause_s = (
-            float(self.get_parameter('phase_pause_s').get_parameter_value().double_value)
-            or PHASE_PAUSE_S
+        self._rotate_drive_pause_s = (
+            float(self.get_parameter('rotate_drive_pause_s').get_parameter_value().double_value)
+            or ROTATE_DRIVE_PAUSE_S
+        )
+        self._drive_complete_pause_s = (
+            float(self.get_parameter('drive_complete_pause_s').get_parameter_value().double_value)
+            or DRIVE_COMPLETE_PAUSE_S
         )
         self._waypoint_reached_pause_s = (
             float(self.get_parameter('waypoint_reached_pause_s').get_parameter_value().double_value)
             or WAYPOINT_REACHED_PAUSE_S
         )
+        waypoint_type_topic = (
+            self.get_parameter('waypoint_type_topic').get_parameter_value().string_value
+            or WAYPOINT_TYPE_TOPIC
+        )
+        exploration_phase_topic = (
+            self.get_parameter('exploration_phase_topic').get_parameter_value().string_value
+            or EXPLORATION_PHASE_TOPIC
+        )
+        self._exploration_scan_step_deg = (
+            float(self.get_parameter('exploration_scan_step_deg').get_parameter_value().double_value)
+            or EXPLORATION_SCAN_STEP_DEG
+        )
+        self._exploration_scan_detect_max_wait_s = (
+            float(
+                self.get_parameter('exploration_scan_detect_max_wait_s').get_parameter_value().double_value
+            )
+            or EXPLORATION_SCAN_DETECT_MAX_WAIT_S
+        )
+        self._exploration_pre_drive_pause_s = (
+            float(self.get_parameter('exploration_pre_drive_pause_s').get_parameter_value().double_value)
+            or EXPLORATION_PRE_DRIVE_PAUSE_S
+        )
+        self._exploration_step_rotate_pwm_high = (
+            float(
+                self.get_parameter('exploration_step_rotate_pwm_high').get_parameter_value().double_value
+            )
+            or EXPLORATION_STEP_ROTATE_PWM_HIGH
+        )
+        self._exploration_step_rotate_pwm_min = (
+            float(
+                self.get_parameter('exploration_step_rotate_pwm_min').get_parameter_value().double_value
+            )
+            or EXPLORATION_STEP_ROTATE_PWM_MIN
+        )
+        self._exploration_heading_scan_enabled = bool(
+            self.get_parameter('exploration_heading_scan_enabled').get_parameter_value().bool_value
+        )
 
         self._run_enabled = False
         self._motion_started = False
         self._last_motion_status: str | None = None
+        self._pwm_idle_since: float | None = None
         self._start_left_steps = 0
         self._start_right_steps = 0
         self._prev_left_count: int | None = None
@@ -476,6 +569,10 @@ class MotionControlNode(Node):
         self._drive_started_at: float | None = None
         self._rotate_last_cmd: float = 0.0
         self._heading_align_latched: bool = False
+        self._waypoint_type: str = ''
+        self._exploration_phase: str = 'inactive'
+        self._scan_detect_deadline: float | None = None
+        self._scan_pre_drive_until: float | None = None
         self._control_period = 0.1 if control_hz <= 0.0 else (1.0 / control_hz)
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
@@ -500,7 +597,9 @@ class MotionControlNode(Node):
         self.create_subscription(String, '/run', self._on_run, 10)
         self.create_subscription(PoseStamped, position_topic, self._on_current_position, 10)
         self.create_subscription(String, waypoint_topic, self._on_waypoint, 10)
+        self.create_subscription(String, waypoint_type_topic, self._on_waypoint_type, 10)
 
+        self._exploration_phase_pub = self.create_publisher(String, exploration_phase_topic, 10)
         self._wheel_state_pub = self.create_publisher(JointState, wheel_state_topic, 10)
 
         self._motion_status_pub = self.create_publisher(String, motion_status_topic, 10)
@@ -533,9 +632,41 @@ class MotionControlNode(Node):
             f'{self._rotate_pwm_high:.2f}]@{self._rotate_heading_slowdown_deg:.1f}deg), '
             f'time_topic={time_topic}, counts_per_rev={self._counts_per_rev}, '
             f'wheel_state={wheel_state_topic} @ {wheel_state_hz:.1f} Hz, '
-            f'motion_status={motion_status_topic} @ {motion_status_hz:.1f} Hz, '
-            f'waypoint_status={waypoint_status_topic}'
+            f'motion_status={motion_status_topic} @ {motion_status_hz:.1f} Hz '
+            f'(mode={self._motion_status_mode}'
+            f'{f", settle_s={self._motion_status_pwm_settle_s:.2f}" if self._motion_status_mode == "pwm_settle" else ""}), '
+            f'waypoint_status={waypoint_status_topic}, '
+            f'exploration_step_deg={self._exploration_scan_step_deg:.1f}, '
+            f'exploration_step_pwm=[{self._exploration_step_rotate_pwm_min:.2f}, '
+            f'{self._exploration_step_rotate_pwm_high:.2f}], '
+            f'exploration_detect_max_wait_s={self._exploration_scan_detect_max_wait_s:.1f}, '
+            f'exploration_pre_drive_pause_s={self._exploration_pre_drive_pause_s:.1f}, '
+            f'exploration_heading_scan_enabled={self._exploration_heading_scan_enabled}'
         )
+        self._publish_exploration_phase('inactive')
+
+    def _on_waypoint_type(self, msg: String) -> None:
+        new_type = (msg.data or '').strip().lower()
+        if new_type != self._waypoint_type and self._waypoint_type == 'exploration':
+            self._set_exploration_phase('inactive')
+            if new_type in ('pingball', 'steelball', 'ball'):
+                self.get_logger().info(
+                    f'[exploration] scan ended: decision confirmed target as {new_type}'
+                )
+        self._waypoint_type = new_type
+
+    def _publish_exploration_phase(self, phase: str) -> None:
+        msg = String()
+        msg.data = phase
+        self._exploration_phase_pub.publish(msg)
+
+    def _set_exploration_phase(self, phase: str) -> None:
+        phase = (phase or 'inactive').strip().lower()
+        if phase == self._exploration_phase:
+            return
+        self._exploration_phase = phase
+        self._publish_exploration_phase(phase)
+        self.get_logger().info(f'[exploration] phase -> {phase}')
 
     def _on_current_position(self, msg: PoseStamped) -> None:
         self._current_x = float(msg.pose.position.x)
@@ -573,6 +704,97 @@ class MotionControlNode(Node):
         self._drive_started_at = None
         self._heading_align_latched = False
         self._reset_rotate_command_state()
+        self._reset_scan_state()
+        self._set_exploration_phase('inactive')
+        self._pwm_idle_since = None
+
+    def _reset_scan_state(self) -> None:
+        self._scan_detect_deadline = None
+        self._scan_pre_drive_until = None
+
+    def _begin_exploration_scan(self) -> None:
+        """Start step-scan for a new exploration leg (only explicit entry point)."""
+        self._reset_scan_state()
+        self._set_exploration_phase('scan_step_rotate')
+
+    def _compute_scan_step_target(self, final_heading_rad: float) -> float:
+        if self._current_theta is None:
+            return final_heading_rad
+        step_rad = math.radians(self._exploration_scan_step_deg)
+        remaining = _normalize_angle(final_heading_rad - self._current_theta)
+        if abs(remaining) <= step_rad:
+            return final_heading_rad
+        return _normalize_angle(self._current_theta + math.copysign(step_rad, remaining))
+
+    def _enter_scan_step_wait(self) -> None:
+        self._scan_detect_deadline = time.monotonic() + self._exploration_scan_detect_max_wait_s
+        self._set_exploration_phase('scan_step_wait')
+        self._stop()
+        self._nav_motion_mode = None
+
+    def _enter_scan_pre_drive(self) -> None:
+        self._scan_pre_drive_until = time.monotonic() + self._exploration_pre_drive_pause_s
+        self._set_exploration_phase('scan_pre_drive')
+        self._stop()
+        self._nav_motion_mode = None
+
+    def _control_exploration_scan(self, dx: float, dy: float) -> bool:
+        """Run step-and-detect heading scan. Returns True if the control loop should return early."""
+        final_heading = math.atan2(dy, dx)
+
+        if self._exploration_phase == 'scan_step_wait':
+            self._stop()
+            if (
+                self._scan_detect_deadline is not None
+                and time.monotonic() >= self._scan_detect_deadline
+            ):
+                if self._heading_rotate_aligned(dx, dy):
+                    self._enter_scan_pre_drive()
+                else:
+                    self._set_exploration_phase('scan_step_rotate')
+                return True
+            return True
+
+        if self._exploration_phase == 'scan_pre_drive':
+            self._stop()
+            if (
+                self._scan_pre_drive_until is not None
+                and time.monotonic() >= self._scan_pre_drive_until
+            ):
+                self._scan_pre_drive_until = None
+                self._set_exploration_phase('drive')
+                self._needs_heading_settle = False
+                self._heading_settle_until = None
+                self._nav_motion_mode = None
+                self._heading_align_latched = True
+                return False
+            return True
+
+        if self._exploration_phase == 'drive':
+            return False
+
+        if self._exploration_phase == 'inactive':
+            return False
+
+        if self._exploration_phase == 'scan_step_rotate':
+            if self._current_theta is None:
+                return True
+            step_target = self._compute_scan_step_target(final_heading)
+            step_error = _normalize_angle(step_target - self._current_theta)
+            if abs(math.degrees(step_error)) <= self._heading_tolerance_deg:
+                self._enter_scan_step_wait()
+                return True
+            self._begin_nav_motion('rotate')
+            self._rotate_toward_heading(
+                step_error,
+                dx,
+                dy,
+                pwm_high=self._exploration_step_rotate_pwm_high,
+                pwm_min=self._exploration_step_rotate_pwm_min,
+            )
+            return True
+
+        return False
 
     def _reset_rotate_command_state(self) -> None:
         self._rotate_last_cmd = 0.0
@@ -644,7 +866,14 @@ class MotionControlNode(Node):
         self._rotate_last_cmd = cmd
         return cmd
 
-    def _heading_rotate_command(self, heading_error: float, dx: float, dy: float) -> float:
+    def _heading_rotate_command(
+        self,
+        heading_error: float,
+        dx: float,
+        dy: float,
+        pwm_high: float | None = None,
+        pwm_min: float | None = None,
+    ) -> float:
         """Signed PWM for in-place heading rotation (positive = CCW / turn left).
 
         Proximity PWM is proportional (saturated) in |error|; near the target the output
@@ -652,14 +881,16 @@ class MotionControlNode(Node):
         """
         error_deg = math.degrees(heading_error)
         error_abs_deg = abs(error_deg)
+        rotate_pwm_high = self._rotate_pwm_high if pwm_high is None else pwm_high
+        rotate_pwm_min = self._rotate_pwm_min if pwm_min is None else pwm_min
 
         proximity = _proximity_pwm(
             error_abs_deg,
             self._rotate_heading_slowdown_deg,
-            self._rotate_pwm_high,
-            self._rotate_pwm_min,
+            rotate_pwm_high,
+            rotate_pwm_min,
         )
-        ramp = _ramp_speed(self._rotate_started_at, self._rotate_pwm_high)
+        ramp = _ramp_speed(self._rotate_started_at, rotate_pwm_high)
         pwm_cap = min(proximity, ramp)
         if self._is_near_target(dx, dy) and self._near_target_rotate_pwm_scale < 1.0:
             pwm_cap *= max(0.0, self._near_target_rotate_pwm_scale)
@@ -698,8 +929,15 @@ class MotionControlNode(Node):
         elif mode == 'drive':
             self._drive_started_at = now
 
-    def _rotate_toward_heading(self, heading_error: float, dx: float, dy: float) -> None:
-        cmd = self._heading_rotate_command(heading_error, dx, dy)
+    def _rotate_toward_heading(
+        self,
+        heading_error: float,
+        dx: float,
+        dy: float,
+        pwm_high: float | None = None,
+        pwm_min: float | None = None,
+    ) -> None:
+        cmd = self._heading_rotate_command(heading_error, dx, dy, pwm_high, pwm_min)
         if cmd == 0.0:
             self._left.stop()
             self._right.stop()
@@ -716,9 +954,8 @@ class MotionControlNode(Node):
     def _begin_phase_pause(self, next_phase: str) -> None:
         """Stop motors, publish 'stopped', and wait before entering the next phase."""
         self._stop()
-        self._publish_motion_status_now('stopped')
         self._motion_phase = 'pause'
-        self._pause_until = time.monotonic() + self._phase_pause_s
+        self._pause_until = time.monotonic() + self._drive_complete_pause_s
         self._pause_next_phase = next_phase
 
     def _control_loop(self) -> None:
@@ -726,7 +963,6 @@ class MotionControlNode(Node):
         if not self._run_enabled:
             self._reset_motion_phase()
             self._stop()
-            self._publish_motion_status_now('stopped')
             return
 
         have_pose = (
@@ -752,6 +988,8 @@ class MotionControlNode(Node):
                 self._heading_align_latched = False
                 self._pause_until = None
                 self._pause_next_phase = None
+                if self._waypoint_type == 'exploration' and self._exploration_heading_scan_enabled:
+                    self._begin_exploration_scan()
 
         dx = self._target_x - self._current_x
         dy = self._target_y - self._current_y
@@ -759,7 +997,6 @@ class MotionControlNode(Node):
 
         if self._motion_phase == 'pause':
             self._stop()
-            self._publish_motion_status_now('stopped')
             if self._pause_until is not None and time.monotonic() >= self._pause_until:
                 next_phase = self._pause_next_phase
                 self._motion_phase = next_phase
@@ -772,7 +1009,6 @@ class MotionControlNode(Node):
         if self._motion_phase == 'reached':
             self._publish_waypoint_status('reached')
             self._stop()
-            self._publish_motion_status_now('stopped')
             if self._reached_pause_until is not None and time.monotonic() >= self._reached_pause_until:
                 self._reached_pause_until = None
                 self._motion_phase = 'ready'
@@ -784,7 +1020,6 @@ class MotionControlNode(Node):
         if self._motion_phase == 'ready':
             self._publish_waypoint_status('reached')
             self._stop()
-            self._publish_motion_status_now('stopped')
             if self._pending_target is not None:
                 self._target_x, self._target_y = self._pending_target
                 self._pending_target = None
@@ -794,11 +1029,15 @@ class MotionControlNode(Node):
                 self._motion_phase = 'navigate'
                 self._needs_heading_settle = False
                 self._heading_settle_until = None
+                if self._waypoint_type == 'exploration' and self._exploration_heading_scan_enabled:
+                    self._begin_exploration_scan()
             return
 
         if at_target:
             self._needs_heading_settle = False
             self._heading_settle_until = None
+            if self._waypoint_type == 'exploration':
+                self._set_exploration_phase('inactive')
             self._begin_phase_pause('reached')
             return
 
@@ -811,6 +1050,11 @@ class MotionControlNode(Node):
             return
 
         heading_error = self._heading_error_rad(dx, dy)
+
+        if self._waypoint_type == 'exploration' and self._exploration_heading_scan_enabled:
+            if self._control_exploration_scan(dx, dy):
+                return
+
         # In-place rotation aligns to heading_tolerance_deg (wider near the target).
         # While driving, small drift is corrected via differential steering; re-rotate
         # only when |heading error| exceeds the active tolerance band.
@@ -830,12 +1074,10 @@ class MotionControlNode(Node):
             now = time.monotonic()
             if self._heading_settle_until is None:
                 self._stop()
-                self._publish_motion_status_now('stopped')
-                self._heading_settle_until = now + self._phase_pause_s
+                self._heading_settle_until = now + self._rotate_drive_pause_s
                 return
             if now < self._heading_settle_until:
                 self._stop()
-                self._publish_motion_status_now('stopped')
                 return
             self._needs_heading_settle = False
             self._heading_settle_until = None
@@ -854,6 +1096,28 @@ class MotionControlNode(Node):
             self._last_waypoint_status = status
             self.get_logger().info(f'[waypoint_status] {status}')
 
+    def _motors_pwm_active(self) -> bool:
+        return self._left.is_active or self._right.is_active
+
+    def _compute_motion_status(self) -> str:
+        """Derive moving/stopped from motion_status_mode and motor/sensor state."""
+        if self._motors_pwm_active():
+            self._pwm_idle_since = None
+            return 'moving'
+
+        mode = self._motion_status_mode
+        if mode == 'pwm':
+            return 'stopped'
+        if mode == 'pwm_settle':
+            now = time.monotonic()
+            if self._pwm_idle_since is None:
+                self._pwm_idle_since = now
+            if (now - self._pwm_idle_since) >= self._motion_status_pwm_settle_s:
+                return 'stopped'
+            return 'moving'
+        # Future: e.g. gyro — require PWM idle + settle + |gyro| below threshold.
+        return 'stopped'
+
     def _publish_motion_status_now(self, status: str) -> None:
         msg = String()
         msg.data = status
@@ -862,11 +1126,11 @@ class MotionControlNode(Node):
             self._last_motion_status = status
             self.get_logger().info(f'[motion_status] {status}')
 
+    def _refresh_motion_status(self) -> None:
+        self._publish_motion_status_now(self._compute_motion_status())
+
     def _publish_motion_status(self) -> None:
-        """Publish 'moving' if either motor is being driven, else 'stopped'."""
-        moving = self._left.is_active or self._right.is_active
-        status = 'moving' if moving else 'stopped'
-        self._publish_motion_status_now(status)
+        self._refresh_motion_status()
 
     def _signed_wheel_counts(self) -> tuple[int, int]:
         """Encoder counts in robot frame (forward motion = positive for both wheels)."""
@@ -949,7 +1213,6 @@ class MotionControlNode(Node):
             self._run_enabled = False
             self._reset_motion_state()
             self._stop()
-            self._publish_motion_status_now('stopped')
             return
         self._run_enabled = True
 
@@ -981,6 +1244,7 @@ class MotionControlNode(Node):
         self._drive_started_at = None
         self._left.stop()
         self._right.stop()
+        self._refresh_motion_status()
 
     def shutdown_motors(self) -> None:
         self._stop()

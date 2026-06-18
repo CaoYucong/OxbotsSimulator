@@ -262,6 +262,7 @@ DECISION_DEBUG = True
 TARGET_FIELD_BOUND_M: float = 0.7
 TARGET_MIN_DISTANCE_M: float = 0.15
 TARGET_RETARGET_MIN_DISTANCE_M: float = 0.1
+EXPLORATION_HEADING_SCAN_ENABLED: bool = True
 
 
 def _apply_target_filter_config(
@@ -276,6 +277,12 @@ def _apply_target_filter_config(
         TARGET_MIN_DISTANCE_M = float(min_distance_m)
     if retarget_min_distance_m is not None and retarget_min_distance_m >= 0.0:
         TARGET_RETARGET_MIN_DISTANCE_M = float(retarget_min_distance_m)
+
+
+def _apply_exploration_scan_config(enabled: Optional[bool] = None) -> None:
+    global EXPLORATION_HEADING_SCAN_ENABLED
+    if enabled is not None:
+        EXPLORATION_HEADING_SCAN_ENABLED = bool(enabled)
 
 TILE_SIZE = 0.1
 
@@ -2134,6 +2141,42 @@ def update_ball_memory_v2(memory_tile_file: str = BALL_MEMORY_FILE,
     tile_ok = _write_seen_tile_matrix(memory_tile_file, memory)
     return points_ok and tile_ok
 
+
+def _pick_best_visible_ball_target(
+    cx: float,
+    cy: float,
+    bearing: float | None,
+    visible_balls_file: str = VISIBLE_BALLS_FILE,
+) -> tuple[float, float, str] | None:
+    """Return (x, y, typ) for the lowest time-cost visible ball passing target filters."""
+    field_bound = TARGET_FIELD_BOUND_M
+    min_distance = TARGET_MIN_DISTANCE_M
+    retarget_min = TARGET_RETARGET_MIN_DISTANCE_M
+
+    bx = [
+        b for b in _read_visible_ball_positions(visible_balls_file)
+        if abs(b[0]) <= field_bound and abs(b[1]) <= field_bound
+    ]
+
+    cur_dyn = _read_dynamic_waypoints()
+    cur_dyn_x = cur_dyn[0] if cur_dyn is not None else None
+    cur_dyn_y = cur_dyn[1] if cur_dyn is not None else None
+
+    best = None
+    best_d2 = None
+    for (x, y, typ) in bx:
+        distance = math.hypot(x - cx, y - cy)
+        if distance < min_distance:
+            continue
+        if cur_dyn_x is not None and math.hypot(x - cur_dyn_x, y - cur_dyn_y) < retarget_min:
+            continue
+        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
+        if best_d2 is None or d2 < best_d2:
+            best_d2 = d2
+            best = (x, y, typ)
+    return best
+
+
 def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
                           waypoint_file: Optional[str] = None,
                           visible_balls_file: str = VISIBLE_BALLS_FILE,
@@ -2148,7 +2191,13 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
 
     status = _read_status(status_file)
     dynamic_waypoint_type = _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)
-    _debug_log(f"[decision] waypoint_status={status}, dynamic_waypoint_type={dynamic_waypoint_type}")
+    exploration_phase = (
+        str(SIM_DATA_CACHE.get('exploration_phase', 'inactive') or 'inactive').strip().lower()
+    )
+    _debug_log(
+        f"[decision] waypoint_status={status}, dynamic_waypoint_type={dynamic_waypoint_type}, "
+        f"exploration_phase={exploration_phase}"
+    )
 
     # if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
     #     pass
@@ -2168,41 +2217,45 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     if cur is None:
         _debug_log("[decision] No current position data, skip")
         return 0
-    
-    field_bound = TARGET_FIELD_BOUND_M
-    min_distance = TARGET_MIN_DISTANCE_M
-    retarget_min = TARGET_RETARGET_MIN_DISTANCE_M
 
-    bx = [
-        b for b in _read_visible_ball_positions(visible_balls_file)
-        if (abs(b[0]) <= field_bound and abs(b[1]) <= field_bound)
-        # or (
-        #     b[2].lower() == 'ping'
-        #     and (abs(b[0]) > 0.75) != (abs(b[1]) > 0.75)
-        #     and not (abs(b[0]) <= 0.2 and abs(b[1]) > 0.75)
-        #     and not (abs(b[1]) <= 0.2 and abs(b[0]) > 0.75)
-        # )
-    ]
+    if (
+        EXPLORATION_HEADING_SCAN_ENABLED
+        and dynamic_waypoint_type == "exploration"
+        and exploration_phase in ("scan_step_rotate", "scan_pre_drive", "drive")
+    ):
+        _debug_log(
+            f"[decision] Exploration {exploration_phase} active, holding exploration waypoint"
+        )
+        return 0
 
-    cur_dyn = _read_dynamic_waypoints()
-    cur_dyn_x = cur_dyn[0] if cur_dyn is not None else None
-    cur_dyn_y = cur_dyn[1] if cur_dyn is not None else None
-
-    best = None
-    best_d2 = None
-    for (x, y, typ) in bx:
-        distance = math.hypot(x - cx, y - cy)
-        if distance < min_distance:
-            continue  # too close to navigate to (motion_control would immediately "reach" it)
-        if cur_dyn_x is not None and math.hypot(x - cur_dyn_x, y - cur_dyn_y) < retarget_min:
-            continue  # same as current dynamic waypoint, skip to avoid re-targeting
-        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
-        if best_d2 is None or d2 < best_d2:
-            best_d2 = d2
-            best = (x, y, typ)
+    best = _pick_best_visible_ball_target(cx, cy, bearing, visible_balls_file)
 
     if best is None:
         _debug_log("[decision] Visible balls present but all too close to robot, continue to memory tiles")
+
+    if (
+        EXPLORATION_HEADING_SCAN_ENABLED
+        and dynamic_waypoint_type == "exploration"
+        and exploration_phase == "scan_step_wait"
+        and best is not None
+    ):
+        target_x, target_y, target_typ = best
+        heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
+        ball_waypoint_type = "pingball" if target_typ.lower() == "ping" else "steelball"
+        ok = goto(target_x, target_y, heading_deg, waypoint_type=ball_waypoint_type)
+        _debug_log(
+            f"[decision] scan_step_wait: heading to visible ball at ({target_x:.2f}, {target_y:.2f}), "
+            f"type={ball_waypoint_type}, goto={'ok' if ok else 'FAIL'}"
+        )
+        return 0 if ok else 1
+
+    if (
+        EXPLORATION_HEADING_SCAN_ENABLED
+        and dynamic_waypoint_type == "exploration"
+        and exploration_phase == "scan_step_wait"
+    ):
+        _debug_log("[decision] scan_step_wait: waiting for ball detection, holding exploration waypoint")
+        return 0
 
     if status == "going" and dynamic_waypoint_type in ("ball", "pingball", "steelball", "home"):
         _debug_log(f"[decision] Still going to ball waypoint (type={dynamic_waypoint_type}), skip")
@@ -2231,6 +2284,12 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
         best_ball_rc = None
         best_ball_time_cost = 180.0
         best_ball_val = -1.0
+        field_bound = TARGET_FIELD_BOUND_M
+        min_distance = TARGET_MIN_DISTANCE_M
+        retarget_min = TARGET_RETARGET_MIN_DISTANCE_M
+        cur_dyn = _read_dynamic_waypoints()
+        cur_dyn_x = cur_dyn[0] if cur_dyn is not None else None
+        cur_dyn_y = cur_dyn[1] if cur_dyn is not None else None
         for r in range(rows):
             for c in range(cols):
                 v = memory_ball[r][c]
@@ -2310,6 +2369,105 @@ PLANNED_WAYPOINTS: list[tuple[float, float]] = [
     (-0.5,  0.5),
 ]
 
+# Fixed exploration targets for mode_exploration_test (step-scan / drive FSM).
+EXPLORATION_TEST_WAYPOINTS: list[tuple[float, float]] = [
+    (0.35, -0.55),
+    (-0.35, -0.55),
+    (0.35, 0.55),
+    (-0.35, 0.55),
+]
+
+
+def mode_exploration_test(
+    status_file: str = WAYPOINT_STATUS_FILE,
+    current_file: str = CURRENT_POSITION_FILE,
+    visible_balls_file: str = VISIBLE_BALLS_FILE,
+    waypoints: list[tuple[float, float]] | None = None,
+) -> int:
+    """Sequence fixed exploration waypoints to exercise the exploration step-scan FSM.
+
+    On each ``reached`` event, advance to the next exploration target. While travelling
+    (including scan_step_rotate / scan_pre_drive / drive), keep publishing the current
+    exploration waypoint with ``waypoint_type=exploration`` so motion_control runs the
+    step-and-detect scan pipeline. During ``scan_step_wait``, a detected ball switches
+    to pingball/steelball immediately.
+    """
+    wps = waypoints if waypoints is not None else EXPLORATION_TEST_WAYPOINTS
+    if not wps:
+        return 0
+
+    exploration_phase = (
+        str(SIM_DATA_CACHE.get('exploration_phase', 'inactive') or 'inactive').strip().lower()
+    )
+
+    raw_idx = DECISION_MAKING_DATA_LOCAL_CACHE.get('exploration_test_waypoint_index')
+    try:
+        idx = int(raw_idx) if raw_idx is not None else 0
+    except Exception:
+        idx = 0
+    idx = idx % len(wps)
+
+    cur = _read_current_position(current_file)
+    if cur is None:
+        _debug_log('[exploration_test] No current position, skip')
+        return 0
+    cx, cy, bearing = cur
+
+    if EXPLORATION_HEADING_SCAN_ENABLED and exploration_phase == 'scan_step_wait':
+        best = _pick_best_visible_ball_target(cx, cy, bearing, visible_balls_file)
+        if best is not None:
+            target_x, target_y, target_typ = best
+            heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
+            ball_waypoint_type = 'pingball' if target_typ.lower() == 'ping' else 'steelball'
+            ok = goto(target_x, target_y, heading_deg, waypoint_type=ball_waypoint_type)
+            _debug_log(
+                f'[exploration_test] scan_step_wait: heading to ball ({target_x:.2f}, {target_y:.2f}), '
+                f'type={ball_waypoint_type}, goto={"ok" if ok else "FAIL"}'
+            )
+            return 0 if ok else 1
+
+    if EXPLORATION_HEADING_SCAN_ENABLED and exploration_phase in (
+        'scan_step_rotate',
+        'scan_step_wait',
+        'scan_pre_drive',
+        'drive',
+    ):
+        _update_decision_making_local('exploration_test_waypoint_index', str(idx))
+        tx, ty = wps[idx]
+        _debug_log(
+            f'[exploration_test] Holding exploration {idx} ({tx:.2f}, {ty:.2f}), '
+            f'phase={exploration_phase}'
+        )
+        goto(tx, ty, waypoint_type='exploration')
+        return 0
+
+    dynamic_waypoint_type = _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)
+    status = _read_status(status_file)
+
+    if status == 'going' and dynamic_waypoint_type in ('pingball', 'steelball'):
+        _debug_log(
+            f'[exploration_test] Pursuing verified ball (type={dynamic_waypoint_type}), holding'
+        )
+        return 0
+
+    if status == 'reached':
+        idx = (idx + 1) % len(wps)
+        _update_decision_making_local('exploration_test_waypoint_index', str(idx))
+        tx, ty = wps[idx]
+        _debug_log(
+            f'[exploration_test] Reached, dispatching exploration {idx} ({tx:.2f}, {ty:.2f})'
+        )
+        goto(tx, ty, waypoint_type='exploration')
+    else:
+        _update_decision_making_local('exploration_test_waypoint_index', str(idx))
+        tx, ty = wps[idx]
+        _debug_log(
+            f'[exploration_test] Holding exploration {idx} ({tx:.2f}, {ty:.2f}), '
+            f'phase={exploration_phase}'
+        )
+        goto(tx, ty, waypoint_type='exploration')
+    return 0
+
 
 def mode_planned(
     status_file: str = WAYPOINT_STATUS_FILE,
@@ -2363,6 +2521,7 @@ def mode_planned(
 _MODE_HANDLERS = {
     "improved_nearest_v3_5": mode_improved_nearest_v3_5,
     "planned": mode_planned,
+    "exploration_test": mode_exploration_test,
 }
 
 
@@ -2399,6 +2558,7 @@ def _sync_ros_topic_state(
     sim_time_seconds: float,
     waypoint_status: str,
     radar_sensor_text: str = "",
+    exploration_phase: str = "inactive",
 ) -> None:
     """Mirror ROS topic values into SIM_DATA_CACHE so mode handlers can run."""
     balls = _parse_visible_balls_from_topic(visible_balls_json)
@@ -2417,6 +2577,7 @@ def _sync_ros_topic_state(
             "visible_balls": balls_text,
             "time": f"{float(sim_time_seconds):.6f}",
             "waypoint_status": (waypoint_status or "going").strip().lower() or "going",
+            "exploration_phase": (exploration_phase or "inactive").strip().lower() or "inactive",
             "radar_sensor": (radar_sensor_text or "").strip(),
             # No obstacle robots in standalone Pi mode.
             "obstacle_robot": "",
@@ -2476,6 +2637,8 @@ def decide_from_ros_state(
     target_field_bound_m: Optional[float] = None,
     target_min_distance_m: Optional[float] = None,
     target_retarget_min_distance_m: Optional[float] = None,
+    exploration_phase: str = 'inactive',
+    exploration_heading_scan_enabled: bool = True,
 ):
     """ROS planner entrypoint used by decision_node.
 
@@ -2491,6 +2654,8 @@ def decide_from_ros_state(
         retarget_min_distance_m=target_retarget_min_distance_m,
     )
 
+    _apply_exploration_scan_config(enabled=exploration_heading_scan_enabled)
+
     _sync_ros_topic_state(
         current_x=current_x,
         current_y=current_y,
@@ -2499,6 +2664,7 @@ def decide_from_ros_state(
         radar_sensor_text=radar_sensor_text,
         sim_time_seconds=sim_time_seconds,
         waypoint_status=waypoint_status,
+        exploration_phase=exploration_phase,
     )
 
     _set_collision_avoiding_waypoint(None)

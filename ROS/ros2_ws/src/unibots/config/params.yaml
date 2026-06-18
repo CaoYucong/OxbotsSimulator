@@ -6,8 +6,8 @@
 #   decision_node.tick_hz            launch-file compat only; unused by timer
 #   ball_detection_node.infer_hz      ball inference (runs only when stopped)
 #   motion_control_node.control_hz   waypoint-following control loop
-#   motion_control_node.motion_status_hz   moving/stopped (gates ball infer)
-#   front_camera_node.camera_poll_hz  camera JPEG capture / upstream poll
+#   motion_control_node.motion_status_hz   moving/stopped (gates ball infer + camera capture)
+#   front_camera_node.camera_poll_hz  camera JPEG capture / upstream poll (only when stopped)
 #   pose_estimation_camera.tick_hz    AprilTag + processed_image
 #   motion_control_node.wheel_state_hz   wheel odometry JointState
 #
@@ -176,9 +176,16 @@ front_camera_node:
     # Intrinsics (real_camera_intrinsic.yaml) must match this output resolution.
     output_width: 960
     output_height: 540
+    # Capture only while motion_control reports stopped (same gate as ball infer / AprilTag).
+    robot_motion_status_topic: /robot_motion_status
+    capture_when_stopped_only: true
+    # Frames to discard after moving->stopped before publishing (clears USB buffer).
+    flush_frames_after_stopped: 2
 
 ball_detection_node:
   ros__parameters:
+    # Master switch: exploration step-scan (keep in sync with decision_node + motion_control_node).
+    exploration_heading_scan_enabled: false
     # Master switch for ball detection inference/publishing loop.
     ball_detection_enabled: true
     # Input topic consumed by Roboflow detector.
@@ -211,9 +218,10 @@ ball_detection_node:
     # Log inference timing breakdown ([infer_time] encode/request/tick_total, etc.).
     perf_logs: true
     # Throttle perf logs to once per N seconds per message key.
-    perf_log_every_sec: 0.0
+    perf_log_every_sec: 0.05
     # Run inference only while motion_control reports 'stopped'.
     robot_motion_status_topic: /robot_motion_status
+    exploration_phase_topic: /exploration_phase
     # Real camera intrinsic YAML path; empty = auto-detect package config/real_camera_intrinsic.yaml.
     camera_intrinsic_path: ''
     # Ball physical diameter (meters), used to estimate depth from bbox size.
@@ -239,11 +247,14 @@ timer:
 
 decision_node:
   ros__parameters:
+    # Master switch: exploration step-scan (keep in sync with ball_detection_node + motion_control_node).
+    exploration_heading_scan_enabled: false
     # Decision loop tick rate (Hz).
     tick_hz: 10.0
     # Actual decision timer rate (Hz). Timer uses this, not tick_hz above.
     fallback_tick_hz: 1.0
-    # Decision mode string (selects handler in decision_cruise). improved_nearest_v3_5, planned
+    # Decision mode string (selects handler in decision_cruise).
+    # improved_nearest_v3_5 | planned | exploration_test
     mode: improved_nearest_v3_5
     # Fallback speed when not provided by planner.
     default_speed: 0.3
@@ -279,10 +290,17 @@ pose_estimation_camera:
 
 motion_control_node:
   ros__parameters:
+    # Master switch: exploration step-scan (keep in sync with decision_node + ball_detection_node).
+    exploration_heading_scan_enabled: false
     # Waypoint-following control loop rate (Hz).
     control_hz: 10.0
     # Publish /robot_motion_status moving|stopped (Hz). ball_detection waits for stopped.
     motion_status_hz: 20.0
+    # Stopped detection mode: pwm (PWM=0 => stopped) | pwm_settle (PWM=0 then wait settle_s).
+    # Future modes (e.g. gyro) extend motion_control_node._compute_motion_status().
+    motion_status_mode: pwm
+    # pwm_settle only: seconds after both motors' PWM hits 0 before publishing stopped.
+    motion_status_pwm_settle_s: 0.3
     # Encoder debug print rate (Hz). 0 disables periodic prints.
     encoder_debug_hz: 10.0
     # Robot pose input (geometry_msgs/PoseStamped) used for navigation.
@@ -325,10 +343,24 @@ motion_control_node:
     # Robot-frame forward axis stop band (meters): target x_robot must lie in [min, max].
     longitudinal_stop_min_m: -0.2
     longitudinal_stop_max_m: 0.05
-    # Stopped dwell (seconds) between rotate and drive, and after drive completes.
-    phase_pause_s: 1.0
+    # Stopped dwell (seconds) between rotate and drive (heading settle before forward).
+    rotate_drive_pause_s: 1.0
+    # Stopped dwell (seconds) after drive completes, before waypoint 'reached'.
+    drive_complete_pause_s: 1.2
     # Stopped dwell (seconds) at a reached waypoint before starting the next target.
     waypoint_reached_pause_s: 0.01
+    # Degrees to rotate per scan step toward exploration heading.
+    exploration_scan_step_deg: 30.0
+    # Max wait (seconds) at each scan stop for on-demand ball detection.
+    exploration_scan_detect_max_wait_s: 5.0
+    # Stopped dwell (seconds) after final scan alignment, before driving forward.
+    exploration_pre_drive_pause_s: 1.0
+    # PWM (0..1) for exploration step in-place rotation.
+    exploration_step_rotate_pwm_high: 0.55
+    exploration_step_rotate_pwm_min: 0.15
+    waypoint_type_topic: /dynamic_waypoints_type
+    exploration_phase_topic: /exploration_phase
+    # Exploration scan ends when decision switches waypoint_type to pingball/steelball.
     # Quadrature encoder counts per wheel output-shaft revolution.
     counts_per_rev: 488.0
     # Wheel JointState publish rate (Hz) for differential-drive odometry.
