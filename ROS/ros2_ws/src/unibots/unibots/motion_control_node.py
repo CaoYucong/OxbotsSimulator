@@ -58,6 +58,14 @@ Waypoint following:
       * Dwell: publish 'stopped', wait 5 s, then accept the next /dynamic_waypoint.
       * Stop once the target in robot frame lies on forward axis in [0, -0.2] m
         and |lateral offset| <= 0.1 m.
+  - Home waypoint type (/dynamic_waypoints_type = 'home'):
+      * Expects a target with one axis ~0 and the other ~±0.9 m; invalid format
+        falls back to the normal waypoint behavior above.
+      * Phase 1 (approach): drive forward to the intermediate point on the
+        non-zero axis at ±0.8 m (zero axis unchanged).
+      * Phase 2 (rotate): turn in place to face the field center (0, 0).
+      * Phase 3 (reverse): back up until |coordinate| on the home axis exceeds 0.9 m
+        (same axis as the non-zero home target), then publish waypoint 'reached'.
   - Waypoint status output:
       /waypoint_status (std_msgs/String)
         'reached' when the robot-frame stop band is satisfied, else 'going'.
@@ -140,6 +148,9 @@ LONGITUDINAL_STOP_MIN_M: float = -0.2  # 'reached' when x_robot >= this (meters)
 LONGITUDINAL_STOP_MAX_M: float = 0.0  # 'reached' when x_robot <= this (meters)
 PHASE_PAUSE_S: float = 1.0  # stopped dwell after heading aligns (and after drive)
 WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next target
+WAYPOINT_TYPE_TOPIC: str = '/dynamic_waypoints_type'
+HOME_INTERMEDIATE_M: float = 0.8  # intermediate stop on non-zero home axis before reverse
+HOME_AXIS_STOP_ABS_M: float = 0.9  # reverse phase stops once |axis coord| exceeds this
 
 
 def _normalize_angle(angle: float) -> float:
@@ -198,6 +209,27 @@ def _parse_waypoint(text: str) -> tuple[float, float] | None:
         return float(parts[0]), float(parts[1])
     except (TypeError, ValueError):
         return None
+
+
+def _parse_home_geometry(
+    home_x: float,
+    home_y: float,
+    eps: float,
+) -> tuple[float, float, float, float] | None:
+    """Return (final_x, final_y, intermediate_x, intermediate_y) or None if invalid."""
+    x_near_zero = abs(home_x) <= eps
+    y_near_zero = abs(home_y) <= eps
+    if x_near_zero and y_near_zero:
+        return None
+    if not x_near_zero and not y_near_zero:
+        return None
+    if x_near_zero:
+        intermediate_x = home_x
+        intermediate_y = math.copysign(HOME_INTERMEDIATE_M, home_y)
+    else:
+        intermediate_x = math.copysign(HOME_INTERMEDIATE_M, home_x)
+        intermediate_y = home_y
+    return home_x, home_y, intermediate_x, intermediate_y
 
 
 class Motor:
@@ -476,6 +508,10 @@ class MotionControlNode(Node):
         self._drive_started_at: float | None = None
         self._rotate_last_cmd: float = 0.0
         self._heading_align_latched: bool = False
+        self._waypoint_type: str = ''
+        self._home_phase: str | None = None
+        self._home_final: tuple[float, float] | None = None
+        self._home_intermediate: tuple[float, float] | None = None
         self._control_period = 0.1 if control_hz <= 0.0 else (1.0 / control_hz)
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
@@ -500,6 +536,7 @@ class MotionControlNode(Node):
         self.create_subscription(String, '/run', self._on_run, 10)
         self.create_subscription(PoseStamped, position_topic, self._on_current_position, 10)
         self.create_subscription(String, waypoint_topic, self._on_waypoint, 10)
+        self.create_subscription(String, WAYPOINT_TYPE_TOPIC, self._on_waypoint_type, 10)
 
         self._wheel_state_pub = self.create_publisher(JointState, wheel_state_topic, 10)
 
@@ -537,6 +574,12 @@ class MotionControlNode(Node):
             f'waypoint_status={waypoint_status_topic}'
         )
 
+    def _on_waypoint_type(self, msg: String) -> None:
+        new_type = (msg.data or '').strip().lower()
+        if new_type != self._waypoint_type and self._waypoint_type == 'home':
+            self._reset_home_state()
+        self._waypoint_type = new_type
+
     def _on_current_position(self, msg: PoseStamped) -> None:
         self._current_x = float(msg.pose.position.x)
         self._current_y = float(msg.pose.position.y)
@@ -573,6 +616,71 @@ class MotionControlNode(Node):
         self._drive_started_at = None
         self._heading_align_latched = False
         self._reset_rotate_command_state()
+        self._reset_home_state()
+
+    def _reset_home_state(self) -> None:
+        self._home_phase = None
+        self._home_final = None
+        self._home_intermediate = None
+
+    def _home_sequence_active(self) -> bool:
+        return self._home_phase in ('approach', 'rotate', 'reverse')
+
+    def _home_sequence_holding(self) -> bool:
+        """True while home is in progress or finished and should not re-navigate."""
+        return self._home_phase in ('approach', 'rotate', 'reverse', 'complete')
+
+    def _init_home_sequence(self, final_x: float, final_y: float) -> None:
+        parsed = _parse_home_geometry(final_x, final_y, self._position_tolerance_m)
+        if parsed is None:
+            self._reset_home_state()
+            self.get_logger().warn(
+                f'[home] invalid geometry ({final_x:.3f}, {final_y:.3f}); '
+                'fallback to normal navigation'
+            )
+            return
+
+        fx, fy, ix, iy = parsed
+        self._home_final = (fx, fy)
+        self._home_intermediate = (ix, iy)
+        self._home_phase = 'approach'
+        self._motion_phase = 'navigate'
+        self._active_target = None
+        self._needs_heading_settle = False
+        self._heading_settle_until = None
+        self._heading_align_latched = False
+        self._nav_motion_mode = None
+        self.get_logger().info(
+            f'[home] sequence start: final=({fx:.3f}, {fy:.3f}) '
+            f'intermediate=({ix:.3f}, {iy:.3f})'
+        )
+
+    def _transition_home_phase(self, next_phase: str) -> None:
+        self._home_phase = next_phase
+        self._needs_heading_settle = False
+        self._heading_settle_until = None
+        self._heading_align_latched = False
+        self._nav_motion_mode = None
+        self.get_logger().info(f'[home] phase -> {next_phase}')
+        self._begin_phase_pause('navigate')
+
+    def _home_reverse_reached(self) -> bool:
+        """True once the robot has backed past HOME_AXIS_STOP_ABS_M on the home axis."""
+        if self._home_final is None or self._current_x is None or self._current_y is None:
+            return False
+
+        fx, fy = self._home_final
+        eps = self._position_tolerance_m
+        if abs(fx) <= eps:
+            axis_coord = self._current_y
+            target_coord = fy
+        else:
+            axis_coord = self._current_x
+            target_coord = fx
+
+        if abs(axis_coord) <= HOME_AXIS_STOP_ABS_M:
+            return False
+        return math.copysign(1.0, axis_coord) == math.copysign(1.0, target_coord)
 
     def _reset_rotate_command_state(self) -> None:
         self._rotate_last_cmd = 0.0
@@ -687,6 +795,10 @@ class MotionControlNode(Node):
         right = max(0.0, min(1.0, base + diff))
         return left, right
 
+    def _reverse_wheel_speeds(self, heading_error: float) -> tuple[float, float]:
+        """Reverse PWM for left/right wheels with proportional heading correction."""
+        return self._drive_wheel_speeds(heading_error)
+
     def _begin_nav_motion(self, mode: str) -> None:
         if self._nav_motion_mode == mode:
             return
@@ -721,6 +833,116 @@ class MotionControlNode(Node):
         self._pause_until = time.monotonic() + self._phase_pause_s
         self._pause_next_phase = next_phase
 
+    def _navigate_forward_toward(self, dx: float, dy: float) -> None:
+        """Rotate, settle, then drive forward toward (dx, dy) in world frame."""
+        heading_error = self._heading_error_rad(dx, dy)
+
+        already_driving = self._nav_motion_mode == 'drive'
+        if already_driving:
+            aligned = not self._needs_drive_rotate(heading_error, dx, dy)
+        else:
+            aligned = self._heading_rotate_aligned(dx, dy)
+        if not aligned:
+            self._needs_heading_settle = True
+            self._heading_settle_until = None
+            self._begin_nav_motion('rotate')
+            self._rotate_toward_heading(heading_error, dx, dy)
+            return
+
+        if self._needs_heading_settle:
+            now = time.monotonic()
+            if self._heading_settle_until is None:
+                self._stop()
+                self._publish_motion_status_now('stopped')
+                self._heading_settle_until = now + self._phase_pause_s
+                return
+            if now < self._heading_settle_until:
+                self._stop()
+                self._publish_motion_status_now('stopped')
+                return
+            self._needs_heading_settle = False
+            self._heading_settle_until = None
+
+        self._begin_nav_motion('drive')
+        left_speed, right_speed = self._drive_wheel_speeds(heading_error)
+        self._left.forward(left_speed)
+        self._right.forward(right_speed)
+
+    def _control_home_sequence(self) -> None:
+        """Three-phase home return: approach intermediate, face origin, reverse to final."""
+        if (
+            self._home_phase is None
+            or self._home_final is None
+            or self._home_intermediate is None
+            or self._current_x is None
+            or self._current_y is None
+            or self._current_theta is None
+        ):
+            return
+
+        if self._motion_phase is None:
+            self._motion_phase = 'navigate'
+
+        if self._motion_phase != 'navigate':
+            return
+
+        self._publish_waypoint_status('going')
+
+        if self._home_phase == 'approach':
+            ix, iy = self._home_intermediate
+            dx = ix - self._current_x
+            dy = iy - self._current_y
+            if self._at_target(dx, dy):
+                self._transition_home_phase('rotate')
+                return
+            self._navigate_forward_toward(dx, dy)
+            return
+
+        if self._home_phase == 'rotate':
+            dx = -self._current_x
+            dy = -self._current_y
+            heading_error = self._heading_error_rad(dx, dy)
+            if self._heading_rotate_aligned(dx, dy):
+                self._transition_home_phase('reverse')
+                return
+            self._needs_heading_settle = False
+            self._heading_settle_until = None
+            self._begin_nav_motion('rotate')
+            self._rotate_toward_heading(heading_error, dx, dy)
+            return
+
+        if self._home_phase == 'reverse':
+            fx, fy = self._home_final
+            if self._home_reverse_reached():
+                self._home_phase = 'complete'
+                self._active_target = (fx, fy)
+                self.get_logger().info(
+                    f'[home] arrived at final ({fx:.3f}, {fy:.3f}), '
+                    f'pose=({self._current_x:.3f}, {self._current_y:.3f})'
+                )
+                self._begin_phase_pause('reached')
+                return
+
+            dx = -self._current_x
+            dy = -self._current_y
+            heading_error = self._heading_error_rad(dx, dy)
+            already_driving = self._nav_motion_mode == 'drive'
+            if already_driving:
+                aligned = not self._needs_drive_rotate(heading_error, dx, dy)
+            else:
+                aligned = self._heading_rotate_aligned(dx, dy)
+            if not aligned:
+                self._needs_heading_settle = False
+                self._heading_settle_until = None
+                self._begin_nav_motion('rotate')
+                self._rotate_toward_heading(heading_error, dx, dy)
+                return
+
+            self._begin_nav_motion('drive')
+            left_speed, right_speed = self._reverse_wheel_speeds(-heading_error)
+            self._left.reverse(left_speed)
+            self._right.reverse(right_speed)
+
     def _control_loop(self) -> None:
         """Heading-gated controller: rotate until aligned, then drive; re-rotate as needed."""
         if not self._run_enabled:
@@ -740,8 +962,18 @@ class MotionControlNode(Node):
             self._stop()
             return
 
+        if self._waypoint_type == 'home':
+            home_target = (self._target_x, self._target_y)
+            if self._home_phase == 'complete' and home_target == self._home_final:
+                pass
+            elif home_target != self._home_final or not self._home_sequence_holding():
+                self._init_home_sequence(self._target_x, self._target_y)
+
         target = (self._target_x, self._target_y)
-        if self._active_target != target:
+        use_normal_target_tracking = not (
+            self._waypoint_type == 'home' and self._home_sequence_holding()
+        )
+        if use_normal_target_tracking and self._active_target != target:
             if self._motion_phase == 'reached':
                 self._pending_target = target
             elif self._motion_phase != 'ready':
@@ -789,11 +1021,26 @@ class MotionControlNode(Node):
                 self._target_x, self._target_y = self._pending_target
                 self._pending_target = None
                 target = (self._target_x, self._target_y)
-            if self._active_target != target:
+            if (
+                self._active_target != target
+                and not (
+                    self._waypoint_type == 'home' and self._home_phase == 'complete'
+                )
+            ):
                 self._active_target = target
                 self._motion_phase = 'navigate'
                 self._needs_heading_settle = False
                 self._heading_settle_until = None
+            return
+
+        if self._waypoint_type == 'home' and self._home_phase == 'complete':
+            self._publish_waypoint_status('reached')
+            self._stop()
+            self._publish_motion_status_now('stopped')
+            return
+
+        if self._waypoint_type == 'home' and self._home_sequence_active():
+            self._control_home_sequence()
             return
 
         if at_target:
@@ -810,40 +1057,7 @@ class MotionControlNode(Node):
         if self._motion_phase != 'navigate':
             return
 
-        heading_error = self._heading_error_rad(dx, dy)
-        # In-place rotation aligns to heading_tolerance_deg (wider near the target).
-        # While driving, small drift is corrected via differential steering; re-rotate
-        # only when |heading error| exceeds the active tolerance band.
-        already_driving = self._nav_motion_mode == 'drive'
-        if already_driving:
-            aligned = not self._needs_drive_rotate(heading_error, dx, dy)
-        else:
-            aligned = self._heading_rotate_aligned(dx, dy)
-        if not aligned:
-            self._needs_heading_settle = True
-            self._heading_settle_until = None
-            self._begin_nav_motion('rotate')
-            self._rotate_toward_heading(heading_error, dx, dy)
-            return
-
-        if self._needs_heading_settle:
-            now = time.monotonic()
-            if self._heading_settle_until is None:
-                self._stop()
-                self._publish_motion_status_now('stopped')
-                self._heading_settle_until = now + self._phase_pause_s
-                return
-            if now < self._heading_settle_until:
-                self._stop()
-                self._publish_motion_status_now('stopped')
-                return
-            self._needs_heading_settle = False
-            self._heading_settle_until = None
-
-        self._begin_nav_motion('drive')
-        left_speed, right_speed = self._drive_wheel_speeds(heading_error)
-        self._left.forward(left_speed)
-        self._right.forward(right_speed)
+        self._navigate_forward_toward(dx, dy)
 
     def _publish_waypoint_status(self, status: str) -> None:
         msg = String()

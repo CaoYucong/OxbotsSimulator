@@ -253,6 +253,14 @@ decision_node:
     target_min_distance_m: 0.15
     # F3: skip targets within this distance of the current dynamic waypoint (m).
     target_retarget_min_distance_m: 0.1
+    # Active home colour: yellow | green | purple | orange
+    # Change this value to select which home position the robot returns to at end of game.
+    home_colour: purple
+    # Home positions [x, y, degrees] — Double-check the value for the degrees
+    home_yellow: [0.0, 0.9, 180.0]
+    home_green: [-0.9, 0.0, -90.0]
+    home_purple: [0.0, -0.9, 0.0]
+    home_orange: [0.9, 0.0, 90.0]
 
 pose_estimation_camera:
   ros__parameters:

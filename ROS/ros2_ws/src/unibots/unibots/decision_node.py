@@ -22,6 +22,11 @@ class DecisionNode(Node):
         self.declare_parameter('target_field_bound_m', 0.7)
         self.declare_parameter('target_min_distance_m', 0.15)
         self.declare_parameter('target_retarget_min_distance_m', 0.1)
+        self.declare_parameter('home_colour', 'green')
+        self.declare_parameter('home_yellow', [0.0, 0.9, 180.0])
+        self.declare_parameter('home_green', [-0.9, 0.0, -90.0])
+        self.declare_parameter('home_purple', [0.0, -0.9, 0.0])
+        self.declare_parameter('home_orange', [0.9, 0.0, 90.0])
 
         tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)  # kept for launch-file compat, unused
         fallback_tick_hz = float(self.get_parameter('fallback_tick_hz').get_parameter_value().double_value)
@@ -37,6 +42,11 @@ class DecisionNode(Node):
         self._target_retarget_min_distance_m = float(
             self.get_parameter('target_retarget_min_distance_m').get_parameter_value().double_value
         )
+        self._home_colour = self.get_parameter('home_colour').get_parameter_value().string_value
+        self._home_yellow = self._read_home_position_param('home_yellow')
+        self._home_green = self._read_home_position_param('home_green')
+        self._home_purple = self._read_home_position_param('home_purple')
+        self._home_orange = self._read_home_position_param('home_orange')
 
         self._current_x: Optional[float] = 0.0
         self._current_y: Optional[float] = 0.0
@@ -70,8 +80,17 @@ class DecisionNode(Node):
             f'time_topic={self._time_topic}, '
             f'target_field_bound_m={self._target_field_bound_m:.3f}, '
             f'target_min_distance_m={self._target_min_distance_m:.3f}, '
-            f'target_retarget_min_distance_m={self._target_retarget_min_distance_m:.3f}'
+            f'target_retarget_min_distance_m={self._target_retarget_min_distance_m:.3f}, '
+            f'home_colour={self._home_colour}, home_yellow={self._home_yellow}, '
+            f'home_green={self._home_green}, home_purple={self._home_purple}, '
+            f'home_orange={self._home_orange}'
         )
+
+    def _read_home_position_param(self, name: str) -> list[float]:
+        values = list(self.get_parameter(name).get_parameter_value().double_array_value)
+        if len(values) == 3:
+            return [float(values[0]), float(values[1]), float(values[2])]
+        return []
 
     def _on_current_position(self, msg: PoseStamped) -> None:
         self._current_x = float(msg.pose.position.x)
@@ -129,6 +148,11 @@ class DecisionNode(Node):
             target_field_bound_m=self._target_field_bound_m,
             target_min_distance_m=self._target_min_distance_m,
             target_retarget_min_distance_m=self._target_retarget_min_distance_m,
+            home_colour=self._home_colour,
+            home_yellow=self._home_yellow,
+            home_green=self._home_green,
+            home_purple=self._home_purple,
+            home_orange=self._home_orange,
         )
         if result is None:
             return
