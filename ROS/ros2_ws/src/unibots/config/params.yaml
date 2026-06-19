@@ -304,9 +304,9 @@ motion_control_node:
     # Proportional gain: differential PWM = kp * heading_error_rad while driving.
     drive_heading_kp: 0.8
     # Cap |left_pwm - right_pwm| during drive heading correction.
-    drive_heading_max_diff: 0.35
+    drive_heading_max_diff: 0.75
     # Stop and in-place rotate while driving if |heading error| exceeds this (deg).
-    drive_rotate_heading_deg: 15.0
+    drive_rotate_heading_deg: 45.0 # 15.0
     # |heading error| (deg) at/above which rotate PWM stays at rotate_pwm_high; below
     # this, PWM ramps linearly down to rotate_pwm_min as error approaches zero.
     rotate_heading_slowdown_deg: 45.0
@@ -321,11 +321,11 @@ motion_control_node:
     # Max |dPWM/dt| on 0..1 scale; 0 disables slew limiting.
     rotate_pwm_slew_per_s: 10.0
     # In-place rotation aligns heading until |heading error| is within this band (degrees).
-    heading_tolerance_deg: 3.0
+    heading_tolerance_deg: 30.0 # 10.0
     # Within this distance (m), use near_target_heading_tolerance_deg instead; 0 disables.
     near_target_distance_m: 0.25
     # Relaxed |heading error| band (degrees) for align / mid-drive re-rotate when near target.
-    near_target_heading_tolerance_deg: 10.0
+    near_target_heading_tolerance_deg: 20.0 # 15.0
     # Scale in-place rotate PWM when near target (0..1); lowers effective P-gain vs far.
     near_target_rotate_pwm_scale: 0.3
     # 'reached' (and stop) when |lateral offset| in robot frame is within this (meters).
