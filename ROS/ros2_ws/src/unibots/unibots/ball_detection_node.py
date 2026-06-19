@@ -63,6 +63,7 @@ class BallDetectionNode(Node):
         self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
         self.declare_parameter('exploration_phase_topic', '/exploration_phase')
         self.declare_parameter('exploration_heading_scan_enabled', True)
+        self.declare_parameter('display_stale_timeout_sec', 1.0)
 
         front_camera_topic = self.get_parameter('front_camera_topic').get_parameter_value().string_value
         self._ball_detection_enabled = bool(
@@ -141,6 +142,11 @@ class BallDetectionNode(Node):
         self._exploration_heading_scan_enabled = bool(
             self.get_parameter('exploration_heading_scan_enabled').get_parameter_value().bool_value
         )
+        self._display_stale_timeout_sec = float(
+            self.get_parameter('display_stale_timeout_sec').get_parameter_value().double_value
+        )
+        if self._display_stale_timeout_sec <= 0.0:
+            self._display_stale_timeout_sec = 1.0
         self._crop_y_start = 10
 
         if self._request_timeout_sec <= 0.0:
@@ -175,6 +181,9 @@ class BallDetectionNode(Node):
         self._last_perf_log: dict[str, float] = {}
         self._last_error_text = 'waiting for front camera image'
         self._fallback_image = self._build_fallback_image(self._last_error_text)
+        self._placeholder_image = self._build_stale_placeholder_image()
+        self._node_start_time = time.monotonic()
+        self._last_computed_publish_time: float | None = None
         self._last_success_detection_image: Optional[np.ndarray] = None
         self._camera_intrinsics = self._load_camera_intrinsics(self._camera_intrinsic_path)
         self._current_camera_pose: Optional[tuple[np.ndarray, np.ndarray]] = None
@@ -210,6 +219,7 @@ class BallDetectionNode(Node):
         )
 
         self.create_timer(1.0 / self._infer_hz, self._infer_tick)
+        self.create_timer(0.5, self._publish_placeholder_if_stale)
 
         self.get_logger().info(
             'ball_detection_node started; '
@@ -224,7 +234,8 @@ class BallDetectionNode(Node):
             f'camera_pose_topic={self._camera_pose_topic}, '
             f'visible_balls_topic={self._visible_balls_topic}, '
             f'infer_when={self._motion_status_topic}=stopped+fresh_frame '
-            f'(scan_step_wait triggers on-demand infer)'
+            f'(scan_step_wait triggers on-demand infer), '
+            f'display_stale_timeout_sec={self._display_stale_timeout_sec:.2f}'
         )
         self._debug(
             'debug config: '
@@ -1120,6 +1131,52 @@ class BallDetectionNode(Node):
         return output
 
     @staticmethod
+    def _build_stale_placeholder_image() -> np.ndarray:
+        image = np.zeros((240, 320, 3), dtype=np.uint8)
+        image[:] = (32, 32, 32)
+        cv2.putText(
+            image,
+            'ball detection',
+            (64, 110),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            'no recent result',
+            (52, 146),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+        return image
+
+    def _computed_output_is_stale(self) -> bool:
+        now = time.monotonic()
+        if self._last_computed_publish_time is None:
+            return (now - self._node_start_time) >= self._display_stale_timeout_sec
+        return (now - self._last_computed_publish_time) >= self._display_stale_timeout_sec
+
+    def _mark_computed_publish(self) -> None:
+        self._last_computed_publish_time = time.monotonic()
+
+    def _publish_stale_placeholder_image(self) -> None:
+        msg = self._bridge.cv2_to_imgmsg(self._placeholder_image, encoding='bgr8')
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'front_camera'
+        self._pub_ball_detection_image.publish(msg)
+
+    def _publish_placeholder_if_stale(self) -> None:
+        if not self._computed_output_is_stale():
+            return
+        self._publish_stale_placeholder_image()
+
+    @staticmethod
     def _build_fallback_image(error_text: str) -> np.ndarray:
         image = np.zeros((120, 160, 3), dtype=np.uint8)
         image[:] = (30, 30, 30)
@@ -1163,6 +1220,8 @@ class BallDetectionNode(Node):
         return True
 
     def _publish_sticky_detection_image_or_fallback(self, error_text: str) -> None:
+        if self._computed_output_is_stale():
+            return
         if self._publish_cached_success_image():
             return
         self._publish_fallback_image(error_text)
@@ -1178,6 +1237,7 @@ class BallDetectionNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'front_camera'
         self._pub_ball_detection_image.publish(msg)
+        self._mark_computed_publish()
 
     @staticmethod
     def _encode_json_base64_image(image_bytes: bytes) -> tuple[bytes, str]:

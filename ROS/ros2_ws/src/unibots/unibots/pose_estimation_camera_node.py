@@ -285,6 +285,7 @@ class PoseEstimationNode(Node):
         self.declare_parameter('position_bound', 2.0)
         self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
         self.declare_parameter('use_kalman_filter', False)
+        self.declare_parameter('display_stale_timeout_sec', 1.0)
 
         camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
@@ -309,6 +310,11 @@ class PoseEstimationNode(Node):
         self._use_kalman_filter = bool(
             self.get_parameter('use_kalman_filter').get_parameter_value().bool_value
         )
+        self._display_stale_timeout_sec = float(
+            self.get_parameter('display_stale_timeout_sec').get_parameter_value().double_value
+        )
+        if self._display_stale_timeout_sec <= 0.0:
+            self._display_stale_timeout_sec = 1.0
 
         if self._enabled:
             ok_runtime, reason = _opencv_apriltag_runtime_supported()
@@ -359,7 +365,8 @@ class PoseEstimationNode(Node):
         self._bridge = CvBridge()
         self._last_warn_log = 0.0
         self._last_placeholder_log = 0.0
-        self._last_image_time = 0.0
+        self._node_start_time = time.monotonic()
+        self._last_computed_publish_time: float | None = None
         self._latest_image: Optional[np.ndarray] = None
         self._latest_image_stamp: Optional[rclpy.time.Time] = None
         # After moving->stopped, skip AprilTag until the first post-stop /front_camera frame.
@@ -409,7 +416,8 @@ class PoseEstimationNode(Node):
             f'pose_estimation {state}; topic={camera_topic}, tick={tick_hz_text}, '
             f'intrinsics={intrinsic_path}, tag_map={tag_map_path}, '
             f'pose_when={self._motion_status_topic}=stopped+fresh_frame, '
-            f'kalman_filter={"on" if self._use_kalman_filter else "off"}'
+            f'kalman_filter={"on" if self._use_kalman_filter else "off"}, '
+            f'display_stale_timeout_sec={self._display_stale_timeout_sec:.2f}'
         )
 
     def _robot_is_stopped(self) -> bool:
@@ -456,10 +464,8 @@ class PoseEstimationNode(Node):
             if self._should_log(self._last_warn_log):
                 self._last_warn_log = time.monotonic()
                 self.get_logger().warn(f'failed to decode image: {exc}')
-            self._publish_placeholder_processed_image()
             return
 
-        self._last_image_time = time.monotonic()
         self._latest_image_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
         self._latest_image = image
         self._awaiting_fresh_frame = False
@@ -473,14 +479,22 @@ class PoseEstimationNode(Node):
         if not self._enabled or self.tick_hz <= 0.0:
             return
         if self._latest_image is None:
-            self._publish_placeholder_processed_image()
             return
         self._process_image(self._latest_image)
+
+    def _computed_output_is_stale(self) -> bool:
+        now = time.monotonic()
+        if self._last_computed_publish_time is None:
+            return (now - self._node_start_time) >= self._display_stale_timeout_sec
+        return (now - self._last_computed_publish_time) >= self._display_stale_timeout_sec
+
+    def _mark_computed_publish(self) -> None:
+        self._last_computed_publish_time = time.monotonic()
 
     def _publish_placeholder_if_stale(self) -> None:
         if not self._enabled:
             return
-        if (time.monotonic() - self._last_image_time) < 1.0:
+        if not self._computed_output_is_stale():
             return
         self._publish_placeholder_processed_image()
 
@@ -647,6 +661,7 @@ class PoseEstimationNode(Node):
             msg_image.header.stamp = self.get_clock().now().to_msg()
             msg_image.header.frame_id = 'camera'
             self._pub_processed_image.publish(msg_image)
+            self._mark_computed_publish()
 
         if estimate is None:
             tag_count = int(len(ids)) if ids is not None else 0

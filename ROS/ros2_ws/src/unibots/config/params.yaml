@@ -239,6 +239,8 @@ ball_detection_node:
     # Camera offset in robot frame (meters), where +x is forward and +y is left.
     camera_offset_x_robot: 0.105
     camera_offset_y_robot: 0.0
+    # Web display: show placeholder when no infer output (incl. no-box / failed infer) for this long (sec).
+    display_stale_timeout_sec: 1.0
 
 timer:
   ros__parameters:
@@ -295,6 +297,9 @@ pose_estimation_camera:
     robot_motion_status_topic: /robot_motion_status
     # Smooth camera pose with a Kalman filter before publishing /current_position_camera.
     use_kalman_filter: false
+    # Web display: show placeholder when no processed_image output for this long (sec).
+    # Counts any completed AprilTag pass (tags found or pose=unavailable overlay).
+    display_stale_timeout_sec: 1.0
 
 motion_control_node:
   ros__parameters:
@@ -352,9 +357,9 @@ motion_control_node:
     longitudinal_stop_min_m: -0.2
     longitudinal_stop_max_m: 0.05
     # Stopped dwell (seconds) between rotate and drive (heading settle before forward).
-    rotate_drive_pause_s: 1.0
+    rotate_drive_pause_s: 2.0
     # Stopped dwell (seconds) after drive completes, before waypoint 'reached'.
-    drive_complete_pause_s: 1.2
+    drive_complete_pause_s: 3.0
     # Stopped dwell (seconds) at a reached waypoint before starting the next target.
     waypoint_reached_pause_s: 0.01
     # Degrees to rotate per scan step toward exploration heading.
