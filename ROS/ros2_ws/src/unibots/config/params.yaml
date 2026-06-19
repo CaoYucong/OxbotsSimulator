@@ -278,7 +278,7 @@ pose_estimation_camera:
     # Camera offset from robot center along +x (meters).
     camera_offset_x: 0.105
     # AprilTag / processed_image processing rate (Hz). 0 = run on every /front_camera frame.
-    tick_hz: 10.0
+    tick_hz: 4.0
     # Throttle pose logs to once per N seconds. 0 = log every run.
     log_every_sec: 0.0
     # Allow pose estimation on legacy OpenCV (<4.7). May crash on some builds.
