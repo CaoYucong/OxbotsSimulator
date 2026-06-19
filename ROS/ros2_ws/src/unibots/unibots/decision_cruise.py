@@ -124,7 +124,13 @@ DEFAULT_ANGULAR_VELOCITY = DEFAULT_ANGULAR_VELOCITY_FALLBACK # degrees per secon
 
 VIRTUAL_WALL = 1.1  # Virtual wall distance for collision avoiding (meters)
 
-HOME: tuple[float, float, float] = (-0.9, 0.0, -90.0)  # (x, y, orientation_deg) — end-of-game home position
+_VALID_HOME_COLOURS = frozenset({'yellow', 'green', 'purple', 'orange'})
+HOME_COLOUR: str = 'green'
+HOME_YELLOW: tuple[float, float, float] = (0.0, 0.9, 180.0)
+HOME_GREEN: tuple[float, float, float] = (-0.9, 0.0, -90.0)
+HOME_PURPLE: tuple[float, float, float] = (0.0, -0.9, 0.0)
+HOME_ORANGE: tuple[float, float, float] = (0.9, 0.0, 90.0)
+HOME: tuple[float, float, float] = HOME_GREEN  # active home (x, y, orientation_deg), resolved from HOME_COLOUR
 
 INTAKE_RANGE = 0.1  # Range within which the robot can reliably intake the ball (meters)
 
@@ -283,6 +289,54 @@ def _apply_exploration_scan_config(enabled: Optional[bool] = None) -> None:
     global EXPLORATION_HEADING_SCAN_ENABLED
     if enabled is not None:
         EXPLORATION_HEADING_SCAN_ENABLED = bool(enabled)
+
+
+def _parse_home_triplet(values) -> Optional[tuple[float, float, float]]:
+    try:
+        if values is None or len(values) != 3:
+            return None
+        return (float(values[0]), float(values[1]), float(values[2]))
+    except Exception:
+        return None
+
+
+def _resolve_home_from_colour(colour: str) -> tuple[float, float, float]:
+    positions = {
+        'yellow': HOME_YELLOW,
+        'green': HOME_GREEN,
+        'purple': HOME_PURPLE,
+        'orange': HOME_ORANGE,
+    }
+    return positions.get(colour, HOME_GREEN)
+
+
+def _apply_home_config(
+    home_colour: Optional[str] = None,
+    home_yellow: Optional[list[float]] = None,
+    home_green: Optional[list[float]] = None,
+    home_purple: Optional[list[float]] = None,
+    home_orange: Optional[list[float]] = None,
+) -> None:
+    global HOME, HOME_COLOUR, HOME_YELLOW, HOME_GREEN, HOME_PURPLE, HOME_ORANGE
+
+    parsed_yellow = _parse_home_triplet(home_yellow)
+    if parsed_yellow is not None:
+        HOME_YELLOW = parsed_yellow
+    parsed_green = _parse_home_triplet(home_green)
+    if parsed_green is not None:
+        HOME_GREEN = parsed_green
+    parsed_purple = _parse_home_triplet(home_purple)
+    if parsed_purple is not None:
+        HOME_PURPLE = parsed_purple
+    parsed_orange = _parse_home_triplet(home_orange)
+    if parsed_orange is not None:
+        HOME_ORANGE = parsed_orange
+
+    colour = (home_colour or HOME_COLOUR).strip().lower()
+    if colour not in _VALID_HOME_COLOURS:
+        colour = 'green'
+    HOME_COLOUR = colour
+    HOME = _resolve_home_from_colour(colour)
 
 TILE_SIZE = 0.1
 
@@ -2206,7 +2260,7 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     cx, cy, bearing = cur if cur is not None else (0.0, 0.0, None)
 
     sim_time = _read_time_seconds(TIME_FILE)
-    if sim_time is not None and sim_time > 40.0:
+    if sim_time is not None and sim_time > 150.0:
         _debug_log(f"[decision] Time={sim_time:.1f}s > 120s, heading home {HOME}")
         goto(*HOME, waypoint_type="home")
         return 0
@@ -2639,6 +2693,11 @@ def decide_from_ros_state(
     target_retarget_min_distance_m: Optional[float] = None,
     exploration_phase: str = 'inactive',
     exploration_heading_scan_enabled: bool = True,
+    home_colour: Optional[str] = None,
+    home_yellow: Optional[list[float]] = None,
+    home_green: Optional[list[float]] = None,
+    home_purple: Optional[list[float]] = None,
+    home_orange: Optional[list[float]] = None,
 ):
     """ROS planner entrypoint used by decision_node.
 
@@ -2655,6 +2714,14 @@ def decide_from_ros_state(
     )
 
     _apply_exploration_scan_config(enabled=exploration_heading_scan_enabled)
+
+    _apply_home_config(
+        home_colour=home_colour,
+        home_yellow=home_yellow,
+        home_green=home_green,
+        home_purple=home_purple,
+        home_orange=home_orange,
+    )
 
     _sync_ros_topic_state(
         current_x=current_x,
