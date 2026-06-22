@@ -27,6 +27,7 @@ class DecisionNode(Node):
         self.declare_parameter('home_green', [-0.9, 0.0, -90.0])
         self.declare_parameter('home_purple', [0.0, -0.9, 0.0])
         self.declare_parameter('home_orange', [0.9, 0.0, 90.0])
+        self.declare_parameter('dock_at', [50.0, 110.0])
 
         tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)  # kept for launch-file compat, unused
         fallback_tick_hz = float(self.get_parameter('fallback_tick_hz').get_parameter_value().double_value)
@@ -47,6 +48,13 @@ class DecisionNode(Node):
         self._home_green = self._read_home_position_param('home_green')
         self._home_purple = self._read_home_position_param('home_purple')
         self._home_orange = self._read_home_position_param('home_orange')
+        self._dock_at = sorted(
+            float(v) for v in self.get_parameter('dock_at').get_parameter_value().double_array_value
+        )
+        self._game_end_time_s = 160.0
+        self._dock_thresholds = sorted(float(v) for v in self._dock_at)
+        self._completed_dock_thresholds: set[float] = set()
+        self._active_dock_threshold: Optional[float] = None
 
         self._current_x: Optional[float] = 0.0
         self._current_y: Optional[float] = 0.0
@@ -54,6 +62,7 @@ class DecisionNode(Node):
         self._visible_balls_text = ''
         self._radar_sensor_text = ''
         self._waypoint_status = 'going'
+        self._waypoint_type = ''
         self._sim_time_seconds: Optional[float] = None
         self._run_enabled: bool = False
 
@@ -61,6 +70,7 @@ class DecisionNode(Node):
         self.create_subscription(String, '/visible_balls', self._on_visible_balls, 10)
         self.create_subscription(String, '/radar_sensor', self._on_radar_sensor, 10)
         self.create_subscription(String, '/waypoint_status', self._on_waypoint_status, 10)
+        self.create_subscription(String, '/dynamic_waypoints_type', self._on_waypoint_type, 10)
         self.create_subscription(String, self._time_topic, self._on_time, 10)
         self.create_subscription(String, '/run', self._on_run, 10)
 
@@ -83,7 +93,8 @@ class DecisionNode(Node):
             f'target_retarget_min_distance_m={self._target_retarget_min_distance_m:.3f}, '
             f'home_colour={self._home_colour}, home_yellow={self._home_yellow}, '
             f'home_green={self._home_green}, home_purple={self._home_purple}, '
-            f'home_orange={self._home_orange}'
+            f'home_orange={self._home_orange}, '
+            f'dock_at={self._dock_at}'
         )
 
     def _read_home_position_param(self, name: str) -> list[float]:
@@ -91,6 +102,47 @@ class DecisionNode(Node):
         if len(values) == 3:
             return [float(values[0]), float(values[1]), float(values[2])]
         return []
+
+    def _resolve_home_position(self) -> list[float]:
+        colour = (self._home_colour or 'green').strip().lower()
+        positions = {
+            'yellow': self._home_yellow,
+            'green': self._home_green,
+            'purple': self._home_purple,
+            'orange': self._home_orange,
+        }
+        home = positions.get(colour) or self._home_green
+        return home if len(home) == 3 else self._home_green
+
+    def _next_dock_threshold(self, sim_time: float) -> Optional[float]:
+        for threshold in self._dock_thresholds:
+            if sim_time >= threshold and threshold not in self._completed_dock_thresholds:
+                return threshold
+        return None
+
+    def _complete_active_dock_if_reached(self) -> None:
+        if self._waypoint_type != 'home' or self._waypoint_status != 'reached':
+            return
+        if self._active_dock_threshold is not None:
+            self._completed_dock_thresholds.add(self._active_dock_threshold)
+            self._active_dock_threshold = None
+
+    def _publish_go_home(self) -> None:
+        hx, hy, hdeg = self._resolve_home_position()
+        waypoint_text = f'({hx:.6f}, {hy:.6f}, {hdeg:.6f})'
+        payload = {
+            'dynamic_waypoints': waypoint_text,
+            'collision_avoiding_waypoint': '',
+            'speed': f'{self._default_speed:.6f}',
+        }
+        self._publish_decisions(payload)
+        self._publish_dynamic_waypoint(waypoint_text)
+        msg = String()
+        msg.data = 'home'
+        self._pub_dynamic_waypoints_type.publish(msg)
+        self._publish_collision_avoiding_waypoint('')
+        self._waypoint_type = 'home'
+        self._waypoint_status = 'going'
 
     def _on_current_position(self, msg: PoseStamped) -> None:
         self._current_x = float(msg.pose.position.x)
@@ -115,6 +167,9 @@ class DecisionNode(Node):
         if text:
             self._waypoint_status = text
 
+    def _on_waypoint_type(self, msg: String) -> None:
+        self._waypoint_type = (msg.data or '').strip().lower()
+
     def _on_time(self, msg: String) -> None:
         try:
             self._sim_time_seconds = float(msg.data)
@@ -132,6 +187,23 @@ class DecisionNode(Node):
         if self._current_x is None or self._current_y is None or self._current_theta is None:
             return
         if self._sim_time_seconds is None:
+            return
+
+        sim_time = float(self._sim_time_seconds)
+
+        if sim_time >= self._game_end_time_s:
+            self._publish_go_home()
+            return
+
+        if self._waypoint_type == 'home' and self._waypoint_status != 'reached':
+            return
+
+        self._complete_active_dock_if_reached()
+
+        dock_threshold = self._next_dock_threshold(sim_time)
+        if dock_threshold is not None:
+            self._active_dock_threshold = dock_threshold
+            self._publish_go_home()
             return
 
         mode_key = self._resolve_mode()

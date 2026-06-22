@@ -21,6 +21,10 @@ Encoders (BCM numbering, 3.3V supply to protect the Pi):
   - Left  encoder: A = GPIO17, B = GPIO27
   - Right encoder: A = GPIO22, B = GPIO23
 
+Servo (BCM numbering):
+  - Intake / mechanism servo: GPIO21
+  - PWM is sent only while moving to a new angle, then the pin is released.
+
 Monitor Output:
 grep --line-buffered 'motion_control_node'
 
@@ -65,7 +69,9 @@ Waypoint following:
         non-zero axis at ±0.8 m (zero axis unchanged).
       * Phase 2 (rotate): turn in place to face the field center (0, 0).
       * Phase 3 (reverse): back up until |coordinate| on the home axis exceeds 0.9 m
-        (same axis as the non-zero home target), then publish waypoint 'reached'.
+        (same axis as the non-zero home target).
+      * Phase 4 (servo): pulse GPIO21 to -90 deg, wait 1 s (no PWM), pulse to +90 deg,
+        wait 3 s (no PWM), then publish waypoint 'reached'.
   - Waypoint status output:
       /waypoint_status (std_msgs/String)
         'reached' when the robot-frame stop band is satisfied, else 'going'.
@@ -84,8 +90,9 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
 try:
-    from gpiozero import PWMOutputDevice, RotaryEncoder
+    from gpiozero import AngularServo, PWMOutputDevice, RotaryEncoder
 except Exception:
+    AngularServo = None
     PWMOutputDevice = None
     RotaryEncoder = None
 
@@ -106,6 +113,19 @@ LEFT_ENC_A: int = 17
 LEFT_ENC_B: int = 27
 RIGHT_ENC_A: int = 22
 RIGHT_ENC_B: int = 23
+
+SERVO_PIN: int = 21
+SERVO_MIN_ANGLE_DEG: float = -90.0
+SERVO_MAX_ANGLE_DEG: float = 90.0
+SERVO_MIN_PULSE_WIDTH_S: float = 0.0005
+SERVO_MAX_PULSE_WIDTH_S: float = 0.0025
+SERVO_MOVE_SETTLE_S: float = 2.0  # keep PWM active while the servo moves (matches bench script)
+SERVO_STARTUP_ANGLE_DEG: float = 90.0
+SERVO_STARTUP_HOLD_S: float = 3.0
+HOME_SERVO_FIRST_ANGLE_DEG: float = -90.0
+HOME_SERVO_SECOND_ANGLE_DEG: float = 90.0
+HOME_SERVO_FIRST_HOLD_S: float = 1.0
+HOME_SERVO_SECOND_HOLD_S: float = 3.0
 
 FULL_SPEED: float = 1.0  # PWM duty cycle for full-speed forward/reverse
 ROTATE_RAMP_S: float = 0.5  # soft-start ramp duration after rotate() begins
@@ -512,6 +532,7 @@ class MotionControlNode(Node):
         self._home_phase: str | None = None
         self._home_final: tuple[float, float] | None = None
         self._home_intermediate: tuple[float, float] | None = None
+        self._home_servo_until: float | None = None
         self._control_period = 0.1 if control_hz <= 0.0 else (1.0 / control_hz)
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
@@ -531,6 +552,9 @@ class MotionControlNode(Node):
             LEFT_MOTOR_A, LEFT_MOTOR_B, self._left_enc, invert_encoder=True
         )
         self._right = Motor(RIGHT_MOTOR_A, RIGHT_MOTOR_B, self._right_enc)
+
+        self._servo = None
+        self._init_startup_servo()
 
         self.create_subscription(String, time_topic, self._on_time, 10)
         self.create_subscription(String, '/run', self._on_run, 10)
@@ -573,6 +597,21 @@ class MotionControlNode(Node):
             f'motion_status={motion_status_topic} @ {motion_status_hz:.1f} Hz, '
             f'waypoint_status={waypoint_status_topic}'
         )
+
+    def _init_startup_servo(self) -> None:
+        if AngularServo is None:
+            self.get_logger().warn('gpiozero AngularServo unavailable; startup servo sequence skipped.')
+            return
+        try:
+            self._set_servo_angle(SERVO_STARTUP_ANGLE_DEG)
+            self.get_logger().info(
+                f'AngularServo on GPIO{SERVO_PIN} moved to {SERVO_STARTUP_ANGLE_DEG:.0f} deg, '
+                f'waiting {SERVO_STARTUP_HOLD_S:.1f} s with GPIO{SERVO_PIN} idle'
+            )
+            time.sleep(SERVO_STARTUP_HOLD_S)
+            self.get_logger().info('Servo startup sequence complete')
+        except Exception as exc:
+            self.get_logger().warn(f'Servo init failed: {exc}')
 
     def _on_waypoint_type(self, msg: String) -> None:
         new_type = (msg.data or '').strip().lower()
@@ -622,13 +661,96 @@ class MotionControlNode(Node):
         self._home_phase = None
         self._home_final = None
         self._home_intermediate = None
+        self._home_servo_until = None
 
     def _home_sequence_active(self) -> bool:
         return self._home_phase in ('approach', 'rotate', 'reverse')
 
     def _home_sequence_holding(self) -> bool:
         """True while home is in progress or finished and should not re-navigate."""
-        return self._home_phase in ('approach', 'rotate', 'reverse', 'complete')
+        return self._home_phase in (
+            'approach', 'rotate', 'reverse', 'servo_90', 'servo_neg90', 'complete',
+        )
+
+    def _release_servo(self) -> None:
+        if self._servo is None:
+            return
+        try:
+            self._servo.close()
+        except Exception:
+            pass
+        self._servo = None
+
+    def _set_servo_angle(self, angle_deg: float) -> None:
+        if AngularServo is None:
+            self.get_logger().warn(f'Servo unavailable; cannot set GPIO{SERVO_PIN} to {angle_deg:.0f} deg')
+            return
+        self._release_servo()
+        clamped = max(SERVO_MIN_ANGLE_DEG, min(SERVO_MAX_ANGLE_DEG, float(angle_deg)))
+        servo = None
+        try:
+            servo = AngularServo(
+                SERVO_PIN,
+                min_angle=SERVO_MIN_ANGLE_DEG,
+                max_angle=SERVO_MAX_ANGLE_DEG,
+                min_pulse_width=SERVO_MIN_PULSE_WIDTH_S,
+                max_pulse_width=SERVO_MAX_PULSE_WIDTH_S,
+            )
+            servo.angle = clamped
+            if SERVO_MOVE_SETTLE_S > 0.0:
+                time.sleep(SERVO_MOVE_SETTLE_S)
+            self.get_logger().info(
+                f'[servo] GPIO{SERVO_PIN} angle -> {clamped:.0f} deg '
+                f'({SERVO_MOVE_SETTLE_S:.1f} s PWM), then released'
+            )
+        except Exception as exc:
+            self.get_logger().warn(f'Servo set angle failed: {exc}')
+        finally:
+            if servo is not None:
+                try:
+                    servo.close()
+                except Exception:
+                    pass
+            self._servo = None
+
+    def _begin_home_servo_sequence(self) -> None:
+        self._stop()
+        self._publish_motion_status_now('stopped')
+        self._home_phase = 'servo_neg90'
+        self._motion_phase = 'navigate'
+        self._set_servo_angle(HOME_SERVO_FIRST_ANGLE_DEG)
+        self._home_servo_until = time.monotonic() + HOME_SERVO_FIRST_HOLD_S
+        self.get_logger().info(
+            f'[home] reverse complete, servo -> {HOME_SERVO_FIRST_ANGLE_DEG:.0f} deg, '
+            f'waiting {HOME_SERVO_FIRST_HOLD_S:.1f} s with GPIO{SERVO_PIN} idle'
+        )
+
+    def _control_home_servo_sequence(self) -> None:
+        now = time.monotonic()
+        self._publish_waypoint_status('going')
+        self._stop()
+        self._publish_motion_status_now('stopped')
+
+        if self._home_servo_until is None or now < self._home_servo_until:
+            return
+
+        if self._home_phase == 'servo_neg90':
+            self._home_phase = 'servo_90'
+            self._set_servo_angle(HOME_SERVO_SECOND_ANGLE_DEG)
+            self._home_servo_until = now + HOME_SERVO_SECOND_HOLD_S
+            self.get_logger().info(
+                f'[home] servo -> {HOME_SERVO_SECOND_ANGLE_DEG:.0f} deg, '
+                f'waiting {HOME_SERVO_SECOND_HOLD_S:.1f} s with GPIO{SERVO_PIN} idle'
+            )
+            return
+
+        if self._home_phase == 'servo_90':
+            self._home_phase = 'complete'
+            self._home_servo_until = None
+            if self._home_final is not None:
+                self._active_target = self._home_final
+            self.get_logger().info('[home] servo sequence complete, marking reached')
+            self._begin_phase_pause('reached')
 
     def _init_home_sequence(self, final_x: float, final_y: float) -> None:
         parsed = _parse_home_geometry(final_x, final_y, self._position_tolerance_m)
@@ -914,13 +1036,12 @@ class MotionControlNode(Node):
         if self._home_phase == 'reverse':
             fx, fy = self._home_final
             if self._home_reverse_reached():
-                self._home_phase = 'complete'
                 self._active_target = (fx, fy)
                 self.get_logger().info(
                     f'[home] arrived at final ({fx:.3f}, {fy:.3f}), '
                     f'pose=({self._current_x:.3f}, {self._current_y:.3f})'
                 )
-                self._begin_phase_pause('reached')
+                self._begin_home_servo_sequence()
                 return
 
             dx = -self._current_x
@@ -1031,6 +1152,10 @@ class MotionControlNode(Node):
                 self._motion_phase = 'navigate'
                 self._needs_heading_settle = False
                 self._heading_settle_until = None
+            return
+
+        if self._waypoint_type == 'home' and self._home_phase in ('servo_90', 'servo_neg90'):
+            self._control_home_servo_sequence()
             return
 
         if self._waypoint_type == 'home' and self._home_phase == 'complete':
@@ -1200,6 +1325,7 @@ class MotionControlNode(Node):
         self._stop()
         self._left.close()
         self._right.close()
+        self._release_servo()
         for enc in (self._left_enc, self._right_enc):
             if enc is not None:
                 try:

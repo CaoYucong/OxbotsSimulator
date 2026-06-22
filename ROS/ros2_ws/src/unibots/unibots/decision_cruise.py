@@ -2210,15 +2210,6 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     cur = _read_current_position(current_file)
     cx, cy, bearing = cur if cur is not None else (0.0, 0.0, None)
 
-    sim_time = _read_time_seconds(TIME_FILE)
-    if sim_time is not None and sim_time > 150.0:
-        _debug_log(f"[decision] Time={sim_time:.1f}s > 120s, heading home {HOME}")
-        goto(*HOME, waypoint_type="home")
-        return 0
-
-
-    status = _read_status(status_file)
-
     if cur is None:
         _debug_log("[decision] No current position data, skip")
         return 0
