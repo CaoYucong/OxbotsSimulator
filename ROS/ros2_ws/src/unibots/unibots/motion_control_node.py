@@ -150,7 +150,7 @@ PHASE_PAUSE_S: float = 1.0  # stopped dwell after heading aligns (and after driv
 WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next target
 WAYPOINT_TYPE_TOPIC: str = '/dynamic_waypoints_type'
 HOME_INTERMEDIATE_M: float = 0.8  # intermediate stop on non-zero home axis before reverse
-HOME_AXIS_STOP_ABS_M: float = 0.9  # reverse phase stops once |axis coord| exceeds this
+HOME_AXIS_STOP_ABS_M: float = 0.95  # reverse phase stops once |axis coord| exceeds this
 
 
 def _normalize_angle(angle: float) -> float:

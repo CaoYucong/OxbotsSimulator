@@ -129,8 +129,6 @@ class BallDetectionNode(Node):
             self.get_parameter('robot_motion_status_topic').get_parameter_value().string_value
             or ROBOT_MOTION_STATUS_TOPIC
         )
-        self._crop_y_start = 10
-
         if self._request_timeout_sec <= 0.0:
             self._request_timeout_sec = 1.0
         if self._infer_hz <= 0.0:
@@ -168,7 +166,7 @@ class BallDetectionNode(Node):
         self._current_camera_pose: Optional[tuple[np.ndarray, np.ndarray]] = None
         self._camera_pose_history_entries: list[tuple[int, np.ndarray, np.ndarray]] = []
         self._waypoint_type: str = ''
-        # Buffer of recent cropped front images keyed by stamp_ns (2-second rolling window).
+        # Buffer of recent front images keyed by stamp_ns (2-second rolling window).
         self._front_image_buffer: dict[int, np.ndarray] = {}
         # A matched (image, cam_world, r_wc) pair ready for the next infer tick.
         self._pending_infer_item: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None
@@ -200,7 +198,6 @@ class BallDetectionNode(Node):
             f'mode=local, model_id={self._local_model_id}, '
             f'infer_hz={self._infer_hz:.2f}, min_confidence={self._min_confidence:.2f}, '
             f'infer_image_height={self._infer_image_height}, '
-            f'crop_y_start={self._crop_y_start}, '
             f'camera_pose_topic={self._camera_pose_topic}, '
             f'visible_balls_topic={self._visible_balls_topic}, '
             f'infer_when={self._motion_status_topic}=stopped'
@@ -269,25 +266,19 @@ class BallDetectionNode(Node):
             full_image = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             self._latest_front_stamp = msg.header.stamp
             full_h, full_w = full_image.shape[:2]
-            if full_h > self._crop_y_start:
-                cropped = full_image[self._crop_y_start :, :].copy()
-            else:
-                cropped = full_image
-            self._latest_front_image = cropped
+            self._latest_front_image = full_image
 
             # Buffer image by stamp for exact matching with camera pose.
             stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
-            self._front_image_buffer[stamp_ns] = cropped
+            self._front_image_buffer[stamp_ns] = full_image
             cutoff_ns = stamp_ns - 2_000_000_000
             self._front_image_buffer = {
                 k: v for k, v in self._front_image_buffer.items() if k >= cutoff_ns
             }
 
-            cropped_h, cropped_w = cropped.shape[:2]
             self._debug_throttled(
                 'front_image',
-                f'received front image: {full_w}x{full_h}, '
-                f'cropped to: {cropped_w}x{cropped_h} (keep y>={self._crop_y_start})',
+                f'received front image: {full_w}x{full_h}',
             )
         except Exception as exc:
             now = time.monotonic()
@@ -521,7 +512,7 @@ class BallDetectionNode(Node):
 
         try:
             u = float(detection['x'])
-            v_cropped = float(detection['y'])
+            v = float(detection['y'])
             width_px = float(detection['width'])
             height_px = float(detection['height'])
         except Exception:
@@ -529,7 +520,6 @@ class BallDetectionNode(Node):
 
         fx = float(self._camera_intrinsics['fx'])
         fy = float(self._camera_intrinsics['fy'])
-        v = v_cropped + float(self._crop_y_start)
 
         camera_matrix = self._camera_intrinsics['camera_matrix']
         distortion = self._camera_intrinsics['distortion']
