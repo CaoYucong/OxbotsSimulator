@@ -84,7 +84,7 @@ LEFT_WHEEL_JOINT_NAME: str = 'left_wheel_joint'
 RIGHT_WHEEL_JOINT_NAME: str = 'right_wheel_joint'
 ENCODER_DEBUG_HZ: float = 10.0  # how often to print encoder debug
 ROTATE_SWITCH_INTERVAL_S: int = 10  # alternate rotate target every N seconds
-ROTATE_PHASE_TARGET: int = 3000  # encoder count target per wheel in each phase
+ROTATE_PHASE_TARGET: int = 1000  # encoder count target per wheel in each phase
 MOTION_STATUS_TOPIC: str = '/robot_motion_status'  # 'moving' / 'stopped'
 MOTION_STATUS_HZ: float = 20.0  # how often to publish robot motion status
 
@@ -410,7 +410,7 @@ class MotionControlNode(Node):
 
         phase = int(t) // ROTATE_SWITCH_INTERVAL_S
         target_left = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
-        target_right = ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
+        target_right = -ROTATE_PHASE_TARGET if phase % 2 == 0 else 0
         targets = (target_left, target_right)
         if self._rotate_targets != targets:
             self._rotate_targets = targets
