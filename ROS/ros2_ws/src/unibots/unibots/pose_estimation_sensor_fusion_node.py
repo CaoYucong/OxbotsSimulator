@@ -1,4 +1,4 @@
-"""Sensor-fusion pose node: camera absolute pose + wheel odometry.
+"""Sensor-fusion pose node: camera absolute pose + wheel odometry + ToF radar.
 
 Inputs:
   - /current_position_camera (geometry_msgs/PoseStamped):
@@ -12,13 +12,22 @@ Inputs:
   - /robot_motion_status (std_msgs/String):
       'moving' or 'stopped' from motion_control_node. Debug logs are emitted
       only while the robot is stopped.
+  - /time (std_msgs/String, optional):
+      Simulation clock used to stamp the first field of /radar_sensor payloads.
 
-Output:
+Outputs:
   - /current_position (geometry_msgs/PoseStamped):
       Fused pose published at the wheel-odometry rate. Computed as:
           current = camera_anchor  (+)  (odom_now (-) odom_at_camera_stamp)
       i.e. take the most recent camera pose and add the relative wheel motion
       accumulated since that camera frame's timestamp.
+  - /radar_sensor (std_msgs/String):
+      Comma-separated distances in metres:
+          time,front,right,left,rear
+      Real hardware: a single front VL53L0X/VL53L1X ToF (default I2C 0x29) on the
+      shared bus (MPU6050 may also be present at 0x68). Other radar directions
+      publish the configured max/fail range. Simulation: payload is fetched from
+      upstream simulation_data.radar_sensor.
 
 Geometry / calibration:
   - Differential drive, both driven wheels are at the REAR.
@@ -33,7 +42,11 @@ Geometry / calibration:
     the wheel-axle midpoint and converted to the robot origin on publish.
 """
 
+import json
 import math
+import threading
+import time
+import urllib.request
 from collections import deque
 
 import rclpy
@@ -62,6 +75,27 @@ ROBOT_MOTION_STATUS_TOPIC: str = '/robot_motion_status'
 STOPPED_AVG_OUTLIER_FACTOR: float = 3.0  # MAD multiplier for outlier rejection
 STOPPED_AVG_POS_FLOOR_M: float = 0.01  # don't reject samples within this position spread
 STOPPED_AVG_YAW_FLOOR_DEG: float = 1.0  # don't reject samples within this yaw spread
+RADAR_SENSOR_TOPIC: str = '/radar_sensor'
+RADAR_DIRECTIONS: tuple[str, ...] = ('front', 'right', 'left', 'rear')
+VL53_I2C_ADDR: int = 0x29  # default address for both VL53L0X and VL53L1X
+MPU6050_I2C_ADDR: int = 0x68  # may share the bus with the front ToF
+DEFAULT_USE_TCA9548A: bool = False
+DEFAULT_USE_REAL_SENSOR: bool = True
+DEFAULT_REMOTE_HOST: str = '192.168.50.2'
+DEFAULT_REMOTE_PORT: int = 5003
+DEFAULT_RADAR_POLL_HZ: float = 10.0
+DEFAULT_REQUEST_TIMEOUT: float = 3.0
+DEFAULT_TIME_TOPIC: str = '/time'
+DEFAULT_TCA9548A_ADDR: int = 0x70
+DEFAULT_TOF_FRONT_CHANNEL: int = 4
+DEFAULT_TOF_MIN_RANGE_M: float = 0.02
+DEFAULT_TOF_MAX_RANGE_M: float = 0.80
+DEFAULT_TOF_READ_FAIL_VALUE_M: float = 0.80
+DEFAULT_TOF_DEBUG_ENABLED: bool = False
+DEFAULT_TOF_DEBUG_INTERVAL_SEC: float = 0.1
+DEFAULT_TOF_INIT_RETRIES: int = 5
+DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT: int = 8
+DEFAULT_I2C_FREQUENCY: int = 100_000
 
 
 def _yaw_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> float:
@@ -159,6 +193,24 @@ class PoseEstimationSensorFusionNode(Node):
         self.declare_parameter('stopped_avg_outlier_factor', STOPPED_AVG_OUTLIER_FACTOR)
         self.declare_parameter('stopped_avg_pos_floor_m', STOPPED_AVG_POS_FLOOR_M)
         self.declare_parameter('stopped_avg_yaw_floor_deg', STOPPED_AVG_YAW_FLOOR_DEG)
+        self.declare_parameter('use_real_sensor', DEFAULT_USE_REAL_SENSOR)
+        self.declare_parameter('remote_host', DEFAULT_REMOTE_HOST)
+        self.declare_parameter('remote_port', DEFAULT_REMOTE_PORT)
+        self.declare_parameter('poll_hz', DEFAULT_RADAR_POLL_HZ)
+        self.declare_parameter('request_timeout', DEFAULT_REQUEST_TIMEOUT)
+        self.declare_parameter('time_topic', DEFAULT_TIME_TOPIC)
+        self.declare_parameter('radar_sensor_topic', RADAR_SENSOR_TOPIC)
+        self.declare_parameter('use_tca9548a', DEFAULT_USE_TCA9548A)
+        self.declare_parameter('tca9548a_addr', DEFAULT_TCA9548A_ADDR)
+        self.declare_parameter('tof_front_channel', DEFAULT_TOF_FRONT_CHANNEL)
+        self.declare_parameter('tof_min_range_m', DEFAULT_TOF_MIN_RANGE_M)
+        self.declare_parameter('tof_max_range_m', DEFAULT_TOF_MAX_RANGE_M)
+        self.declare_parameter('tof_read_fail_value_m', DEFAULT_TOF_READ_FAIL_VALUE_M)
+        self.declare_parameter('tof_debug_enabled', DEFAULT_TOF_DEBUG_ENABLED)
+        self.declare_parameter('tof_debug_interval_sec', DEFAULT_TOF_DEBUG_INTERVAL_SEC)
+        self.declare_parameter('tof_init_retries', DEFAULT_TOF_INIT_RETRIES)
+        self.declare_parameter('tof_reinit_after_fail_count', DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT)
+        self.declare_parameter('i2c_frequency', DEFAULT_I2C_FREQUENCY)
 
         self._camera_topic = (
             self.get_parameter('camera_pose_topic').get_parameter_value().string_value
@@ -221,6 +273,83 @@ class PoseEstimationSensorFusionNode(Node):
             or STOPPED_AVG_YAW_FLOOR_DEG
         )
 
+        self._use_real_sensor = self.get_parameter('use_real_sensor').get_parameter_value().bool_value
+        self._remote_host = (
+            self.get_parameter('remote_host').get_parameter_value().string_value or DEFAULT_REMOTE_HOST
+        )
+        self._remote_port = int(
+            self.get_parameter('remote_port').get_parameter_value().integer_value or DEFAULT_REMOTE_PORT
+        )
+        poll_hz = float(self.get_parameter('poll_hz').get_parameter_value().double_value) or DEFAULT_RADAR_POLL_HZ
+        self._request_timeout = float(
+            self.get_parameter('request_timeout').get_parameter_value().double_value or DEFAULT_REQUEST_TIMEOUT
+        )
+        self._time_topic = (
+            self.get_parameter('time_topic').get_parameter_value().string_value or DEFAULT_TIME_TOPIC
+        )
+        self._radar_topic = (
+            self.get_parameter('radar_sensor_topic').get_parameter_value().string_value or RADAR_SENSOR_TOPIC
+        )
+        self._tof_front_channel = int(
+            self.get_parameter('tof_front_channel').get_parameter_value().integer_value
+        )
+        if self._tof_front_channel < 0 or self._tof_front_channel > 7:
+            self._tof_front_channel = DEFAULT_TOF_FRONT_CHANNEL
+        self._tof_min_range_m = float(
+            self.get_parameter('tof_min_range_m').get_parameter_value().double_value or DEFAULT_TOF_MIN_RANGE_M
+        )
+        self._tof_max_range_m = float(
+            self.get_parameter('tof_max_range_m').get_parameter_value().double_value or DEFAULT_TOF_MAX_RANGE_M
+        )
+        self._tof_read_fail_value_m = float(
+            self.get_parameter('tof_read_fail_value_m').get_parameter_value().double_value
+            or DEFAULT_TOF_READ_FAIL_VALUE_M
+        )
+        self._tof_debug_enabled = self.get_parameter('tof_debug_enabled').get_parameter_value().bool_value
+        self._tof_debug_interval_sec = float(
+            self.get_parameter('tof_debug_interval_sec').get_parameter_value().double_value
+            or DEFAULT_TOF_DEBUG_INTERVAL_SEC
+        )
+        self._tof_init_retries = int(
+            self.get_parameter('tof_init_retries').get_parameter_value().integer_value or DEFAULT_TOF_INIT_RETRIES
+        )
+        self._tof_reinit_after_fail_count = int(
+            self.get_parameter('tof_reinit_after_fail_count').get_parameter_value().integer_value
+            or DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT
+        )
+        self._i2c_frequency = int(
+            self.get_parameter('i2c_frequency').get_parameter_value().integer_value or DEFAULT_I2C_FREQUENCY
+        )
+        self._use_tca9548a = self.get_parameter('use_tca9548a').get_parameter_value().bool_value
+        self._mux_addr = int(self.get_parameter('tca9548a_addr').get_parameter_value().integer_value)
+        if self._request_timeout <= 0.0:
+            self._request_timeout = DEFAULT_REQUEST_TIMEOUT
+        if self._tof_debug_interval_sec <= 0.0:
+            self._tof_debug_interval_sec = DEFAULT_TOF_DEBUG_INTERVAL_SEC
+        if self._tof_init_retries <= 0:
+            self._tof_init_retries = 1
+        if self._tof_reinit_after_fail_count <= 0:
+            self._tof_reinit_after_fail_count = DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT
+        if self._i2c_frequency <= 0:
+            self._i2c_frequency = DEFAULT_I2C_FREQUENCY
+
+        self._latest_time_s: float | None = None
+        self._last_radar_text: str | None = None
+        self._radar_fetch_error_logged = False
+        self._tof_error_logged = False
+        self._tof_backend = 'none'
+        self._tof_readers: dict[str, object] = {}
+        self._tof_consecutive_fail_count = 0
+        self._last_tof_debug = self.get_clock().now()
+        self._i2c = None
+        self._i2c_lock = threading.Lock()
+        self._tof_mux = None
+        self._radar_urls = [
+            f'http://{self._remote_host}:{self._remote_port}/data/simulation_data',
+            f'http://{self._remote_host}:{self._remote_port}/simulation_data',
+        ]
+        self._radar_url_index = 0
+
         # Free-running wheel-axle-midpoint odometry pose (drifts; corrected by camera).
         self._odom_x = 0.0
         self._odom_y = 0.0
@@ -253,13 +382,22 @@ class PoseEstimationSensorFusionNode(Node):
         self._anchor_odom_yaw = 0.0
 
         self._pub = self.create_publisher(PoseStamped, self._output_topic, 10)
+        self._pub_radar_sensor = self.create_publisher(String, self._radar_topic, 10)
         self.create_subscription(JointState, self._wheel_topic, self._on_wheel_state, 50)
         self.create_subscription(PoseStamped, self._camera_topic, self._on_camera_pose, 10)
         self.create_subscription(
             String, self._motion_status_topic, self._on_robot_motion_status, 10
         )
+        if self._time_topic:
+            self.create_subscription(String, self._time_topic, self._on_time, 10)
+        if poll_hz > 0.0:
+            self.create_timer(1.0 / poll_hz, self._poll_radar)
         if fusion_debug_hz > 0.0:
             self.create_timer(1.0 / fusion_debug_hz, self._log_fusion_debug)
+
+        if self._use_real_sensor:
+            self._tof_readers = self._build_tof_readers()
+            self._tof_backend = self._tof_backend if self._tof_readers else 'none'
 
         self.get_logger().info(
             'pose_estimation_sensor_fusion started; fusing '
@@ -268,7 +406,9 @@ class PoseEstimationSensorFusionNode(Node):
             f'count_average_per_meter={self._count_avg_per_m:.1f}, '
             f'count_diff_per_degree={self._count_diff_per_deg:.3f}, '
             f'origin_forward_offset={self._origin_offset:.3f}m, '
-            f'debug_when={self._motion_status_topic}=stopped'
+            f'debug_when={self._motion_status_topic}=stopped, '
+            f'radar={"real-tof" if self._use_real_sensor else "upstream"} '
+            f'backend={self._tof_backend} -> {self._radar_topic}, poll_hz={poll_hz}'
         )
 
     def _on_robot_motion_status(self, msg: String) -> None:
@@ -438,6 +578,363 @@ class PoseEstimationSensorFusionNode(Node):
         out.pose.orientation.z = qz
         out.pose.orientation.w = qw
         self._pub.publish(out)
+
+    # ----- radar / ToF --------------------------------------------------------
+
+    def _on_time(self, msg: String) -> None:
+        raw = (msg.data or '').strip()
+        if not raw:
+            return
+        try:
+            self._latest_time_s = float(raw)
+        except ValueError:
+            self._latest_time_s = None
+
+    def _resolve_time_s(self) -> float:
+        if self._latest_time_s is not None:
+            return self._latest_time_s
+        return self.get_clock().now().nanoseconds / 1_000_000_000.0
+
+    def _poll_radar(self) -> None:
+        if self._use_real_sensor:
+            radar_text = self._build_radar_text_from_tof()
+            if not radar_text:
+                return
+        else:
+            try:
+                body = self._fetch_simulation_data_body()
+                payload = json.loads(body.decode('utf-8', errors='ignore'))
+                if not isinstance(payload, dict):
+                    raise ValueError('simulation_data payload must be a JSON object')
+            except Exception as exc:
+                if not self._radar_fetch_error_logged:
+                    self.get_logger().warn(
+                        f'upstream fetch failed for radar from {self._radar_urls}: {exc}'
+                    )
+                    self._radar_fetch_error_logged = True
+                return
+
+            self._radar_fetch_error_logged = False
+            radar_text = str(payload.get('radar_sensor', '')).strip()
+            if not radar_text:
+                return
+            radar_text = self._replace_radar_timestamp(radar_text)
+
+        if radar_text == self._last_radar_text:
+            return
+
+        msg = String()
+        msg.data = radar_text
+        self._pub_radar_sensor.publish(msg)
+        self._last_radar_text = radar_text
+
+    def _replace_radar_timestamp(self, radar_text: str) -> str:
+        parts = [part.strip() for part in radar_text.split(',')]
+        if len(parts) < 5:
+            return radar_text
+        parts[0] = f'{self._resolve_time_s():.6f}'
+        return ','.join(parts[:5])
+
+    def _get_i2c(self):
+        if self._i2c is not None:
+            return self._i2c
+        import board
+        import busio
+
+        self._i2c = busio.I2C(board.SCL, board.SDA, frequency=self._i2c_frequency)
+        return self._i2c
+
+    def _scan_main_i2c_addresses(self, i2c) -> list[int]:
+        try:
+            return list(i2c.scan())
+        except Exception as exc:
+            self.get_logger().error(f'I2C scan on main bus failed: {exc}')
+            return []
+
+    def _log_main_i2c_devices(self, addresses: list[int]) -> None:
+        labels: list[str] = []
+        for addr in sorted(addresses):
+            if addr == VL53_I2C_ADDR:
+                labels.append(f'0x{addr:02x}(VL53 ToF)')
+            elif addr == MPU6050_I2C_ADDR:
+                labels.append(f'0x{addr:02x}(MPU6050)')
+            else:
+                labels.append(f'0x{addr:02x}')
+        self.get_logger().info(
+            'main I2C scan: ' + (', '.join(labels) if labels else 'no devices detected')
+        )
+
+    def _scan_mux_channels_for_vl53(self, tca) -> list[int]:
+        found: list[int] = []
+        for ch in range(8):
+            try:
+                addresses = tca[ch].scan()
+            except Exception:
+                continue
+            if VL53_I2C_ADDR in addresses:
+                found.append(ch)
+        return found
+
+    def _try_init_vl53l0x(self, bus):
+        try:
+            import adafruit_vl53l0x
+        except ImportError:
+            return None, None
+
+        last_exc: Exception | None = None
+        for _ in range(self._tof_init_retries):
+            try:
+                sensor = adafruit_vl53l0x.VL53L0X(bus)
+                try:
+                    sensor.start_continuous()
+                except Exception:
+                    pass
+                return sensor, 'VL53L0X'
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(0.05)
+        if last_exc is not None:
+            self.get_logger().debug(f'VL53L0X init failed: {last_exc}')
+        return None, None
+
+    def _try_init_vl53l1x(self, bus):
+        try:
+            import adafruit_vl53l1x
+        except ImportError:
+            return None, None
+
+        last_exc: Exception | None = None
+        for _ in range(self._tof_init_retries):
+            try:
+                sensor = adafruit_vl53l1x.VL53L1X(bus)
+                sensor.start_ranging()
+                return sensor, 'VL53L1X'
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(0.05)
+        if last_exc is not None:
+            self.get_logger().debug(f'VL53L1X init failed: {last_exc}')
+        return None, None
+
+    def _make_vl53_reader(self, sensor, model: str):
+        if model == 'VL53L0X':
+            return lambda: float(sensor.range) / 1000.0
+
+        def _read_l1x() -> float:
+            distance_cm = sensor.distance
+            if distance_cm is None:
+                raise RuntimeError('VL53L1X returned no distance')
+            return float(distance_cm) / 100.0
+
+        return _read_l1x
+
+    def _init_vl53_reader(self, bus, name: str, channel: int | None):
+        sensor, model = self._try_init_vl53l0x(bus)
+        if sensor is None:
+            sensor, model = self._try_init_vl53l1x(bus)
+
+        if sensor is None or model is None:
+            where = (
+                f'TCA9548A channel {channel}'
+                if channel is not None
+                else f'main I2C bus (0x{VL53_I2C_ADDR:02x})'
+            )
+            detected = None
+            try:
+                detected = [hex(addr) for addr in bus.scan()]
+            except Exception as scan_exc:
+                detected = f'<scan failed: {scan_exc}>'
+            self.get_logger().warn(
+                f'failed to init ToF {name} on {where} as VL53L0X or VL53L1X; '
+                f'i2c scan = {detected}'
+            )
+            return None, None
+
+        return self._make_vl53_reader(sensor, model), model
+
+    def _init_front_tof_on_main_bus(self, i2c, addresses: list[int]) -> dict[str, object]:
+        readers: dict[str, object] = {}
+        if VL53_I2C_ADDR not in addresses:
+            return readers
+
+        reader, model = self._init_vl53_reader(i2c, 'front', None)
+        if reader is not None and model is not None:
+            readers['front'] = reader
+            self._tof_backend = model
+            self.get_logger().info(f'front {model} ready on main I2C bus at 0x{VL53_I2C_ADDR:02x}')
+        return readers
+
+    def _init_front_tof_via_mux(self, i2c) -> dict[str, object]:
+        readers: dict[str, object] = {}
+        try:
+            import adafruit_tca9548a
+        except ImportError:
+            self.get_logger().warn('use_tca9548a=true but adafruit_tca9548a is not installed')
+            return readers
+
+        try:
+            tca = adafruit_tca9548a.TCA9548A(i2c, address=self._mux_addr)
+            self._tof_mux = tca
+        except Exception as exc:
+            self.get_logger().warn(f'TCA9548A at 0x{self._mux_addr:02x} unavailable: {exc}')
+            self._tof_mux = None
+            return readers
+
+        mux_channels = self._scan_mux_channels_for_vl53(tca)
+        if not mux_channels:
+            return readers
+
+        if self._tof_front_channel in mux_channels:
+            front_channel = self._tof_front_channel
+        else:
+            front_channel = mux_channels[0]
+            self.get_logger().info(
+                'I2C scan found VL53 (0x29) on TCA9548A channel(s) '
+                f'{mux_channels}; front not on configured channel '
+                f'{self._tof_front_channel}, using channel {front_channel}'
+            )
+
+        reader, model = self._init_vl53_reader(tca[front_channel], 'front', front_channel)
+        if reader is not None and model is not None:
+            readers['front'] = reader
+            self._tof_backend = model
+            self.get_logger().info(
+                f'front {model} ready on TCA9548A channel {front_channel} '
+                f'(discovered channels={mux_channels})'
+            )
+        return readers
+
+    def _build_tof_readers(self) -> dict[str, object]:
+        try:
+            import adafruit_vl53l0x  # noqa: F401
+        except ImportError:
+            adafruit_vl53l0x = None
+
+        try:
+            import adafruit_vl53l1x  # noqa: F401
+        except ImportError:
+            adafruit_vl53l1x = None
+
+        if adafruit_vl53l0x is None and adafruit_vl53l1x is None:
+            self.get_logger().error(
+                'use_real_sensor=true but no ToF driver available '
+                '(install adafruit-circuitpython-vl53l0x and/or adafruit-circuitpython-vl53l1x)'
+            )
+            return {}
+
+        try:
+            i2c = self._get_i2c()
+        except Exception as exc:
+            self.get_logger().error(f'failed to open I2C bus: {exc}')
+            return {}
+
+        addresses = self._scan_main_i2c_addresses(i2c)
+        self._log_main_i2c_devices(addresses)
+
+        readers = self._init_front_tof_on_main_bus(i2c, addresses)
+        if not readers and self._use_tca9548a:
+            readers = self._init_front_tof_via_mux(i2c)
+
+        if not readers:
+            self.get_logger().error(
+                'no ToF sensors initialized; expected VL53 at 0x29 on the main I2C bus'
+            )
+        return readers
+
+    def _clamp_tof_distance(self, raw: float) -> tuple[float, str]:
+        if raw < self._tof_min_range_m:
+            return self._tof_min_range_m, 'CLAMP_MIN'
+        if raw > self._tof_max_range_m:
+            return self._tof_max_range_m, 'CLAMP_MAX'
+        return raw, 'OK'
+
+    def _build_radar_text_from_tof(self) -> str | None:
+        if not self._tof_readers:
+            if not self._tof_error_logged:
+                self.get_logger().error('real-sensor mode enabled but no ToF readers available')
+                self._tof_error_logged = True
+            return None
+
+        values: dict[str, float] = {}
+        debug_values: dict[str, tuple[float | None, str, float]] = {}
+        with self._i2c_lock:
+            for name in RADAR_DIRECTIONS:
+                reader = self._tof_readers.get(name)
+                if reader is None:
+                    values[name] = self._tof_read_fail_value_m
+                    debug_values[name] = (None, 'MISSING', values[name])
+                    continue
+
+                try:
+                    raw = float(reader())
+                    pub, status = self._clamp_tof_distance(raw)
+                    values[name] = pub
+                    debug_values[name] = (raw, status, pub)
+                except Exception:
+                    values[name] = self._tof_read_fail_value_m
+                    debug_values[name] = (None, 'FAIL', values[name])
+
+            front_status = debug_values['front'][1]
+            if front_status in ('FAIL', 'MISSING'):
+                self._tof_consecutive_fail_count += 1
+            else:
+                self._tof_consecutive_fail_count = 0
+
+            if self._tof_consecutive_fail_count >= self._tof_reinit_after_fail_count:
+                self.get_logger().warn(
+                    'front ToF reads failed repeatedly; attempting I2C rediscovery '
+                    f'(count={self._tof_consecutive_fail_count})'
+                )
+                self._tof_readers = self._build_tof_readers()
+                self._tof_backend = self._tof_backend if self._tof_readers else 'none'
+                self._tof_consecutive_fail_count = 0
+
+        self._maybe_log_radar_debug(debug_values)
+        timestamp_s = self._resolve_time_s()
+        return (
+            f'{timestamp_s:.6f},'
+            f'{values["front"]:.3f},{values["right"]:.3f},'
+            f'{values["left"]:.3f},{values["rear"]:.3f}'
+        )
+
+    def _maybe_log_radar_debug(
+        self, debug_values: dict[str, tuple[float | None, str, float]]
+    ) -> None:
+        if not self._tof_debug_enabled:
+            return
+        now = self.get_clock().now()
+        delta = (now - self._last_tof_debug).nanoseconds / 1_000_000_000.0
+        if delta < self._tof_debug_interval_sec:
+            return
+        self._last_tof_debug = now
+
+        summary = []
+        for name in RADAR_DIRECTIONS:
+            raw, status, pub = debug_values[name]
+            raw_mm = 'None' if raw is None else f'{int(raw * 1000.0)}'
+            summary.append(f'{name}:raw_mm={raw_mm},status={status},pub={pub:.3f}')
+        self.get_logger().info('radar tof diag | ' + ' | '.join(summary))
+
+    def _fetch_simulation_data_body(self) -> bytes:
+        first_error: Exception | None = None
+        total = len(self._radar_urls)
+        for offset in range(total):
+            idx = (self._radar_url_index + offset) % total
+            url = self._radar_urls[idx]
+            try:
+                req = urllib.request.Request(url, headers={'Connection': 'close'})
+                with urllib.request.urlopen(req, timeout=self._request_timeout) as res:
+                    body = res.read()
+                self._radar_url_index = idx
+                return body
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+                continue
+
+        if first_error is None:
+            raise RuntimeError('no simulation_data urls configured')
+        raise first_error
 
     # ----- helpers ------------------------------------------------------------
 

@@ -234,18 +234,18 @@ run_ssh "$PI_USER@$PI_IP" "bash -lc '
   fi
 '"
 
-echo "[8/10] Ensure ToF (TCA9548A + VL53L0X) runtime exists on Raspberry Pi"
+echo "[8/10] Ensure ToF (TCA9548A + VL53L0X/VL53L1X) runtime exists on Raspberry Pi"
 run_ssh "$PI_USER@$PI_IP" "bash -lc '
   if ! python3 -m pip install --break-system-packages --user --disable-pip-version-check -q \
-    adafruit-circuitpython-vl53l0x adafruit-circuitpython-tca9548a; then
+    adafruit-circuitpython-vl53l0x adafruit-circuitpython-vl53l1x adafruit-circuitpython-tca9548a; then
     echo \"[ERROR] Failed to install ToF Python dependencies\"
     exit 1
   fi
-  if ! python3 -c \"import adafruit_vl53l0x, adafruit_tca9548a\" >/dev/null 2>&1; then
-    echo \"[ERROR] ToF runtime import check failed (adafruit_vl53l0x / adafruit_tca9548a)\"
+  if ! python3 -c \"import adafruit_vl53l0x, adafruit_vl53l1x, adafruit_tca9548a\" >/dev/null 2>&1; then
+    echo \"[ERROR] ToF runtime import check failed (adafruit_vl53l0x / adafruit_vl53l1x / adafruit_tca9548a)\"
     exit 1
   fi
-  echo \"[OK] ToF runtime ready (TCA9548A + VL53L0X)\"
+  echo \"[OK] ToF runtime ready (TCA9548A + VL53L0X/VL53L1X)\"
 '"
 
 REMOTE_CMD="source /opt/ros/$ROS_DISTRO/setup.bash && cd $REMOTE_WS"
