@@ -102,47 +102,64 @@ pose_estimation_sensor_fusion:
     # Shared I2C bus speed (Hz). 100000 (Standard-mode) is enough for 200Hz MPU and is
     # the most reliable for marginal ToF wiring. Raise to 400000 only if all sensors are solid.
     i2c_frequency: 100000
-    # --- IMU-aided pose fusion ---
-    # Predict /current_position at the MPU rate (dead-reckoning from accel+gyro) and
-    # correct it with the absolute, low-rate camera pose. Disable to republish the
-    # camera pose 1:1 (also auto-disabled when no MPU is available).
+    # --- EKF pose fusion (camera + encoders + MPU6050) ---
+    # Master switch for high-rate MPU prediction/updates. When false, EKF still
+    # fuses camera + wheel encoders only.
     imu_fusion_enabled: true
-    # Max publish rate (Hz) for the fused /current_position. 0 = publish every MPU sample.
+    # Max publish rate (Hz) for /current_position. 0 = publish on every fusion step.
     fusion_publish_hz: 100.0
-    # Body-frame axis mapping (x=0, y=1, z=2). This MPU is mounted with its
-    # X->robot-left, Y->robot-up, Z->robot-forward, so: forward=Z(2), left=X(0),
-    # yaw-rate=gyro about up=Y(1). Flip a *_sign if that reading moves the wrong way.
-    imu_forward_axis: 2
-    imu_left_axis: 0
-    imu_yaw_rate_axis: 1
-    imu_forward_sign: 1.0
-    imu_left_sign: 1.0
+    # Body-frame axis mapping (x=0, y=1, z=2). MPU mounted with X->robot-back,
+    # Y->robot-right, Z->robot-up: forward=-X(0), left=-Y(1), yaw-rate=gyro Z(2).
+    imu_forward_axis: 0
+    imu_left_axis: 1
+    imu_yaw_rate_axis: 2
+    imu_forward_sign: -1.0
+    imu_left_sign: -1.0
     imu_yaw_rate_sign: 1.0
-    # Complementary-filter correction gains applied on each camera update [0..1].
-    # Higher = trust camera more (less IMU drift, more camera noise/latency).
-    fusion_pos_correction_gain: 0.5
-    fusion_vel_correction_gain: 0.1
-    fusion_heading_correction_gain: 0.4
-    # Online gyro-bias learning rate from the heading residual.
-    fusion_gyro_bias_gain: 0.02
-    # Velocity bleed-off time constant (sec) bounding accel-integration drift.
-    fusion_vel_damping_tau: 1.0
-    # Ignore horizontal accel below this magnitude (m/s^2) as noise.
-    fusion_accel_deadband: 0.08
-    # Clamp estimated speed (m/s).
-    fusion_max_speed: 2.0
-    # Hard-reset the estimate to the camera pose if it disagrees by more than this (m).
+    # EKF process noise (per sqrt(sec)) for predict step.
+    ekf_process_pos_std: 0.02
+    ekf_process_yaw_std: 0.03
+    ekf_process_vel_std: 0.15
+    ekf_process_omega_std: 0.08
+    # Camera measurement noise when stopped vs moving.
+    ekf_camera_pos_std: 0.04
+    ekf_camera_yaw_std: 0.06
+    ekf_camera_pos_std_moving: 0.12
+    ekf_camera_yaw_std_moving: 0.15
+    # Wheel velocity measurement noise.
+    ekf_wheel_vel_std: 0.05
+    ekf_wheel_omega_std: 0.04
+    # IMU gyro measurement noise (rad/s).
+    ekf_gyro_std: 0.03
+    # Reserved for future accel velocity updates (m/s^2).
+    ekf_accel_std: 0.8
+    # Zero-velocity update noise when stationary.
+    ekf_zupt_vel_std: 0.02
+    ekf_zupt_omega_std: 0.02
+    # Hard-reset EKF to camera if position innovation exceeds this (m).
     fusion_reset_pos_threshold: 0.5
-    # Zero-velocity update: clamp velocity to 0 when the robot is detected still.
+    # Hard-reset EKF to camera if yaw innovation exceeds this (rad, ~46 deg).
+    fusion_reset_yaw_threshold: 0.8
+    # Ignore horizontal accel below this magnitude (m/s^2) in predict step.
+    fusion_accel_deadband: 0.08
+    # Clamp estimated forward speed (m/s).
+    fusion_max_speed: 2.0
+    # Clamp wheel/gyro yaw rate used in EKF (rad/s).
+    fusion_max_omega: 4.0
+    # Skip wheel odometry integration after this inter-message gap (sec).
+    wheel_gap_reset_sec: 0.25
+    # Max elapsed time to catch up in one wheel callback (sec).
+    wheel_catchup_max_sec: 2.0
+    # Zero-velocity update when IMU reports near-zero motion.
     fusion_zupt_enabled: true
     fusion_zupt_accel_thresh: 0.15
     fusion_zupt_gyro_thresh: 0.05
     fusion_zupt_min_duration: 0.2
-    # Stationary samples collected at startup to estimate accel/gyro bias (keep the
-    # robot still during startup). 200 samples @ 200Hz = ~1s. 0 disables calibration.
+    # Stationary samples at startup to estimate gyro/accel bias (~1s @ 200Hz).
     fusion_calib_samples: 200
-    # After this many seconds without a new camera pose, stop publishing the
-    # IMU-dead-reckoned estimate and publish NO-TAG on /current_position instead.
+    # Only collect gyro bias samples when |wheel omega| is below this (rad/s).
+    fusion_calib_stationary_omega: 0.05
+    # Publish NaN pose when no camera update within this window (sec).
     fusion_camera_stale_timeout_sec: 5.0
 
 front_camera_node:

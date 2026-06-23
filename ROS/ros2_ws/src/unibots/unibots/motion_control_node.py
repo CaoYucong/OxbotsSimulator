@@ -83,6 +83,7 @@ Waypoint following:
 
 from __future__ import annotations
 
+import json
 import math
 import time
 
@@ -156,6 +157,26 @@ MOTION_STATUS_HZ: float = 20.0  # how often to publish robot motion status
 # --- Waypoint-following control ---
 POSITION_TOPIC: str = '/current_position'  # geometry_msgs/PoseStamped robot pose
 WAYPOINT_TOPIC: str = '/dynamic_waypoint'  # std_msgs/String '(x, y, theta_deg)'
+_DBG_LOG_PATH = '/Users/caoyucong/Desktop/OxbotsSimulator/.cursor/debug-5acb71.log'
+
+
+def _agent_dbg_mc(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    # #region agent log
+    try:
+        payload = {
+            'sessionId': '5acb71',
+            'hypothesisId': hypothesis_id,
+            'location': location,
+            'message': message,
+            'data': data,
+            'timestamp': int(time.time() * 1000),
+            'runId': 'pre-fix',
+        }
+        with open(_DBG_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(payload) + '\n')
+    except Exception:
+        pass
+    # #endregion
 COLLISION_AVOIDING_WAYPOINT_TOPIC: str = '/collision_avoiding_waypoint'
 WAYPOINT_STATUS_TOPIC: str = '/waypoint_status'  # 'going' / 'reached'
 CONTROL_HZ: float = 50.0  # waypoint-following control loop rate
@@ -511,6 +532,7 @@ class MotionControlNode(Node):
         self._run_enabled = False
         self._motion_started = False
         self._last_motion_status: str | None = None
+        self._agent_dbg_last_ms = 0.0
         self._start_left_steps = 0
         self._start_right_steps = 0
         self._prev_left_count: int | None = None
@@ -1088,6 +1110,36 @@ class MotionControlNode(Node):
         self._pause_until = time.monotonic() + self._phase_pause_s
         self._pause_next_phase = next_phase
 
+    def _log_motion_nav_dbg(
+        self,
+        dx: float,
+        dy: float,
+        heading_error: float,
+        mode: str,
+    ) -> None:
+        now_ms = time.time() * 1000.0
+        if now_ms - self._agent_dbg_last_ms < 300.0:
+            return
+        self._agent_dbg_last_ms = now_ms
+        _agent_dbg_mc(
+            'H4',
+            'motion_control_node.py:_navigate_forward_toward',
+            'nav control',
+            {
+                'mode': mode,
+                'heading_error_deg': round(math.degrees(heading_error), 2),
+                'theta_deg': None
+                if self._current_theta is None
+                else round(math.degrees(self._current_theta), 2),
+                'left_active': self._left.is_active,
+                'right_active': self._right.is_active,
+                'nav_motion_mode': self._nav_motion_mode,
+                'needs_heading_settle': self._needs_heading_settle,
+                'dx': round(dx, 3),
+                'dy': round(dy, 3),
+            },
+        )
+
     def _navigate_forward_toward(self, dx: float, dy: float) -> None:
         """Rotate, settle, then drive forward toward (dx, dy) in world frame."""
         heading_error = self._heading_error_rad(dx, dy)
@@ -1102,6 +1154,7 @@ class MotionControlNode(Node):
             self._heading_settle_until = None
             self._begin_nav_motion('rotate')
             self._rotate_toward_heading(heading_error, dx, dy)
+            self._log_motion_nav_dbg(dx, dy, heading_error, 'rotate')
             return
 
         if self._needs_heading_settle:
@@ -1110,10 +1163,12 @@ class MotionControlNode(Node):
                 self._stop()
                 self._publish_motion_status_now('stopped')
                 self._heading_settle_until = now + self._phase_pause_s
+                self._log_motion_nav_dbg(dx, dy, heading_error, 'settle_start')
                 return
             if now < self._heading_settle_until:
                 self._stop()
                 self._publish_motion_status_now('stopped')
+                self._log_motion_nav_dbg(dx, dy, heading_error, 'settle_wait')
                 return
             self._needs_heading_settle = False
             self._heading_settle_until = None
@@ -1122,6 +1177,7 @@ class MotionControlNode(Node):
         left_speed, right_speed = self._drive_wheel_speeds(heading_error)
         self._left.forward(left_speed)
         self._right.forward(right_speed)
+        self._log_motion_nav_dbg(dx, dy, heading_error, 'drive')
 
     def _control_home_sequence(self) -> None:
         """Three-phase home return: approach intermediate, face origin, reverse to final."""

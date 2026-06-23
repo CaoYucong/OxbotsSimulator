@@ -1,26 +1,25 @@
-"""Sensor-fusion pose node: camera absolute pose + wheel odometry + ToF radar.
+"""Sensor-fusion pose node: EKF fusion of camera + wheel encoders + MPU6050 + ToF.
 
 Inputs:
   - /current_position_camera (geometry_msgs/PoseStamped):
       Absolute robot-origin pose in the 'map' frame estimated from AprilTags.
-      Low rate (~few Hz) and latent, but drift-free. Its header.stamp is the
-      camera (system) timestamp the pose is valid for. Used as a correction
-      anchor.
+      Low rate (~few Hz) and latent, but drift-free. EKF measurement update.
   - /wheel_joint_states (sensor_msgs/JointState):
       High-rate (~50 Hz) left/right wheel angle (rad) and angular velocity
-      (rad/s) from the encoders. Used to dead-reckon between camera fixes.
+      (rad/s) from the encoders. EKF velocity measurement + short-term predict.
+  - MPU6050 on I2C (default 0x68, real hardware only):
+      200 Hz gyro + accelerometer for high-rate EKF prediction and yaw-rate
+      measurement. Axis mapping is configurable (see imu_*_axis params).
   - /robot_motion_status (std_msgs/String):
-      'moving' or 'stopped' from motion_control_node. Debug logs are emitted
-      only while the robot is stopped.
+      'moving' or 'stopped' from motion_control_node. Enables ZUPT and stopped
+      camera averaging.
   - /time (std_msgs/String, optional):
       Simulation clock used to stamp the first field of /radar_sensor payloads.
 
 Outputs:
   - /current_position (geometry_msgs/PoseStamped):
-      Fused pose published at the wheel-odometry rate. Computed as:
-          current = camera_anchor  (+)  (odom_now (-) odom_at_camera_stamp)
-      i.e. take the most recent camera pose and add the relative wheel motion
-      accumulated since that camera frame's timestamp.
+      EKF-fused robot-origin pose. State: [x, y, yaw, v, omega] in map frame.
+      Published up to fusion_publish_hz. NaN pose when camera is stale.
   - /radar_sensor (std_msgs/String):
       Comma-separated distances in metres:
           time,front,right,left,rear
@@ -44,13 +43,45 @@ Geometry / calibration:
 
 import json
 import math
+import os
 import threading
 import time
 import urllib.request
-from collections import deque
 
+import numpy as np
+
+# #region agent log
+_DBG_LOG_PATH = os.environ.get(
+    'UNIBOTS_DEBUG_LOG',
+    os.path.expanduser('~/.unibots/debug-4da0ac.log'),
+)
+_DBG_SESSION = '4da0ac'
+_DBG_RUN_ID = os.environ.get('UNIBOTS_DEBUG_RUN', 'post-fix-v3')
+
+
+def _agent_dbg_fusion(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_DBG_LOG_PATH), exist_ok=True)
+        payload = {
+            'sessionId': _DBG_SESSION,
+            'runId': _DBG_RUN_ID,
+            'hypothesisId': hypothesis_id,
+            'location': location,
+            'message': message,
+            'data': data,
+            'timestamp': int(time.time() * 1000),
+        }
+        with open(_DBG_LOG_PATH, 'a', encoding='utf-8') as _f:
+            _f.write(json.dumps(payload, ensure_ascii=True) + '\n')
+    except Exception:
+        pass
+
+
+# #endregion
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
@@ -96,6 +127,51 @@ DEFAULT_TOF_DEBUG_INTERVAL_SEC: float = 0.1
 DEFAULT_TOF_INIT_RETRIES: int = 5
 DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT: int = 8
 DEFAULT_I2C_FREQUENCY: int = 100_000
+DEFAULT_MPU_ENABLED: bool = True
+DEFAULT_MPU_ADDR: int = MPU6050_I2C_ADDR
+DEFAULT_MPU_POLL_HZ: float = 200.0
+DEFAULT_MPU_DEBUG_INTERVAL_SEC: float = 0.5
+DEFAULT_MPU_REINIT_AFTER_FAIL_COUNT: int = 20
+DEFAULT_IMU_FUSION_ENABLED: bool = True
+DEFAULT_FUSION_PUBLISH_HZ: float = 100.0
+DEFAULT_IMU_FORWARD_AXIS: int = 0
+DEFAULT_IMU_LEFT_AXIS: int = 1
+DEFAULT_IMU_YAW_RATE_AXIS: int = 2
+DEFAULT_IMU_FORWARD_SIGN: float = -1.0
+DEFAULT_IMU_LEFT_SIGN: float = -1.0
+DEFAULT_IMU_YAW_RATE_SIGN: float = 1.0
+DEFAULT_EKF_PROCESS_POS_STD: float = 0.02
+DEFAULT_EKF_PROCESS_YAW_STD: float = 0.03
+DEFAULT_EKF_PROCESS_VEL_STD: float = 0.15
+DEFAULT_EKF_PROCESS_OMEGA_STD: float = 0.08
+DEFAULT_EKF_CAMERA_POS_STD: float = 0.04
+DEFAULT_EKF_CAMERA_YAW_STD: float = 0.06
+DEFAULT_EKF_CAMERA_POS_STD_MOVING: float = 0.12
+DEFAULT_EKF_CAMERA_YAW_STD_MOVING: float = 0.15
+DEFAULT_EKF_WHEEL_VEL_STD: float = 0.05
+DEFAULT_EKF_WHEEL_OMEGA_STD: float = 0.04
+DEFAULT_EKF_GYRO_STD: float = 0.03
+DEFAULT_EKF_ACCEL_STD: float = 0.8
+DEFAULT_EKF_ZUPT_VEL_STD: float = 0.02
+DEFAULT_EKF_ZUPT_OMEGA_STD: float = 0.02
+DEFAULT_FUSION_RESET_POS_THRESHOLD: float = 0.5
+DEFAULT_FUSION_ACCEL_DEADBAND: float = 0.08
+DEFAULT_FUSION_MAX_SPEED: float = 2.0
+DEFAULT_FUSION_MAX_OMEGA: float = 4.0
+DEFAULT_WHEEL_GAP_RESET_SEC: float = 0.25
+DEFAULT_WHEEL_CATCHUP_MAX_SEC: float = 2.0
+DEFAULT_FUSION_CALIB_STATIONARY_OMEGA: float = 0.05
+DEFAULT_FUSION_RESET_YAW_THRESHOLD: float = 0.8
+EKF_PREDICT_DT_CAP: float = 0.25
+DEFAULT_FUSION_ZUPT_ENABLED: bool = True
+DEFAULT_FUSION_ZUPT_ACCEL_THRESH: float = 0.15
+DEFAULT_FUSION_ZUPT_GYRO_THRESH: float = 0.05
+DEFAULT_FUSION_ZUPT_MIN_DURATION: float = 0.2
+DEFAULT_FUSION_CALIB_SAMPLES: int = 200
+DEFAULT_FUSION_CAMERA_STALE_TIMEOUT_SEC: float = 5.0
+GRAVITY_MPS2: float = 9.80665
+MPU6050_ACCEL_LSB_PER_G: float = 16384.0
+MPU6050_GYRO_LSB_PER_DPS: float = 131.0
 
 
 def _yaw_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> float:
@@ -172,8 +248,260 @@ def _robust_average_pose(
     return kx, ky, kyaw, k
 
 
+class ImuAxisMapper:
+    """Map MPU6050 body-frame vectors into robot forward/left/yaw-rate."""
+
+    def __init__(
+        self,
+        forward_axis: int,
+        left_axis: int,
+        yaw_rate_axis: int,
+        forward_sign: float,
+        left_sign: float,
+        yaw_rate_sign: float,
+    ) -> None:
+        self._forward_axis = forward_axis
+        self._left_axis = left_axis
+        self._yaw_rate_axis = yaw_rate_axis
+        self._forward_sign = forward_sign
+        self._left_sign = left_sign
+        self._yaw_rate_sign = yaw_rate_sign
+
+    def forward_accel(self, accel: tuple[float, float, float]) -> float:
+        return self._forward_sign * accel[self._forward_axis]
+
+    def left_accel(self, accel: tuple[float, float, float]) -> float:
+        return self._left_sign * accel[self._left_axis]
+
+    def yaw_rate(self, gyro: tuple[float, float, float]) -> float:
+        return self._yaw_rate_sign * gyro[self._yaw_rate_axis]
+
+
+class Mpu6050Driver:
+    """Minimal MPU6050 reader over CircuitPython busio.I2C."""
+
+    _PWR_MGMT_1 = 0x6B
+    _ACCEL_XOUT_H = 0x3B
+    _WHO_AM_I = 0x75
+
+    def __init__(self, i2c, address: int) -> None:
+        self._i2c = i2c
+        self._address = address
+        self._adafruit = None
+        try:
+            import adafruit_mpu6050
+
+            self._adafruit = adafruit_mpu6050.MPU6050(i2c, address=address)
+        except ImportError:
+            self._wake_raw()
+
+    def _wake_raw(self) -> None:
+        while not self._i2c.try_lock():
+            pass
+        try:
+            self._i2c.writeto(self._address, bytes([self._PWR_MGMT_1, 0x00]))
+        finally:
+            self._i2c.unlock()
+
+    def _read_raw(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        buf = bytearray(14)
+        while not self._i2c.try_lock():
+            pass
+        try:
+            self._i2c.writeto(self._address, bytes([self._ACCEL_XOUT_H]))
+            self._i2c.readfrom_into(self._address, buf)
+        finally:
+            self._i2c.unlock()
+
+        def _i16(hi: int, lo: int) -> int:
+            v = (hi << 8) | lo
+            return v - 65536 if v >= 32768 else v
+
+        ax = _i16(buf[0], buf[1])
+        ay = _i16(buf[2], buf[3])
+        az = _i16(buf[4], buf[5])
+        gx = _i16(buf[8], buf[9])
+        gy = _i16(buf[10], buf[11])
+        gz = _i16(buf[12], buf[13])
+
+        accel = (
+            ax / MPU6050_ACCEL_LSB_PER_G * GRAVITY_MPS2,
+            ay / MPU6050_ACCEL_LSB_PER_G * GRAVITY_MPS2,
+            az / MPU6050_ACCEL_LSB_PER_G * GRAVITY_MPS2,
+        )
+        dps_to_rps = math.pi / 180.0
+        gyro = (
+            gx / MPU6050_GYRO_LSB_PER_DPS * dps_to_rps,
+            gy / MPU6050_GYRO_LSB_PER_DPS * dps_to_rps,
+            gz / MPU6050_GYRO_LSB_PER_DPS * dps_to_rps,
+        )
+        return accel, gyro
+
+    def read(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        if self._adafruit is not None:
+            return tuple(self._adafruit.acceleration), tuple(self._adafruit.gyro)
+        return self._read_raw()
+
+
+class PlanarPoseEKF:
+    """Extended Kalman filter for planar differential-drive pose.
+
+    State (robot origin, map frame):
+      x = [px, py, yaw, v_forward, omega]^T
+    """
+
+    _N = 5
+
+    def __init__(
+        self,
+        process_pos_std: float,
+        process_yaw_std: float,
+        process_vel_std: float,
+        process_omega_std: float,
+    ) -> None:
+        self.x = np.zeros((self._N, 1), dtype=np.float64)
+        self.P = np.diag(
+            [0.25, 0.25, 0.5, 0.5, 0.5]
+        ).astype(np.float64)
+        self._q_pos = process_pos_std ** 2
+        self._q_yaw = process_yaw_std ** 2
+        self._q_vel = process_vel_std ** 2
+        self._q_omega = process_omega_std ** 2
+        self.initialized = False
+        self._yaw_unwrapped = 0.0
+
+    def _state(self) -> tuple[float, float, float, float, float]:
+        return (
+            float(self.x[0, 0]),
+            float(self.x[1, 0]),
+            float(self.x[2, 0]),
+            float(self.x[3, 0]),
+            float(self.x[4, 0]),
+        )
+
+    def initialize(self, px: float, py: float, yaw: float) -> None:
+        self._yaw_unwrapped = yaw
+        self.x[:] = [[px], [py], [yaw], [0.0], [0.0]]
+        self.P = np.diag([0.09, 0.09, 0.1, 0.25, 0.25]).astype(np.float64)
+        self.initialized = True
+
+    def hard_reset(self, px: float, py: float, yaw: float) -> None:
+        self.initialize(px, py, yaw)
+
+    def predict(
+        self,
+        dt: float,
+        *,
+        a_forward: float = 0.0,
+        omega_drive: float | None = None,
+    ) -> None:
+        if not self.initialized or dt <= 0.0:
+            return
+        dt = min(dt, EKF_PREDICT_DT_CAP)
+
+        px, py, yaw, v, omega = self._state()
+        if omega_drive is not None:
+            omega = omega_drive
+        v_new = v + a_forward * dt
+        yaw_mid = yaw + 0.5 * omega * dt
+        px_new = px + v * math.cos(yaw_mid) * dt
+        py_new = py + v * math.sin(yaw_mid) * dt
+        yaw_new = yaw + omega * dt
+        self._yaw_unwrapped = yaw_new
+
+        self.x[:] = [[px_new], [py_new], [yaw_new], [v_new], [omega]]
+
+        c = math.cos(yaw_mid)
+        s = math.sin(yaw_mid)
+        F = np.array(
+            [
+                [1.0, 0.0, -v * s * dt, c * dt, 0.0],
+                [0.0, 1.0, v * c * dt, s * dt, 0.0],
+                [0.0, 0.0, 1.0, 0.0, dt],
+                [0.0, 0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        Q = np.diag(
+            [
+                self._q_pos * dt,
+                self._q_pos * dt,
+                self._q_yaw * dt,
+                self._q_vel * dt,
+                self._q_omega * dt,
+            ]
+        ).astype(np.float64)
+        self.P = F @ self.P @ F.T + Q
+
+    def _update(self, z: np.ndarray, H: np.ndarray, R: np.ndarray) -> None:
+        innov = z - H @ self.x
+        if innov.shape[0] >= 3:
+            innov[2, 0] = _normalize_yaw_rad(float(innov[2, 0]))
+        S = H @ self.P @ H.T + R
+        K = self.P @ H.T @ np.linalg.inv(S)
+        self.x = self.x + K @ innov
+        self.x[2, 0] = self._yaw_unwrapped + _normalize_yaw_rad(
+            float(self.x[2, 0] - self._yaw_unwrapped)
+        )
+        self._yaw_unwrapped = float(self.x[2, 0])
+        I = np.eye(self._N, dtype=np.float64)
+        I_KH = I - K @ H
+        self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
+
+    def update_camera(self, px: float, py: float, yaw: float, pos_std: float, yaw_std: float) -> None:
+        if not self.initialized:
+            self.initialize(px, py, yaw)
+            return
+        yaw_meas = self._yaw_unwrapped + _normalize_yaw_rad(yaw - self._yaw_unwrapped)
+        z = np.array([[px], [py], [yaw_meas]], dtype=np.float64)
+        H = np.zeros((3, self._N), dtype=np.float64)
+        H[0, 0] = 1.0
+        H[1, 1] = 1.0
+        H[2, 2] = 1.0
+        R = np.diag([pos_std ** 2, pos_std ** 2, yaw_std ** 2]).astype(np.float64)
+        self._update(z, H, R)
+
+    def update_wheel_velocity(self, v: float, omega: float, v_std: float, omega_std: float) -> None:
+        if not self.initialized:
+            return
+        z = np.array([[v], [omega]], dtype=np.float64)
+        H = np.zeros((2, self._N), dtype=np.float64)
+        H[0, 3] = 1.0
+        H[1, 4] = 1.0
+        R = np.diag([v_std ** 2, omega_std ** 2]).astype(np.float64)
+        self._update(z, H, R)
+
+    def update_gyro(self, omega: float, omega_std: float) -> None:
+        if not self.initialized:
+            return
+        z = np.array([[omega]], dtype=np.float64)
+        H = np.zeros((1, self._N), dtype=np.float64)
+        H[0, 4] = 1.0
+        R = np.array([[omega_std ** 2]], dtype=np.float64)
+        self._update(z, H, R)
+
+    def update_zupt(self, vel_std: float, omega_std: float) -> None:
+        if not self.initialized:
+            return
+        z = np.zeros((2, 1), dtype=np.float64)
+        H = np.zeros((2, self._N), dtype=np.float64)
+        H[0, 3] = 1.0
+        H[1, 4] = 1.0
+        R = np.diag([vel_std ** 2, omega_std ** 2]).astype(np.float64)
+        self._update(z, H, R)
+
+    def pose(self) -> tuple[float, float, float]:
+        px, py, yaw, _, _ = self._state()
+        return px, py, yaw
+
+    def velocity(self) -> tuple[float, float]:
+        _, _, _, v, omega = self._state()
+        return v, omega
+
+
 class PoseEstimationSensorFusionNode(Node):
-    """Fuses absolute camera pose with wheel odometry into /current_position."""
+    """EKF fusion of camera pose, wheel encoders, and MPU6050 into /current_position."""
 
     def __init__(self) -> None:
         super().__init__('pose_estimation_sensor_fusion')
@@ -211,6 +539,51 @@ class PoseEstimationSensorFusionNode(Node):
         self.declare_parameter('tof_init_retries', DEFAULT_TOF_INIT_RETRIES)
         self.declare_parameter('tof_reinit_after_fail_count', DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT)
         self.declare_parameter('i2c_frequency', DEFAULT_I2C_FREQUENCY)
+        self.declare_parameter('mpu_enabled', DEFAULT_MPU_ENABLED)
+        self.declare_parameter('mpu_addr', DEFAULT_MPU_ADDR)
+        self.declare_parameter('mpu_poll_hz', DEFAULT_MPU_POLL_HZ)
+        self.declare_parameter('mpu_debug_interval_sec', DEFAULT_MPU_DEBUG_INTERVAL_SEC)
+        self.declare_parameter('mpu_reinit_after_fail_count', DEFAULT_MPU_REINIT_AFTER_FAIL_COUNT)
+        self.declare_parameter('imu_fusion_enabled', DEFAULT_IMU_FUSION_ENABLED)
+        self.declare_parameter('fusion_publish_hz', DEFAULT_FUSION_PUBLISH_HZ)
+        self.declare_parameter('imu_forward_axis', DEFAULT_IMU_FORWARD_AXIS)
+        self.declare_parameter('imu_left_axis', DEFAULT_IMU_LEFT_AXIS)
+        self.declare_parameter('imu_yaw_rate_axis', DEFAULT_IMU_YAW_RATE_AXIS)
+        self.declare_parameter('imu_forward_sign', DEFAULT_IMU_FORWARD_SIGN)
+        self.declare_parameter('imu_left_sign', DEFAULT_IMU_LEFT_SIGN)
+        self.declare_parameter('imu_yaw_rate_sign', DEFAULT_IMU_YAW_RATE_SIGN)
+        self.declare_parameter('ekf_process_pos_std', DEFAULT_EKF_PROCESS_POS_STD)
+        self.declare_parameter('ekf_process_yaw_std', DEFAULT_EKF_PROCESS_YAW_STD)
+        self.declare_parameter('ekf_process_vel_std', DEFAULT_EKF_PROCESS_VEL_STD)
+        self.declare_parameter('ekf_process_omega_std', DEFAULT_EKF_PROCESS_OMEGA_STD)
+        self.declare_parameter('ekf_camera_pos_std', DEFAULT_EKF_CAMERA_POS_STD)
+        self.declare_parameter('ekf_camera_yaw_std', DEFAULT_EKF_CAMERA_YAW_STD)
+        self.declare_parameter('ekf_camera_pos_std_moving', DEFAULT_EKF_CAMERA_POS_STD_MOVING)
+        self.declare_parameter('ekf_camera_yaw_std_moving', DEFAULT_EKF_CAMERA_YAW_STD_MOVING)
+        self.declare_parameter('ekf_wheel_vel_std', DEFAULT_EKF_WHEEL_VEL_STD)
+        self.declare_parameter('ekf_wheel_omega_std', DEFAULT_EKF_WHEEL_OMEGA_STD)
+        self.declare_parameter('ekf_gyro_std', DEFAULT_EKF_GYRO_STD)
+        self.declare_parameter('ekf_accel_std', DEFAULT_EKF_ACCEL_STD)
+        self.declare_parameter('ekf_zupt_vel_std', DEFAULT_EKF_ZUPT_VEL_STD)
+        self.declare_parameter('ekf_zupt_omega_std', DEFAULT_EKF_ZUPT_OMEGA_STD)
+        self.declare_parameter('fusion_reset_pos_threshold', DEFAULT_FUSION_RESET_POS_THRESHOLD)
+        self.declare_parameter('fusion_accel_deadband', DEFAULT_FUSION_ACCEL_DEADBAND)
+        self.declare_parameter('fusion_max_speed', DEFAULT_FUSION_MAX_SPEED)
+        self.declare_parameter('fusion_max_omega', DEFAULT_FUSION_MAX_OMEGA)
+        self.declare_parameter('wheel_gap_reset_sec', DEFAULT_WHEEL_GAP_RESET_SEC)
+        self.declare_parameter('wheel_catchup_max_sec', DEFAULT_WHEEL_CATCHUP_MAX_SEC)
+        self.declare_parameter(
+            'fusion_calib_stationary_omega', DEFAULT_FUSION_CALIB_STATIONARY_OMEGA
+        )
+        self.declare_parameter(
+            'fusion_reset_yaw_threshold', DEFAULT_FUSION_RESET_YAW_THRESHOLD
+        )
+        self.declare_parameter('fusion_zupt_enabled', DEFAULT_FUSION_ZUPT_ENABLED)
+        self.declare_parameter('fusion_zupt_accel_thresh', DEFAULT_FUSION_ZUPT_ACCEL_THRESH)
+        self.declare_parameter('fusion_zupt_gyro_thresh', DEFAULT_FUSION_ZUPT_GYRO_THRESH)
+        self.declare_parameter('fusion_zupt_min_duration', DEFAULT_FUSION_ZUPT_MIN_DURATION)
+        self.declare_parameter('fusion_calib_samples', DEFAULT_FUSION_CALIB_SAMPLES)
+        self.declare_parameter('fusion_camera_stale_timeout_sec', DEFAULT_FUSION_CAMERA_STALE_TIMEOUT_SEC)
 
         self._camera_topic = (
             self.get_parameter('camera_pose_topic').get_parameter_value().string_value
@@ -247,11 +620,6 @@ class PoseEstimationSensorFusionNode(Node):
             self.get_parameter('right_wheel_joint').get_parameter_value().string_value
             or RIGHT_WHEEL_JOINT_NAME
         )
-        history_sec = (
-            float(self.get_parameter('odom_history_sec').get_parameter_value().double_value)
-            or ODOM_HISTORY_SEC
-        )
-        self._history_window_ns = int(history_sec * 1e9)
         fusion_debug_hz = (
             float(self.get_parameter('fusion_debug_hz').get_parameter_value().double_value)
             or FUSION_DEBUG_HZ
@@ -322,6 +690,106 @@ class PoseEstimationSensorFusionNode(Node):
         )
         self._use_tca9548a = self.get_parameter('use_tca9548a').get_parameter_value().bool_value
         self._mux_addr = int(self.get_parameter('tca9548a_addr').get_parameter_value().integer_value)
+        self._mpu_enabled = self.get_parameter('mpu_enabled').get_parameter_value().bool_value
+        self._mpu_addr = int(
+            self.get_parameter('mpu_addr').get_parameter_value().integer_value or DEFAULT_MPU_ADDR
+        )
+        mpu_poll_hz = float(
+            self.get_parameter('mpu_poll_hz').get_parameter_value().double_value or DEFAULT_MPU_POLL_HZ
+        )
+        self._mpu_debug_interval_sec = float(
+            self.get_parameter('mpu_debug_interval_sec').get_parameter_value().double_value
+            or DEFAULT_MPU_DEBUG_INTERVAL_SEC
+        )
+        self._mpu_reinit_after_fail_count = int(
+            self.get_parameter('mpu_reinit_after_fail_count').get_parameter_value().integer_value
+            or DEFAULT_MPU_REINIT_AFTER_FAIL_COUNT
+        )
+        self._imu_fusion_enabled = self.get_parameter('imu_fusion_enabled').get_parameter_value().bool_value
+        fusion_publish_hz = float(
+            self.get_parameter('fusion_publish_hz').get_parameter_value().double_value
+            or DEFAULT_FUSION_PUBLISH_HZ
+        )
+        self._imu_axes = ImuAxisMapper(
+            int(self.get_parameter('imu_forward_axis').get_parameter_value().integer_value),
+            int(self.get_parameter('imu_left_axis').get_parameter_value().integer_value),
+            int(self.get_parameter('imu_yaw_rate_axis').get_parameter_value().integer_value),
+            float(self.get_parameter('imu_forward_sign').get_parameter_value().double_value),
+            float(self.get_parameter('imu_left_sign').get_parameter_value().double_value),
+            float(self.get_parameter('imu_yaw_rate_sign').get_parameter_value().double_value),
+        )
+        self._ekf = PlanarPoseEKF(
+            float(self.get_parameter('ekf_process_pos_std').get_parameter_value().double_value),
+            float(self.get_parameter('ekf_process_yaw_std').get_parameter_value().double_value),
+            float(self.get_parameter('ekf_process_vel_std').get_parameter_value().double_value),
+            float(self.get_parameter('ekf_process_omega_std').get_parameter_value().double_value),
+        )
+        self._ekf_camera_pos_std = float(
+            self.get_parameter('ekf_camera_pos_std').get_parameter_value().double_value
+        )
+        self._ekf_camera_yaw_std = float(
+            self.get_parameter('ekf_camera_yaw_std').get_parameter_value().double_value
+        )
+        self._ekf_camera_pos_std_moving = float(
+            self.get_parameter('ekf_camera_pos_std_moving').get_parameter_value().double_value
+        )
+        self._ekf_camera_yaw_std_moving = float(
+            self.get_parameter('ekf_camera_yaw_std_moving').get_parameter_value().double_value
+        )
+        self._ekf_wheel_vel_std = float(
+            self.get_parameter('ekf_wheel_vel_std').get_parameter_value().double_value
+        )
+        self._ekf_wheel_omega_std = float(
+            self.get_parameter('ekf_wheel_omega_std').get_parameter_value().double_value
+        )
+        self._ekf_gyro_std = float(self.get_parameter('ekf_gyro_std').get_parameter_value().double_value)
+        self._ekf_accel_std = float(self.get_parameter('ekf_accel_std').get_parameter_value().double_value)
+        self._ekf_zupt_vel_std = float(
+            self.get_parameter('ekf_zupt_vel_std').get_parameter_value().double_value
+        )
+        self._ekf_zupt_omega_std = float(
+            self.get_parameter('ekf_zupt_omega_std').get_parameter_value().double_value
+        )
+        self._fusion_reset_pos_threshold = float(
+            self.get_parameter('fusion_reset_pos_threshold').get_parameter_value().double_value
+        )
+        self._fusion_accel_deadband = float(
+            self.get_parameter('fusion_accel_deadband').get_parameter_value().double_value
+        )
+        self._fusion_max_speed = float(
+            self.get_parameter('fusion_max_speed').get_parameter_value().double_value
+        )
+        self._fusion_max_omega = float(
+            self.get_parameter('fusion_max_omega').get_parameter_value().double_value
+        )
+        self._wheel_gap_reset_sec = float(
+            self.get_parameter('wheel_gap_reset_sec').get_parameter_value().double_value
+        )
+        self._wheel_catchup_max_sec = float(
+            self.get_parameter('wheel_catchup_max_sec').get_parameter_value().double_value
+        )
+        self._fusion_calib_stationary_omega = float(
+            self.get_parameter('fusion_calib_stationary_omega').get_parameter_value().double_value
+        )
+        self._fusion_reset_yaw_threshold = float(
+            self.get_parameter('fusion_reset_yaw_threshold').get_parameter_value().double_value
+        )
+        self._fusion_zupt_enabled = self.get_parameter('fusion_zupt_enabled').get_parameter_value().bool_value
+        self._fusion_zupt_accel_thresh = float(
+            self.get_parameter('fusion_zupt_accel_thresh').get_parameter_value().double_value
+        )
+        self._fusion_zupt_gyro_thresh = float(
+            self.get_parameter('fusion_zupt_gyro_thresh').get_parameter_value().double_value
+        )
+        self._fusion_zupt_min_duration = float(
+            self.get_parameter('fusion_zupt_min_duration').get_parameter_value().double_value
+        )
+        self._fusion_calib_samples = int(
+            self.get_parameter('fusion_calib_samples').get_parameter_value().integer_value
+        )
+        self._fusion_camera_stale_timeout_sec = float(
+            self.get_parameter('fusion_camera_stale_timeout_sec').get_parameter_value().double_value
+        )
         if self._request_timeout <= 0.0:
             self._request_timeout = DEFAULT_REQUEST_TIMEOUT
         if self._tof_debug_interval_sec <= 0.0:
@@ -332,6 +800,11 @@ class PoseEstimationSensorFusionNode(Node):
             self._tof_reinit_after_fail_count = DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT
         if self._i2c_frequency <= 0:
             self._i2c_frequency = DEFAULT_I2C_FREQUENCY
+        if fusion_publish_hz < 0.0:
+            fusion_publish_hz = DEFAULT_FUSION_PUBLISH_HZ
+        self._fusion_publish_period_ns = (
+            0 if fusion_publish_hz <= 0.0 else int(1e9 / fusion_publish_hz)
+        )
 
         self._latest_time_s: float | None = None
         self._last_radar_text: str | None = None
@@ -350,65 +823,122 @@ class PoseEstimationSensorFusionNode(Node):
         ]
         self._radar_url_index = 0
 
-        # Free-running wheel-axle-midpoint odometry pose (drifts; corrected by camera).
-        self._odom_x = 0.0
-        self._odom_y = 0.0
-        self._odom_yaw = 0.0  # kept unwrapped/continuous for exact deltas
+        self._ekf_lock = threading.Lock()
         self._prev_left_rad: float | None = None
         self._prev_right_rad: float | None = None
+        self._prev_wheel_stamp_ns: int | None = None
         self._left_rad: float | None = None
         self._right_rad: float | None = None
+        self._last_predict_ns: int | None = None
+        self._last_publish_ns: int = 0
+        self._last_camera_ns: int | None = None
+        self._camera_valid = False
         self._camera_x: float | None = None
         self._camera_y: float | None = None
         self._camera_yaw_deg: float | None = None
         self._fused_yaw_deg: float | None = None
         self._robot_motion_status: str | None = None
-        # Camera (robot-origin) poses collected while the robot is stopped; averaged
-        # (with outlier rejection) into the anchor. Cleared when the robot moves
-        # because the true pose then changes.
         self._stopped_camera_samples: list[tuple[float, float, float]] = []
         self._stopped_sample_count: int = 0
         self._stopped_kept_count: int = 0
-        # History of (stamp_ns, x, y, yaw) for interpolating odom at camera time.
-        self._odom_history: deque[tuple[int, float, float, float]] = deque()
+        self._latest_wheel_v = 0.0
+        self._latest_wheel_omega = 0.0
+        self._mpu: Mpu6050Driver | None = None
+        self._mpu_available = False
+        self._mpu_fail_count = 0
+        self._last_mpu_debug = self.get_clock().now()
+        self._gyro_bias = 0.0
+        self._accel_bias_forward = 0.0
+        self._calib_gyro: list[float] = []
+        self._calib_accel_fwd: list[float] = []
+        self._calib_done = self._fusion_calib_samples <= 0
+        self._zupt_since_ns: int | None = None
+        self._last_imu_a_forward = 0.0
+        self._last_imu_omega = 0.0
+        self._agent_dbg_last_ms = 0.0
 
-        # Camera correction anchor, expressed at the wheel-axle midpoint.
-        self._anchor_valid = False
-        self._anchor_x = 0.0
-        self._anchor_y = 0.0
-        self._anchor_yaw = 0.0
-        self._anchor_odom_x = 0.0
-        self._anchor_odom_y = 0.0
-        self._anchor_odom_yaw = 0.0
+        self._wheel_cb_group = ReentrantCallbackGroup()
+        self._sensor_cb_group = MutuallyExclusiveCallbackGroup()
 
         self._pub = self.create_publisher(PoseStamped, self._output_topic, 10)
         self._pub_radar_sensor = self.create_publisher(String, self._radar_topic, 10)
-        self.create_subscription(JointState, self._wheel_topic, self._on_wheel_state, 50)
-        self.create_subscription(PoseStamped, self._camera_topic, self._on_camera_pose, 10)
         self.create_subscription(
-            String, self._motion_status_topic, self._on_robot_motion_status, 10
+            JointState,
+            self._wheel_topic,
+            self._on_wheel_state,
+            50,
+            callback_group=self._wheel_cb_group,
+        )
+        self.create_subscription(
+            PoseStamped,
+            self._camera_topic,
+            self._on_camera_pose,
+            10,
+            callback_group=self._wheel_cb_group,
+        )
+        self.create_subscription(
+            String,
+            self._motion_status_topic,
+            self._on_robot_motion_status,
+            10,
+            callback_group=self._wheel_cb_group,
         )
         if self._time_topic:
-            self.create_subscription(String, self._time_topic, self._on_time, 10)
+            self.create_subscription(
+                String,
+                self._time_topic,
+                self._on_time,
+                10,
+                callback_group=self._wheel_cb_group,
+            )
         if poll_hz > 0.0:
-            self.create_timer(1.0 / poll_hz, self._poll_radar)
+            self.create_timer(
+                1.0 / poll_hz,
+                self._poll_radar,
+                callback_group=self._sensor_cb_group,
+            )
         if fusion_debug_hz > 0.0:
-            self.create_timer(1.0 / fusion_debug_hz, self._log_fusion_debug)
+            self.create_timer(
+                1.0 / fusion_debug_hz,
+                self._log_fusion_debug,
+                callback_group=self._wheel_cb_group,
+            )
+        if fusion_publish_hz > 0.0:
+            self.create_timer(
+                1.0 / fusion_publish_hz,
+                self._publish_on_timer,
+                callback_group=self._wheel_cb_group,
+            )
 
         if self._use_real_sensor:
             self._tof_readers = self._build_tof_readers()
             self._tof_backend = self._tof_backend if self._tof_readers else 'none'
+            if self._mpu_enabled and self._imu_fusion_enabled:
+                self._init_mpu()
+            if mpu_poll_hz > 0.0 and self._mpu_available:
+                self.create_timer(
+                    1.0 / mpu_poll_hz,
+                    self._poll_mpu,
+                    callback_group=self._sensor_cb_group,
+                )
 
+        imu_mode = (
+            'mpu+ekf'
+            if self._mpu_available and self._imu_fusion_enabled
+            else 'wheel+ekf'
+        )
         self.get_logger().info(
-            'pose_estimation_sensor_fusion started; fusing '
-            f'{self._camera_topic} (anchor) + {self._wheel_topic} (odom) -> {self._output_topic}; '
+            'pose_estimation_sensor_fusion started; EKF fusing '
+            f'{self._camera_topic} + {self._wheel_topic}'
+            f'{" + MPU6050" if self._mpu_available else ""} -> {self._output_topic}; '
+            f'mode={imu_mode}, publish_hz={fusion_publish_hz}, '
             f'counts_per_rev={self._counts_per_rev:.1f}, '
             f'count_average_per_meter={self._count_avg_per_m:.1f}, '
             f'count_diff_per_degree={self._count_diff_per_deg:.3f}, '
             f'origin_forward_offset={self._origin_offset:.3f}m, '
-            f'debug_when={self._motion_status_topic}=stopped, '
             f'radar={"real-tof" if self._use_real_sensor else "upstream"} '
-            f'backend={self._tof_backend} -> {self._radar_topic}, poll_hz={poll_hz}'
+            f'backend={self._tof_backend} -> {self._radar_topic}, poll_hz={poll_hz}, '
+            f'debug_log={_DBG_LOG_PATH}'
         )
 
     def _on_robot_motion_status(self, msg: String) -> None:
@@ -420,15 +950,262 @@ class PoseEstimationSensorFusionNode(Node):
             self._stopped_kept_count = 0
         self._robot_motion_status = status
 
+    # ----- EKF fusion core ----------------------------------------------------
+
+    def _agent_dbg_throttled(
+        self, hypothesis_id: str, location: str, message: str, data: dict
+    ) -> None:
+        now_ms = time.time() * 1000.0
+        if now_ms - self._agent_dbg_last_ms < 250.0:
+            return
+        self._agent_dbg_last_ms = now_ms
+        # #region agent log
+        _agent_dbg_fusion(hypothesis_id, location, message, data)
+        # #endregion
+
+    def _predict_to(
+        self,
+        stamp_ns: int,
+        *,
+        omega_override: float | None = None,
+        dt_override: float | None = None,
+    ) -> None:
+        with self._ekf_lock:
+            if self._last_predict_ns is None:
+                self._last_predict_ns = stamp_ns
+                return
+            if dt_override is not None:
+                dt = dt_override
+            else:
+                dt = (stamp_ns - self._last_predict_ns) * 1e-9
+            if dt <= 0.0:
+                return
+            a_forward = (
+                self._last_imu_a_forward if self._mpu_available and self._imu_fusion_enabled else 0.0
+            )
+            # Wheel encoders are the authoritative yaw-rate source for prediction;
+            # gyro is fused as a measurement update only (see _poll_mpu).
+            if omega_override is not None:
+                omega = omega_override
+            else:
+                omega = self._latest_wheel_omega
+            yaw_before = float(self._ekf.x[2, 0]) if self._ekf.initialized else None
+            self._ekf.predict(dt, a_forward=a_forward, omega_drive=omega)
+            yaw_after = float(self._ekf.x[2, 0]) if self._ekf.initialized else None
+            self._last_predict_ns = stamp_ns
+        # #region agent log
+        self._agent_dbg_throttled(
+            'H1',
+            'pose_estimation_sensor_fusion_node.py:_predict_to',
+            'ekf predict',
+            {
+                'dt': round(dt, 4),
+                'dt_override': dt_override is not None,
+                'omega_used': round(omega, 4),
+                'omega_override': omega_override is not None,
+                'omega_enc': round(self._latest_wheel_omega, 4),
+                'imu_omega': round(self._last_imu_omega, 4),
+                'mpu_available': self._mpu_available,
+                'imu_fusion': self._imu_fusion_enabled,
+                'yaw_before_deg': None if yaw_before is None else round(math.degrees(yaw_before), 2),
+                'yaw_after_deg': None if yaw_after is None else round(math.degrees(yaw_after), 2),
+                'motion_status': self._robot_motion_status,
+            },
+        )
+        # #endregion
+
+    def _predict_wheel_interval(self, stamp_ns: int, omega: float, dt_total: float) -> None:
+        remaining = max(0.0, dt_total)
+        while remaining > 1e-6:
+            step = min(remaining, EKF_PREDICT_DT_CAP)
+            self._predict_to(stamp_ns, omega_override=omega, dt_override=step)
+            remaining -= step
+
+    def _wheel_delta_to_velocities(
+        self, d_left_count: float, d_right_count: float, dt: float
+    ) -> tuple[float, float]:
+        d_center = 0.5 * (d_left_count + d_right_count) / self._count_avg_per_m
+        d_yaw_deg = (d_right_count - d_left_count) / self._count_diff_per_deg
+        d_yaw = math.radians(d_yaw_deg)
+        if dt <= 0.0:
+            return 0.0, 0.0
+        return d_center / dt, d_yaw / dt
+
+    def _clamp_speed(self, v: float) -> float:
+        return max(-self._fusion_max_speed, min(self._fusion_max_speed, v))
+
+    def _clamp_omega(self, omega: float) -> float:
+        return max(-self._fusion_max_omega, min(self._fusion_max_omega, omega))
+
+    def _robot_is_stationary(self) -> bool:
+        return (
+            self._robot_motion_status == 'stopped'
+            and abs(self._latest_wheel_omega) < self._fusion_calib_stationary_omega
+            and abs(self._latest_wheel_v) < 0.05
+        )
+
+    def _wheel_rates_from_joint(
+        self, left_rad_s: float, right_rad_s: float
+    ) -> tuple[float, float]:
+        rad_to_counts = self._counts_per_rev / (2.0 * math.pi)
+        d_left = left_rad_s * rad_to_counts
+        d_right = right_rad_s * rad_to_counts
+        return self._wheel_delta_to_velocities(d_left, d_right, 1.0)
+
+    def _camera_is_stale(self, now_ns: int) -> bool:
+        if self._last_camera_ns is None:
+            return True
+        age_s = (now_ns - self._last_camera_ns) * 1e-9
+        return age_s > self._fusion_camera_stale_timeout_sec
+
+    def _maybe_zupt(self, stamp_ns: int, accel_fwd: float, gyro_yaw: float) -> None:
+        if not self._fusion_zupt_enabled:
+            self._zupt_since_ns = None
+            return
+        still = (
+            abs(accel_fwd) < self._fusion_zupt_accel_thresh
+            and abs(gyro_yaw) < self._fusion_zupt_gyro_thresh
+        )
+        if still:
+            if self._zupt_since_ns is None:
+                self._zupt_since_ns = stamp_ns
+            elif (stamp_ns - self._zupt_since_ns) * 1e-9 >= self._fusion_zupt_min_duration:
+                with self._ekf_lock:
+                    self._ekf.update_zupt(self._ekf_zupt_vel_std, self._ekf_zupt_omega_std)
+        else:
+            self._zupt_since_ns = None
+
+    def _apply_camera_measurement(self, ox: float, oy: float, yaw: float, moving: bool) -> None:
+        with self._ekf_lock:
+            if self._ekf.initialized:
+                px, py, yaw_est = self._ekf.pose()
+                if math.hypot(ox - px, oy - py) > self._fusion_reset_pos_threshold:
+                    self._ekf.hard_reset(ox, oy, yaw)
+                    self.get_logger().warn(
+                        f'EKF hard-reset to camera pose ({ox:.3f}, {oy:.3f}) '
+                        f'after {self._fusion_reset_pos_threshold:.2f}m innovation'
+                    )
+                    return
+                yaw_innov = abs(_normalize_yaw_rad(yaw - yaw_est))
+                if yaw_innov > self._fusion_reset_yaw_threshold:
+                    self._ekf.hard_reset(ox, oy, yaw)
+                    self.get_logger().warn(
+                        f'EKF hard-reset to camera yaw {math.degrees(yaw):.1f}deg '
+                        f'after {math.degrees(yaw_innov):.1f}deg innovation'
+                    )
+                    return
+            pos_std = self._ekf_camera_pos_std_moving if moving else self._ekf_camera_pos_std
+            yaw_std = self._ekf_camera_yaw_std_moving if moving else self._ekf_camera_yaw_std
+            self._ekf.update_camera(ox, oy, yaw, pos_std, yaw_std)
+
+    def _publish_pose(self, stamp_ns: int, *, force: bool = False) -> None:
+        if self._fusion_publish_period_ns > 0 and not force:
+            if stamp_ns - self._last_publish_ns < self._fusion_publish_period_ns:
+                return
+        self._last_publish_ns = stamp_ns
+
+        if self._camera_is_stale(stamp_ns):
+            with self._ekf_lock:
+                ekf_ready = self._ekf.initialized
+            if not ekf_ready:
+                # #region agent log
+                self._agent_dbg_throttled(
+                    'H3',
+                    'pose_estimation_sensor_fusion_node.py:_publish_pose',
+                    'camera stale nan publish',
+                    {
+                        'last_camera_age_s': None
+                        if self._last_camera_ns is None
+                        else round((stamp_ns - self._last_camera_ns) * 1e-9, 2),
+                        'stale_timeout_s': self._fusion_camera_stale_timeout_sec,
+                        'ekf_initialized': False,
+                    },
+                )
+                # #endregion
+                out = PoseStamped()
+                out.header.stamp = rclpy.time.Time(nanoseconds=stamp_ns).to_msg()
+                out.header.frame_id = 'map'
+                out.pose.position.x = float('nan')
+                out.pose.position.y = float('nan')
+                out.pose.position.z = 0.0
+                out.pose.orientation.w = 1.0
+                self._pub.publish(out)
+                return
+            # #region agent log
+            self._agent_dbg_throttled(
+                'H3',
+                'pose_estimation_sensor_fusion_node.py:_publish_pose',
+                'camera stale odom-only publish',
+                {
+                    'last_camera_age_s': round((stamp_ns - self._last_camera_ns) * 1e-9, 2)
+                    if self._last_camera_ns is not None
+                    else None,
+                    'stale_timeout_s': self._fusion_camera_stale_timeout_sec,
+                    'ekf_initialized': True,
+                },
+            )
+            # #endregion
+
+        with self._ekf_lock:
+            if not self._ekf.initialized:
+                return
+            px, py, yaw = self._ekf.pose()
+        yaw_pub = _normalize_yaw_rad(yaw)
+        self._fused_yaw_deg = math.degrees(yaw_pub)
+        qx, qy, qz, qw = _quaternion_from_yaw(yaw_pub)
+        out = PoseStamped()
+        out.header.stamp = rclpy.time.Time(nanoseconds=stamp_ns).to_msg()
+        out.header.frame_id = 'map'
+        out.pose.position.x = px
+        out.pose.position.y = py
+        out.pose.position.z = 0.0
+        out.pose.orientation.x = qx
+        out.pose.orientation.y = qy
+        out.pose.orientation.z = qz
+        out.pose.orientation.w = qw
+        self._pub.publish(out)
+        # #region agent log
+        with self._ekf_lock:
+            ekf_v, ekf_omega = self._ekf.velocity() if self._ekf.initialized else (0.0, 0.0)
+        self._agent_dbg_throttled(
+            'H2',
+            'pose_estimation_sensor_fusion_node.py:_publish_pose',
+            'fused pose publish',
+            {
+                'x': round(px, 3),
+                'y': round(py, 3),
+                'yaw_deg': round(self._fused_yaw_deg, 2) if self._fused_yaw_deg is not None else None,
+                'camera_yaw_deg': self._camera_yaw_deg,
+                'ekf_v': round(ekf_v, 3),
+                'ekf_omega': round(ekf_omega, 3),
+                'wheel_omega': round(self._latest_wheel_omega, 3),
+                'imu_omega': round(self._last_imu_omega, 3),
+                'motion_status': self._robot_motion_status,
+            },
+        )
+        # #endregion
+
+    def _publish_on_timer(self) -> None:
+        stamp_ns = self.get_clock().now().nanoseconds
+        self._publish_pose(stamp_ns)
+
     # ----- wheel odometry -----------------------------------------------------
 
     def _on_wheel_state(self, msg: JointState) -> None:
         left_rad = right_rad = None
-        for name, position in zip(msg.name, msg.position):
+        left_vel_rad = right_vel_rad = None
+        velocities = list(msg.velocity) if msg.velocity else []
+        for idx, name in enumerate(msg.name):
+            if idx >= len(msg.position):
+                break
             if name == self._left_joint:
-                left_rad = float(position)
+                left_rad = float(msg.position[idx])
+                if idx < len(velocities):
+                    left_vel_rad = float(velocities[idx])
             elif name == self._right_joint:
-                right_rad = float(position)
+                right_rad = float(msg.position[idx])
+                if idx < len(velocities):
+                    right_vel_rad = float(velocities[idx])
         if left_rad is None or right_rad is None:
             return
 
@@ -439,60 +1216,61 @@ class PoseEstimationSensorFusionNode(Node):
         if self._prev_left_rad is None or self._prev_right_rad is None:
             self._prev_left_rad = left_rad
             self._prev_right_rad = right_rad
-            self._record_odom(stamp_ns)
+            self._prev_wheel_stamp_ns = stamp_ns
+            self._last_predict_ns = stamp_ns
             return
 
-        # Incoming wheel angles are in rad; convert back to encoder counts so the
-        # calibration constants are expressed directly in counts.
+        dt = 0.02
+        if self._prev_wheel_stamp_ns is not None:
+            dt = max(1e-4, (stamp_ns - self._prev_wheel_stamp_ns) * 1e-9)
+
         rad_to_counts = self._counts_per_rev / (2.0 * math.pi)
         d_left_count = (left_rad - self._prev_left_rad) * rad_to_counts
         d_right_count = (right_rad - self._prev_right_rad) * rad_to_counts
         self._prev_left_rad = left_rad
         self._prev_right_rad = right_rad
+        self._prev_wheel_stamp_ns = stamp_ns
 
-        d_center = 0.5 * (d_left_count + d_right_count) / self._count_avg_per_m
-        d_yaw_deg = (d_right_count - d_left_count) / self._count_diff_per_deg
-        d_yaw = math.radians(d_yaw_deg)
+        has_joint_vel = (
+            left_vel_rad is not None
+            and right_vel_rad is not None
+            and math.isfinite(left_vel_rad)
+            and math.isfinite(right_vel_rad)
+        )
+        gap = dt > self._wheel_gap_reset_sec
+        if has_joint_vel:
+            v_enc, omega_enc = self._wheel_rates_from_joint(left_vel_rad, right_vel_rad)
+        else:
+            v_enc, omega_enc = self._wheel_delta_to_velocities(d_left_count, d_right_count, dt)
+        v_enc = self._clamp_speed(v_enc)
+        omega_enc = self._clamp_omega(omega_enc)
+        self._latest_wheel_v = v_enc
+        self._latest_wheel_omega = omega_enc
 
-        # Integrate at the heading midpoint (2nd-order exact for constant-curvature arc).
-        yaw_mid = self._odom_yaw + 0.5 * d_yaw
-        self._odom_x += d_center * math.cos(yaw_mid)
-        self._odom_y += d_center * math.sin(yaw_mid)
-        self._odom_yaw += d_yaw
+        predict_dt = min(dt, self._wheel_catchup_max_sec)
+        if gap:
+            # #region agent log
+            self._agent_dbg_throttled(
+                'H2',
+                'pose_estimation_sensor_fusion_node.py:_on_wheel_state',
+                'wheel gap catchup',
+                {
+                    'dt': round(dt, 4),
+                    'predict_dt': round(predict_dt, 4),
+                    'omega_enc': round(omega_enc, 4),
+                    'has_joint_vel': has_joint_vel,
+                },
+            )
+            # #endregion
 
-        self._record_odom(stamp_ns)
-        self._publish_fused(stamp_ns)
+        self._predict_wheel_interval(stamp_ns, omega_enc, predict_dt)
 
-    def _record_odom(self, stamp_ns: int) -> None:
-        self._odom_history.append((stamp_ns, self._odom_x, self._odom_y, self._odom_yaw))
-        while (
-            len(self._odom_history) > 1
-            and (stamp_ns - self._odom_history[0][0]) > self._history_window_ns
-        ):
-            self._odom_history.popleft()
+        with self._ekf_lock:
+            self._ekf.update_wheel_velocity(
+                v_enc, omega_enc, self._ekf_wheel_vel_std, self._ekf_wheel_omega_std
+            )
 
-    def _odom_pose_at(self, stamp_ns: int) -> tuple[float, float, float]:
-        """Interpolate the recorded odom pose at the given timestamp."""
-        hist = self._odom_history
-        if not hist:
-            return self._odom_x, self._odom_y, self._odom_yaw
-        if stamp_ns <= hist[0][0]:
-            return hist[0][1], hist[0][2], hist[0][3]
-        if stamp_ns >= hist[-1][0]:
-            return hist[-1][1], hist[-1][2], hist[-1][3]
-
-        for i in range(len(hist) - 1):
-            t0, x0, y0, yaw0 = hist[i]
-            t1, x1, y1, yaw1 = hist[i + 1]
-            if t0 <= stamp_ns <= t1:
-                span = t1 - t0
-                a = 0.0 if span <= 0 else (stamp_ns - t0) / span
-                return (
-                    x0 + a * (x1 - x0),
-                    y0 + a * (y1 - y0),
-                    yaw0 + a * (yaw1 - yaw0),
-                )
-        return hist[-1][1], hist[-1][2], hist[-1][3]
+        self._publish_pose(stamp_ns)
 
     # ----- camera correction --------------------------------------------------
 
@@ -508,9 +1286,8 @@ class PoseEstimationSensorFusionNode(Node):
         if not all(math.isfinite(v) for v in (ox, oy, yaw)):
             return
 
-        # While stopped the true pose is constant: accumulate camera frames and use
-        # their outlier-rejected average as the anchor instead of a single noisy fix.
-        if self._robot_motion_status == 'stopped':
+        moving = self._robot_motion_status == 'moving'
+        if not moving:
             self._stopped_camera_samples.append((ox, oy, yaw))
             ox, oy, yaw, kept = _robust_average_pose(
                 self._stopped_camera_samples,
@@ -521,63 +1298,131 @@ class PoseEstimationSensorFusionNode(Node):
             self._stopped_sample_count = len(self._stopped_camera_samples)
             self._stopped_kept_count = kept
 
-        # Camera gives the robot-origin pose; convert to the wheel-axle midpoint,
-        # which is the point odometry integrates.
-        axle_x = ox - self._origin_offset * math.cos(yaw)
-        axle_y = oy - self._origin_offset * math.sin(yaw)
-
         stamp_ns = self._stamp_to_ns(msg)
-        odom_x, odom_y, odom_yaw = self._odom_pose_at(stamp_ns)
-
-        self._anchor_x = axle_x
-        self._anchor_y = axle_y
-        self._anchor_yaw = yaw
-        self._anchor_odom_x = odom_x
-        self._anchor_odom_y = odom_y
-        self._anchor_odom_yaw = odom_yaw
-        self._anchor_valid = True
+        self._predict_to(stamp_ns)
+        self._last_camera_ns = stamp_ns
+        self._camera_valid = True
         self._camera_x = ox
         self._camera_y = oy
         self._camera_yaw_deg = math.degrees(yaw)
+        self._apply_camera_measurement(ox, oy, yaw, moving)
+        self._publish_pose(stamp_ns, force=True)
 
-        self._publish_fused(self._latest_stamp_ns())
+    # ----- MPU6050 ------------------------------------------------------------
 
-    # ----- fusion + publish ---------------------------------------------------
+    def _init_mpu(self) -> None:
+        try:
+            i2c = self._get_i2c()
+        except Exception as exc:
+            self.get_logger().warn(f'MPU6050 skipped: failed to open I2C bus: {exc}')
+            return
+        addresses = self._scan_main_i2c_addresses(i2c)
+        if self._mpu_addr not in addresses:
+            self.get_logger().warn(
+                f'MPU6050 not found at 0x{self._mpu_addr:02x}; EKF will use wheel+camera only'
+            )
+            return
+        try:
+            with self._i2c_lock:
+                self._mpu = Mpu6050Driver(i2c, self._mpu_addr)
+            self._mpu_available = True
+            self.get_logger().info(f'MPU6050 ready at 0x{self._mpu_addr:02x}')
+        except Exception as exc:
+            self.get_logger().warn(f'MPU6050 init failed: {exc}')
 
-    def _publish_fused(self, stamp_ns: int) -> None:
-        if not self._anchor_valid:
+    def _finish_imu_calibration(self) -> None:
+        if self._calib_gyro:
+            self._gyro_bias = sum(self._calib_gyro) / len(self._calib_gyro)
+        if self._calib_accel_fwd:
+            self._accel_bias_forward = sum(self._calib_accel_fwd) / len(self._calib_accel_fwd)
+        self._calib_done = True
+        self.get_logger().info(
+            f'MPU6050 calibration done: gyro_bias={self._gyro_bias:.4f} rad/s, '
+            f'accel_bias_fwd={self._accel_bias_forward:.3f} m/s^2'
+        )
+
+    def _poll_mpu(self) -> None:
+        if not self._mpu_available or self._mpu is None:
+            return
+        stamp_ns = self.get_clock().now().nanoseconds
+        try:
+            with self._i2c_lock:
+                accel, gyro = self._mpu.read()
+            self._mpu_fail_count = 0
+        except Exception as exc:
+            self._mpu_fail_count += 1
+            if self._mpu_fail_count >= self._mpu_reinit_after_fail_count:
+                self.get_logger().warn(f'MPU6050 read failures; reinitializing ({exc})')
+                self._mpu = None
+                self._mpu_available = False
+                self._init_mpu()
+                self._mpu_fail_count = 0
             return
 
-        # Relative motion in odom frame since the camera anchor's timestamp.
-        dx = self._odom_x - self._anchor_odom_x
-        dy = self._odom_y - self._anchor_odom_y
-        d_yaw = self._odom_yaw - self._anchor_odom_yaw
+        a_forward = self._imu_axes.forward_accel(accel) - self._accel_bias_forward
+        omega = self._imu_axes.yaw_rate(gyro) - self._gyro_bias
+        self._last_imu_omega = omega
 
-        # Rotate the odom-frame delta into the anchor (map) frame and compose.
-        rot = self._anchor_yaw - self._anchor_odom_yaw
-        cos_r = math.cos(rot)
-        sin_r = math.sin(rot)
-        axle_x = self._anchor_x + cos_r * dx - sin_r * dy
-        axle_y = self._anchor_y + sin_r * dx + cos_r * dy
-        axle_yaw = _normalize_yaw_rad(self._anchor_yaw + d_yaw)
+        if not self._calib_done:
+            if not self._robot_is_stationary():
+                return
+            self._calib_gyro.append(omega)
+            self._calib_accel_fwd.append(self._imu_axes.forward_accel(accel))
+            # #region agent log
+            self._agent_dbg_throttled(
+                'H4',
+                'pose_estimation_sensor_fusion_node.py:_poll_mpu',
+                'imu calibrating',
+                {
+                    'calib_samples': len(self._calib_gyro),
+                    'calib_target': self._fusion_calib_samples,
+                    'raw_omega': round(omega, 4),
+                    'wheel_omega': round(self._latest_wheel_omega, 4),
+                    'motion_status': self._robot_motion_status,
+                },
+            )
+            # #endregion
+            if len(self._calib_gyro) >= self._fusion_calib_samples:
+                self._finish_imu_calibration()
+            return
 
-        # Convert the axle-midpoint pose back to the robot origin (40mm forward).
-        origin_x = axle_x + self._origin_offset * math.cos(axle_yaw)
-        origin_y = axle_y + self._origin_offset * math.sin(axle_yaw)
-        self._fused_yaw_deg = math.degrees(axle_yaw)
+        if abs(a_forward) < self._fusion_accel_deadband:
+            a_forward = 0.0
+        self._last_imu_a_forward = a_forward
 
-        qx, qy, qz, qw = _quaternion_from_yaw(axle_yaw)
-        out = PoseStamped()
-        out.header.stamp = rclpy.time.Time(nanoseconds=stamp_ns).to_msg()
-        out.header.frame_id = 'map'
-        out.pose.position.x = origin_x
-        out.pose.position.y = origin_y
-        out.pose.position.z = 0.0
-        out.pose.orientation.x = qx
-        out.pose.orientation.y = qy
-        out.pose.orientation.z = qz
-        out.pose.orientation.w = qw
-        self._pub.publish(out)
+        if self._imu_fusion_enabled:
+            with self._ekf_lock:
+                if self._ekf.initialized:
+                    self._ekf.update_gyro(omega, self._ekf_gyro_std)
+            self._maybe_zupt(stamp_ns, a_forward, omega)
+            # #region agent log
+            self._agent_dbg_throttled(
+                'H5',
+                'pose_estimation_sensor_fusion_node.py:_poll_mpu',
+                'imu poll',
+                {
+                    'omega': round(omega, 4),
+                    'gyro_bias': round(self._gyro_bias, 4),
+                    'wheel_omega': round(self._latest_wheel_omega, 4),
+                    'zupt_since': self._zupt_since_ns is not None,
+                    'motion_status': self._robot_motion_status,
+                },
+            )
+            # #endregion
+
+        if self._fusion_publish_period_ns == 0:
+            self._publish_pose(stamp_ns)
+
+        now = self.get_clock().now()
+        if (now - self._last_mpu_debug).nanoseconds * 1e-9 >= self._mpu_debug_interval_sec:
+            self._last_mpu_debug = now
+            v, w = self._latest_wheel_v, self._latest_wheel_omega
+            self.get_logger().debug(
+                f'[mpu] a_fwd={a_forward:+.3f} omega={omega:+.3f} '
+                f'wheel_v={v:+.3f} wheel_omega={w:+.3f}'
+            )
+
+    # ----- fusion + publish (legacy section marker) ---------------------------
 
     # ----- radar / ToF --------------------------------------------------------
 
@@ -962,9 +1807,12 @@ class PoseEstimationSensorFusionNode(Node):
             if self._fused_yaw_deg is None
             else f'{self._fused_yaw_deg:.1f}deg'
         )
+        with self._ekf_lock:
+            ekf_v, ekf_omega = self._ekf.velocity() if self._ekf.initialized else (0.0, 0.0)
         self.get_logger().info(
-            f'[fusion] left_count={left_cnt}, right_count={right_cnt}, '
+            f'[ekf] left_count={left_cnt}, right_count={right_cnt}, '
             f'camera_xy={camera_xy}, camera_yaw={cam_yaw}, fused_yaw={fused_yaw}, '
+            f'v={ekf_v:+.3f} omega={ekf_omega:+.3f}, '
             f'cam_samples={self._stopped_kept_count}/{self._stopped_sample_count}'
         )
 
@@ -975,17 +1823,14 @@ class PoseEstimationSensorFusionNode(Node):
             return self.get_clock().now().nanoseconds
         return ns
 
-    def _latest_stamp_ns(self) -> int:
-        if self._odom_history:
-            return self._odom_history[-1][0]
-        return self.get_clock().now().nanoseconds
-
 
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = PoseEstimationSensorFusionNode()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:

@@ -114,6 +114,7 @@ RADAR_MAX_RANGE = 0.8
 COLLISION_TRIGGER_DISTANCE_M: float = 0.30  # robot-only radar below this activates avoiding
 COLLISION_ESCAPE_STEP_M: float = 0.30  # escape waypoint offset from current pose (m)
 COLLISION_WAYPOINT_RELEASE_DISTANCE_M: float = 0.15  # clear held escape wp when this close
+COLLISION_AVOIDING_FIELD_BOUND_M: float = 0.6  # skip avoiding when |x| or |y| exceeds this
 
 VISIBLE_RANGE_METERS = 1.0
 
@@ -1131,6 +1132,10 @@ def _read_collision_avoiding_config(
 
     return True, None
 
+def _collision_avoiding_position_allowed(x: float, y: float) -> bool:
+    bound = COLLISION_AVOIDING_FIELD_BOUND_M
+    return abs(float(x)) <= bound and abs(float(y)) <= bound
+
 def _maybe_run_collision_avoiding(
     current_file: str = CURRENT_POSITION_FILE,
     default_smart_factor: float = 2.0,
@@ -1144,6 +1149,15 @@ def _maybe_run_collision_avoiding(
     if not enabled:
         radar_sensor()  # Still update radar memory for potential collision counting, even if avoiding is off.
         return _collision_avoiding_waypoint_held()
+
+    cur = _read_current_position(current_file)
+    if cur is not None:
+        cx, cy, _ = cur
+        if not _collision_avoiding_position_allowed(cx, cy):
+            radar_sensor()
+            if _collision_avoiding_waypoint_held():
+                _clear_collision_avoiding_waypoint()
+            return False
 
     smart_factor = (
         smart_factor_override
@@ -1491,7 +1505,9 @@ def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) ->
     cur = _read_current_position(current_file)
     if cur is None:
         return False
-    _, _, _ = cur
+    cx, cy, _ = cur
+    if not _collision_avoiding_position_allowed(cx, cy):
+        return False
 
     collision_threshold = COLLISION_TRIGGER_DISTANCE_M
 
