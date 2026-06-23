@@ -242,7 +242,7 @@ decision_node:
     # Decision loop tick rate (Hz).
     tick_hz: 10.0
     # Actual decision timer rate (Hz). Timer uses this, not tick_hz above.
-    fallback_tick_hz: 1.0
+    fallback_tick_hz: 5.0
     # Decision mode string (selects handler in decision_cruise). improved_nearest_v3_5, planned
     mode: improved_nearest_v3_5
     # Fallback speed when not provided by planner.
@@ -299,6 +299,8 @@ motion_control_node:
     position_topic: /current_position
     # Target waypoint input (std_msgs/String '(x, y, theta_deg)').
     waypoint_topic: /dynamic_waypoint
+    # Short-range escape waypoint; non-empty values override waypoint_topic.
+    collision_avoiding_waypoint_topic: /collision_avoiding_waypoint
     # Output topic publishing 'going' / 'reached' for the active waypoint.
     waypoint_status_topic: /waypoint_status
     # PWM duty cycle (0..1) when driving straight toward the waypoint.

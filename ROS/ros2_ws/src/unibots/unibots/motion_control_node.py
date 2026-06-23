@@ -42,7 +42,10 @@ Motion status output:
 Waypoint following:
   - Inputs:
       /current_position (geometry_msgs/PoseStamped) -> robot x, y, heading
-      /dynamic_waypoint (std_msgs/String '(x, y, theta_deg)') -> target x, y
+      /dynamic_waypoint (std_msgs/String '(x, y, theta_deg)') -> task target x, y
+      /collision_avoiding_waypoint (std_msgs/String, optional) -> short-range escape
+        target. When non-empty, motion control pursues it to 'reached' before resuming
+        /dynamic_waypoint; if the escape point moves during pursuit, the target updates.
   - Behavior (heading-gated drive toward each waypoint):
       * Rotate in place (proximity PWM + align hysteresis) until |heading error| is
         within heading_tolerance_deg (1 deg).
@@ -153,6 +156,7 @@ MOTION_STATUS_HZ: float = 20.0  # how often to publish robot motion status
 # --- Waypoint-following control ---
 POSITION_TOPIC: str = '/current_position'  # geometry_msgs/PoseStamped robot pose
 WAYPOINT_TOPIC: str = '/dynamic_waypoint'  # std_msgs/String '(x, y, theta_deg)'
+COLLISION_AVOIDING_WAYPOINT_TOPIC: str = '/collision_avoiding_waypoint'
 WAYPOINT_STATUS_TOPIC: str = '/waypoint_status'  # 'going' / 'reached'
 CONTROL_HZ: float = 50.0  # waypoint-following control loop rate
 DRIVE_SPEED: float = 0.05  # PWM duty cycle when driving forward toward the waypoint
@@ -367,6 +371,9 @@ class MotionControlNode(Node):
         self.declare_parameter('motion_status_hz', MOTION_STATUS_HZ)
         self.declare_parameter('position_topic', POSITION_TOPIC)
         self.declare_parameter('waypoint_topic', WAYPOINT_TOPIC)
+        self.declare_parameter(
+            'collision_avoiding_waypoint_topic', COLLISION_AVOIDING_WAYPOINT_TOPIC
+        )
         self.declare_parameter('waypoint_status_topic', WAYPOINT_STATUS_TOPIC)
         self.declare_parameter('control_hz', CONTROL_HZ)
         self.declare_parameter('drive_speed', DRIVE_SPEED)
@@ -411,6 +418,10 @@ class MotionControlNode(Node):
         waypoint_topic = (
             self.get_parameter('waypoint_topic').get_parameter_value().string_value
             or WAYPOINT_TOPIC
+        )
+        collision_waypoint_topic = (
+            self.get_parameter('collision_avoiding_waypoint_topic').get_parameter_value().string_value
+            or COLLISION_AVOIDING_WAYPOINT_TOPIC
         )
         waypoint_status_topic = (
             self.get_parameter('waypoint_status_topic').get_parameter_value().string_value
@@ -506,10 +517,15 @@ class MotionControlNode(Node):
         self._prev_right_count: int | None = None
         self._prev_wheel_state_time: float | None = None
 
-        # Latest robot pose (/current_position) and target (/dynamic_waypoint).
+        # Latest robot pose (/current_position) and navigation targets.
         self._current_x: float | None = None
         self._current_y: float | None = None
         self._current_theta: float | None = None
+        self._dynamic_target_x: float | None = None
+        self._dynamic_target_y: float | None = None
+        self._collision_target: tuple[float, float] | None = None
+        self._collision_pursuit_active: bool = False
+        self._collision_reached_point: tuple[float, float] | None = None
         self._target_x: float | None = None
         self._target_y: float | None = None
         self._last_waypoint_status: str | None = None
@@ -560,6 +576,7 @@ class MotionControlNode(Node):
         self.create_subscription(String, '/run', self._on_run, 10)
         self.create_subscription(PoseStamped, position_topic, self._on_current_position, 10)
         self.create_subscription(String, waypoint_topic, self._on_waypoint, 10)
+        self.create_subscription(String, collision_waypoint_topic, self._on_collision_waypoint, 10)
         self.create_subscription(String, WAYPOINT_TYPE_TOPIC, self._on_waypoint_type, 10)
 
         self._wheel_state_pub = self.create_publisher(JointState, wheel_state_topic, 10)
@@ -581,7 +598,8 @@ class MotionControlNode(Node):
         self.get_logger().info(
             f'motion_control_node started (MDD3A dual-PWM): '
             f'left=({LEFT_MOTOR_A},{LEFT_MOTOR_B}) right=({RIGHT_MOTOR_A},{RIGHT_MOTOR_B}), '
-            f'following {waypoint_topic} from {position_topic} @ {control_hz:.1f} Hz '
+            f'following {waypoint_topic} (task) + {collision_waypoint_topic} (escape priority) '
+            f'from {position_topic} @ {control_hz:.1f} Hz '
             f'(heading_tol={self._heading_tolerance_deg:.1f}deg, '
             f'near_dist={self._near_target_distance_m:.2f}m@'
             f'{self._near_target_heading_tolerance_deg:.1f}deg, '
@@ -631,18 +649,133 @@ class MotionControlNode(Node):
         cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
         self._current_theta = math.atan2(siny_cosp, cosy_cosp)
 
+    def _following_collision(self) -> bool:
+        return self._collision_pursuit_active
+
+    def _reset_nav_state(self) -> None:
+        self._needs_heading_settle = False
+        self._heading_settle_until = None
+        self._heading_align_latched = False
+        self._pause_until = None
+        self._pause_next_phase = None
+        self._reached_pause_until = None
+        self._nav_motion_mode = None
+        self._rotate_started_at = None
+        self._drive_started_at = None
+        self._reset_rotate_command_state()
+
+    def _begin_collision_pursuit(self) -> None:
+        """Preempt current navigation and pursue the escape point to reached."""
+        if self._collision_target is None:
+            return
+        self._stop()
+        self._reset_home_state()
+        self._collision_pursuit_active = True
+        self._collision_reached_point = None
+        self._target_x, self._target_y = self._collision_target
+        self._active_target = self._collision_target
+        self._motion_phase = 'navigate'
+        self._pending_target = None
+        self._reset_nav_state()
+
+    def _update_collision_target_during_pursuit(self) -> None:
+        """Refresh the escape target while already pursuing collision avoidance."""
+        if self._collision_target is None or not self._collision_pursuit_active:
+            return
+        prev = (self._target_x, self._target_y)
+        self._target_x, self._target_y = self._collision_target
+        self._active_target = self._collision_target
+        if self._collision_target == prev:
+            return
+        if self._motion_phase in ('reached', 'ready', 'pause'):
+            self._motion_phase = 'navigate'
+        self._reset_nav_state()
+
+    def _handoff_to_dynamic_after_collision(self) -> None:
+        """Collision escape point reached; resume the task waypoint."""
+        if self._collision_target is not None:
+            self._collision_reached_point = self._collision_target
+        self._collision_pursuit_active = False
+        self._pending_target = None
+        self._publish_waypoint_status('reached')
+        if self._dynamic_target_x is not None and self._dynamic_target_y is not None:
+            self._target_x = self._dynamic_target_x
+            self._target_y = self._dynamic_target_y
+            self._active_target = (self._target_x, self._target_y)
+            self._motion_phase = 'navigate'
+            self._reset_nav_state()
+            return
+        self._begin_phase_pause('reached')
+
+    def _sync_follow_target(self, *, immediate: bool = False) -> None:
+        if self._collision_pursuit_active:
+            return
+        if self._dynamic_target_x is not None and self._dynamic_target_y is not None:
+            new_target = (self._dynamic_target_x, self._dynamic_target_y)
+        else:
+            self._target_x = None
+            self._target_y = None
+            return
+
+        if (
+            not immediate
+            and self._motion_phase == 'reached'
+            and self._reached_pause_until is not None
+            and time.monotonic() < self._reached_pause_until
+        ):
+            self._pending_target = new_target
+            return
+
+        prev = (self._target_x, self._target_y)
+        self._target_x, self._target_y = new_target
+        if new_target == prev:
+            return
+
+        self._active_target = new_target
+        self._motion_phase = 'navigate'
+        self._pending_target = None
+        self._reset_nav_state()
+
     def _on_waypoint(self, msg: String) -> None:
         parsed = _parse_waypoint(msg.data if msg.data else '')
         if parsed is None:
+            self._dynamic_target_x = None
+            self._dynamic_target_y = None
+        else:
+            self._dynamic_target_x, self._dynamic_target_y = parsed
+        if self._collision_pursuit_active:
             return
-        if self._motion_phase == 'reached' and self._reached_pause_until is not None:
-            if time.monotonic() < self._reached_pause_until:
-                self._pending_target = parsed
+        self._sync_follow_target()
+
+    def _on_collision_waypoint(self, msg: String) -> None:
+        prev_collision = self._collision_target
+        parsed = _parse_waypoint(msg.data if msg.data else '')
+        self._collision_target = parsed
+
+        if self._collision_target is None:
+            self._collision_pursuit_active = False
+            self._collision_reached_point = None
+            if prev_collision is not None:
+                self._sync_follow_target(immediate=True)
+            return
+
+        if self._collision_pursuit_active:
+            if self._collision_target != prev_collision:
+                self._update_collision_target_during_pursuit()
+            return
+
+        if self._collision_reached_point is not None:
+            rx, ry = self._collision_reached_point
+            cx, cy = self._collision_target
+            if math.hypot(cx - rx, cy - ry) < 1e-3:
                 return
-        self._target_x, self._target_y = parsed
+
+        self._begin_collision_pursuit()
 
     def _reset_motion_phase(self) -> None:
         self._motion_phase = None
+        self._collision_pursuit_active = False
+        self._collision_reached_point = None
         self._needs_heading_settle = False
         self._heading_settle_until = None
         self._pause_until = None
@@ -1083,7 +1216,7 @@ class MotionControlNode(Node):
             self._stop()
             return
 
-        if self._waypoint_type == 'home':
+        if self._waypoint_type == 'home' and not self._following_collision():
             home_target = (self._target_x, self._target_y)
             if self._home_phase == 'complete' and home_target == self._home_final:
                 pass
@@ -1093,7 +1226,7 @@ class MotionControlNode(Node):
         target = (self._target_x, self._target_y)
         use_normal_target_tracking = not (
             self._waypoint_type == 'home' and self._home_sequence_holding()
-        )
+        ) and not self._following_collision()
         if use_normal_target_tracking and self._active_target != target:
             if self._motion_phase == 'reached':
                 self._pending_target = target
@@ -1171,6 +1304,9 @@ class MotionControlNode(Node):
         if at_target:
             self._needs_heading_settle = False
             self._heading_settle_until = None
+            if self._collision_pursuit_active:
+                self._handoff_to_dynamic_after_collision()
+                return
             self._begin_phase_pause('reached')
             return
 

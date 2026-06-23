@@ -111,6 +111,9 @@ UNSEEN_REGIONS_FILE = os.path.join(REAL_TIME_DIR, "unseen_regions.txt")
 COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt")
 
 RADAR_MAX_RANGE = 0.8
+COLLISION_TRIGGER_DISTANCE_M: float = 0.30  # robot-only radar below this activates avoiding
+COLLISION_ESCAPE_STEP_M: float = 0.30  # escape waypoint offset from current pose (m)
+COLLISION_WAYPOINT_RELEASE_DISTANCE_M: float = 0.15  # clear held escape wp when this close
 
 VISIBLE_RANGE_METERS = 1.0
 
@@ -825,6 +828,31 @@ def _set_collision_avoiding_waypoint(
     global COLLISION_AVOIDING_WAYPOINT_LOCAL
     COLLISION_AVOIDING_WAYPOINT_LOCAL = waypoint
 
+def _clear_collision_avoiding_waypoint() -> None:
+    _set_collision_avoiding_waypoint(None)
+    _write_collision_status(False)
+    set_velocity(DEFAULT_LINEAR_VELOCITY)
+
+def _collision_avoiding_waypoint_held() -> bool:
+    return COLLISION_AVOIDING_WAYPOINT_LOCAL is not None
+
+def _release_collision_waypoint_if_reached(
+    waypoint_status: str,
+    current_x: Optional[float] = None,
+    current_y: Optional[float] = None,
+) -> None:
+    """Drop the held escape waypoint once motion control reports reached (or we are on it)."""
+    if not _collision_avoiding_waypoint_held():
+        return
+    if (waypoint_status or '').strip().lower() == 'reached':
+        _clear_collision_avoiding_waypoint()
+        return
+    if current_x is None or current_y is None:
+        return
+    wx, wy, _ = COLLISION_AVOIDING_WAYPOINT_LOCAL
+    if math.hypot(float(current_x) - wx, float(current_y) - wy) <= COLLISION_WAYPOINT_RELEASE_DISTANCE_M:
+        _clear_collision_avoiding_waypoint()
+
 def _parse_ball_lines(text: str):
     out = []
     for raw in text.splitlines():
@@ -1108,18 +1136,22 @@ def _maybe_run_collision_avoiding(
     default_smart_factor: float = 2.0,
     stack_waypoint: bool = True,
 ) -> bool:
-    """Run collision avoiding based on collision_avoiding.txt config."""
+    """Run collision avoiding based on collision_avoiding.txt config.
+
+    Returns True while an escape waypoint is still held (published until reached).
+    """
     enabled, smart_factor_override = _read_collision_avoiding_config()
     if not enabled:
         radar_sensor()  # Still update radar memory for potential collision counting, even if avoiding is off.
-        return False
+        return _collision_avoiding_waypoint_held()
 
     smart_factor = (
         smart_factor_override
         if smart_factor_override is not None
         else default_smart_factor
     )
-    return collision_avoiding_v3(current_file, smart_factor=smart_factor, stack_waypoint=stack_waypoint)
+    collision_avoiding_v3(current_file, smart_factor=smart_factor, stack_waypoint=stack_waypoint)
+    return _collision_avoiding_waypoint_held()
 
 def _read_stack_waypoint(path: Optional[str] = None) -> Optional[tuple[float, float, Optional[float]]]:
     """Return (x, y, orientation_or_none) from waypoints_stack.txt, or None.
@@ -1461,7 +1493,7 @@ def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) ->
         return False
     _, _, _ = cur
 
-    collision_threshold = 0.05
+    collision_threshold = COLLISION_TRIGGER_DISTANCE_M
 
     # Keep radar/memory pipelines updated, then trigger purely from robot-only radar.
     radar_sensor()
@@ -1475,13 +1507,14 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
                           smart_factor: float = 4.0,
                           stack_waypoint: bool = True) -> bool:
 
-    trigger_distance = 0.05
+    trigger_distance = COLLISION_TRIGGER_DISTANCE_M
+    jump_step = COLLISION_ESCAPE_STEP_M
     cur = _read_current_position(current_file)
     if cur is None:
         _write_collision_status(False)
-        _set_collision_avoiding_waypoint(None)
-        set_velocity(DEFAULT_LINEAR_VELOCITY)
-        return False
+        if not _collision_avoiding_waypoint_held():
+            set_velocity(DEFAULT_LINEAR_VELOCITY)
+        return _collision_avoiding_waypoint_held()
     cx, cy, bearing = cur
 
     collision_status = _read_status(COLLISION_STATUS_FILE)
@@ -1497,7 +1530,6 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
             values[direction] = min(0.8, dist)
 
     # Unit vectors every 30 degrees across 0-360.
-    jump_step = 0.15
     unit_vectors_10deg = [
         (math.cos(math.radians(deg)), math.sin(math.radians(deg)))
         for deg in range(0, 360, 10)
@@ -1575,8 +1607,10 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         total_w = sum(values.values())
         if total_w <= 0.0:
             _write_collision_status(False)
-            set_velocity(DEFAULT_LINEAR_VELOCITY)
-            return False
+            if not _collision_avoiding_waypoint_held():
+                set_velocity(DEFAULT_LINEAR_VELOCITY)
+                return False
+            return True
 
         world_normals = []
         for (nx, ny) in normals_robot:
@@ -1683,19 +1717,20 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
                 None if target_orientation is None else float(target_orientation),
             ))
         else:
-            _set_collision_avoiding_waypoint(None)
-            _write_collision_status(False)
-            set_velocity(DEFAULT_LINEAR_VELOCITY)
-            return False
+            if not _collision_avoiding_waypoint_held():
+                _write_collision_status(False)
+                set_velocity(DEFAULT_LINEAR_VELOCITY)
+                return False
+            return True
 
         return True
 
-    _set_collision_avoiding_waypoint(None)
     if collision_status == "activated":
         _write_collision_status(False)
-        set_velocity(DEFAULT_LINEAR_VELOCITY)
+        if not _collision_avoiding_waypoint_held():
+            set_velocity(DEFAULT_LINEAR_VELOCITY)
 
-    return False
+    return _collision_avoiding_waypoint_held()
 
 def next_point_time_cost(
     prev_position: tuple[float, float],
@@ -2204,8 +2239,8 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     dynamic_waypoint_type = _read_status(DYNAMIC_WAYPOINTS_TYPE_FILE)
     _debug_log(f"[decision] waypoint_status={status}, dynamic_waypoint_type={dynamic_waypoint_type}")
 
-    # if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
-    #     pass
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+        return 0
 
     cur = _read_current_position(current_file)
     cx, cy, bearing = cur if cur is not None else (0.0, 0.0, None)
@@ -2362,6 +2397,9 @@ def mode_planned(
     waypoints: list[tuple[float, float]] | None = None,
 ) -> int:
     """Follow a fixed list of waypoints in order, going home after each one."""
+    if _maybe_run_collision_avoiding(current_file, default_smart_factor=2.0):
+        return 0
+
     wps = waypoints if waypoints is not None else PLANNED_WAYPOINTS
     if not wps:
         return 0
@@ -2559,7 +2597,11 @@ def decide_from_ros_state(
         waypoint_status=waypoint_status,
     )
 
-    _set_collision_avoiding_waypoint(None)
+    _release_collision_waypoint_if_reached(
+        waypoint_status,
+        current_x=current_x,
+        current_y=current_y,
+    )
 
     if not DECISIONS_CACHE:
         DECISIONS_CACHE.update(DECISIONS_LOCAL_CACHE)
