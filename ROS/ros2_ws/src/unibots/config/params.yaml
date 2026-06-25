@@ -350,3 +350,12 @@ motion_control_node:
     wheel_state_hz: 50.0
     # Topic publishing left/right wheel position (rad) and velocity (rad/s).
     wheel_state_topic: /wheel_joint_states
+
+reset_button_node:
+  ros__parameters:
+    # Dedicated match-control GPIO: LOW=reset, HIGH (3.3 V)=start competition.
+    gpio_pin: 24
+    # GPIO poll rate (Hz) for edge detection.
+    poll_hz: 20.0
+    # Stable level must hold this long (sec) before acting.
+    debounce_sec: 0.05

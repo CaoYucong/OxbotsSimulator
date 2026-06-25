@@ -1,66 +1,38 @@
 """
-reset_button_node.py — Repurposes the hardware power button as a ROS 2
-reset trigger.  When pressed, it publishes reset values to /time and the
-decision-making topics so the planner restarts cleanly without rebooting.
+reset_button_node.py — Match start / reset via dedicated GPIO 24.
 
-Prerequisites (run setup_reset_button.sh once):
-  1. python3-evdev installed
-  2. /etc/systemd/logind.conf  →  HandlePowerKey=ignore
-  3. systemd-logind restarted
+GPIO 24 is a dedicated match-control line:
+  LOW  (0 V)   → reset  (/time=0, clear waypoints, /run=off)
+  HIGH (3.3 V) → start competition (/time=0, clear waypoints, /run=on);
+                 the line stays HIGH for the whole match.
 
 Usage:
   ros2 run unibots reset_button_node
 """
 
 import threading
-from typing import Optional
+import time
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
 try:
-    import evdev
-    from evdev import InputDevice, categorize, ecodes as ev
-    _EVDEV_OK = True
+    from gpiozero import DigitalInputDevice
+    _GPIO_OK = True
 except ImportError:
-    _EVDEV_OK = False
+    _GPIO_OK = False
 
-
-def _find_power_button() -> Optional["InputDevice"]:
-    """Return the input device for the hardware power button, or None.
-
-    Strategy:
-      1. Prefer a device whose name contains 'pwr' (e.g. 'pwr_button').
-      2. Fall back to the first device that reports KEY_POWER capability,
-         skipping HDMI/CEC devices (which also advertise KEY_POWER but are
-         not the physical button).
-    """
-    candidates = []
-    for path in evdev.list_devices():
-        try:
-            dev = InputDevice(path)
-            name_lower = dev.name.lower()
-            caps = dev.capabilities()
-            has_power_key = ev.EV_KEY in caps and ev.KEY_POWER in caps[ev.EV_KEY]
-            if not has_power_key:
-                continue
-            # Highest priority: device explicitly named as power button
-            if 'pwr' in name_lower or 'power_button' in name_lower:
-                return dev
-            # Skip HDMI/CEC devices — they list KEY_POWER for TV-remote power
-            if 'hdmi' in name_lower or 'cec' in name_lower:
-                continue
-            candidates.append(dev)
-        except Exception:
-            pass
-    return candidates[0] if candidates else None
+DEFAULT_GPIO_PIN = 24
 
 
 class ResetButtonNode(Node):
     def __init__(self) -> None:
         super().__init__('reset_button_node')
 
+        self.declare_parameter('gpio_pin', DEFAULT_GPIO_PIN)
+        self.declare_parameter('poll_hz', 20.0)
+        self.declare_parameter('debounce_sec', 0.05)
         self.declare_parameter('time_topic', '/time')
         self.declare_parameter('decisions_topic', '/decisions')
         self.declare_parameter('decision_making_data_topic', '/decision_making_data')
@@ -90,92 +62,111 @@ class ResetButtonNode(Node):
         )
         self._pub_run = self.create_publisher(String, '/run', 10)
 
-        if not _EVDEV_OK:
+        self._is_running: bool = False
+        self._watch_alive: bool = False
+        self._gpio_level: str = 'unknown'
+
+        if not _GPIO_OK:
             self.get_logger().error(
-                'evdev not available — install with: sudo apt install python3-evdev'
+                'gpiozero not available — install with: sudo apt install python3-gpiozero'
             )
             return
 
-        self._thread = threading.Thread(target=self._watch, daemon=True)
+        pin = self.get_parameter('gpio_pin').get_parameter_value().integer_value
+        self._thread = threading.Thread(target=self._watch_gpio, daemon=True)
         self._thread.start()
-        self._is_running: bool = False
-        self._watch_alive: bool = False
-        print('[reset_button_node] started — waiting for power-button press', flush=True)
-        self.get_logger().info('reset_button_node started — waiting for power-button press')
+        print(f'[reset_button_node] started — monitoring GPIO {pin} (LOW=reset, HIGH=start)', flush=True)
+        self.get_logger().info(f'reset_button_node started — monitoring GPIO {pin}')
         self.create_timer(5.0, self._status_tick)
 
     def _status_tick(self) -> None:
         state = 'running' if self._is_running else 'stopped'
-        watching = 'watching' if self._watch_alive else 'NOT watching (thread dead or no device)'
-        print(f'[reset_button_node] status: {state}, button thread: {watching}', flush=True)
+        watching = 'watching' if self._watch_alive else 'NOT watching (thread dead or no GPIO)'
+        print(
+            f'[reset_button_node] status: {state}, GPIO={self._gpio_level}, thread: {watching}',
+            flush=True,
+        )
 
-    # ------------------------------------------------------------------
-    def _watch(self) -> None:
+    def _watch_gpio(self) -> None:
+        pin = self.get_parameter('gpio_pin').get_parameter_value().integer_value
+        debounce = self.get_parameter('debounce_sec').get_parameter_value().double_value
+        poll_hz = self.get_parameter('poll_hz').get_parameter_value().double_value
+        interval = 1.0 / poll_hz if poll_hz > 0.0 else 0.05
+
         try:
-            dev = _find_power_button()
+            gpio = DigitalInputDevice(pin, pull_up=True)
         except Exception as exc:
-            print(f'[reset_button_node] ERROR finding power button: {exc}', flush=True)
+            print(f'[reset_button_node] ERROR opening GPIO {pin}: {exc}', flush=True)
+            self.get_logger().error(f'Failed to open GPIO {pin}: {exc}')
             return
 
-        if dev is None:
-            msg = 'Power button device not found in /dev/input. Is HandlePowerKey=ignore set in logind.conf? Is user in input group?'
-            print(f'[reset_button_node] WARN: {msg}', flush=True)
-            self.get_logger().warn(msg)
-            return
-
-        print(f'[reset_button_node] Monitoring: {dev.path}  ({dev.name})', flush=True)
-        self.get_logger().info(f'Monitoring: {dev.path}  ({dev.name})')
         self._watch_alive = True
+        stable = gpio.value
+        pending = stable
+        pending_since = time.monotonic()
+        self._gpio_level = 'HIGH' if stable else 'LOW'
+
+        if stable:
+            self._reset_and_run()
+        else:
+            self._reset_stop()
+
         try:
-            dev.grab()  # exclusively grab device so systemd-logind can't consume events
-            print('[reset_button_node] Device grabbed (exclusive access)', flush=True)
-            for event in dev.read_loop():
-                print(f'[reset_button_node] RAW event: type={event.type} code={event.code} value={event.value}', flush=True)
-                if event.type == ev.EV_KEY:
-                    key_event = categorize(event)
-                    print(
-                        f'[reset_button_node] KEY event: scancode={key_event.scancode} '
-                        f'keystate={key_event.keystate} KEY_POWER={ev.KEY_POWER}',
-                        flush=True,
-                    )
-                    if (
-                        key_event.scancode == ev.KEY_POWER
-                        and key_event.keystate == key_event.key_up
-                    ):
-                        if self._is_running:
-                            print('[reset_button_node] Power button: running → stopping', flush=True)
-                            self.get_logger().info('Power button: running → stopping')
-                            self._stop()
-                        else:
-                            print('[reset_button_node] Power button: stopped → resetting and starting', flush=True)
-                            self.get_logger().info('Power button: stopped → resetting and starting')
-                            self._reset_and_run()
+            while rclpy.ok():
+                reading = gpio.value
+                now = time.monotonic()
+                if reading != pending:
+                    pending = reading
+                    pending_since = now
+                elif (now - pending_since) >= debounce and pending != stable:
+                    stable = pending
+                    self._gpio_level = 'HIGH' if stable else 'LOW'
+                    if stable:
+                        print('[reset_button_node] GPIO HIGH → start competition', flush=True)
+                        self.get_logger().info('GPIO HIGH → start competition')
+                        self._reset_and_run()
+                    else:
+                        print('[reset_button_node] GPIO LOW → reset', flush=True)
+                        self.get_logger().info('GPIO LOW → reset')
+                        self._reset_stop()
+                time.sleep(interval)
         except Exception as exc:
-            print(f'[reset_button_node] ERROR in read_loop: {exc}', flush=True)
-            print('[reset_button_node] Hint: try: sudo usermod -aG input $USER  (then re-login)', flush=True)
+            print(f'[reset_button_node] ERROR in GPIO watch loop: {exc}', flush=True)
+            self.get_logger().error(f'GPIO watch loop failed: {exc}')
         finally:
+            gpio.close()
             self._watch_alive = False
 
-    def _stop(self) -> None:
-        run_off = String()
-        run_off.data = 'off'
-        self._pub_run.publish(run_off)
-        self._is_running = False
-        print('[reset_button_node] Stopped: /run=off', flush=True)
-        self.get_logger().info('Stopped: /run=off')
-
-    def _reset_and_run(self) -> None:
-        # Reset sim time to 0
+    def _reset_stop(self) -> None:
         t = String()
         t.data = '0.0'
         self._pub_time.publish(t)
 
-        # Clear waypoint type
         empty = String()
         empty.data = ''
         self._pub_wpt_type.publish(empty)
 
-        # Start all nodes
+        run_off = String()
+        run_off.data = 'off'
+        self._pub_run.publish(run_off)
+        self._is_running = False
+
+        msg = 'Reset: /time="0.0", /dynamic_waypoints_type="", /run=off'
+        print(f'[reset_button_node] {msg}', flush=True)
+        self.get_logger().info(msg)
+
+    def _reset_and_run(self) -> None:
+        if self._is_running:
+            return
+
+        t = String()
+        t.data = '0.0'
+        self._pub_time.publish(t)
+
+        empty = String()
+        empty.data = ''
+        self._pub_wpt_type.publish(empty)
+
         run_on = String()
         run_on.data = 'on'
         self._pub_run.publish(run_on)

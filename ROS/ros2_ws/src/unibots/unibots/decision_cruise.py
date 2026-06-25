@@ -112,6 +112,8 @@ COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt"
 
 RADAR_MAX_RANGE = 0.8
 COLLISION_TRIGGER_DISTANCE_M: float = 0.30  # robot-only radar below this activates avoiding
+COLLISION_ACTIVATION_POSITION_BOUND_M: float = 0.6  # |x|,|y| must be <= this to trigger avoiding
+REAL_RADAR_FAIL_VALUE_M: float = 0.80  # pose_estimation_sensor_fusion tof_read_fail_value_m
 COLLISION_ESCAPE_STEP_M: float = 0.30  # escape waypoint offset from current pose (m)
 COLLISION_WAYPOINT_RELEASE_DISTANCE_M: float = 0.15  # clear held escape wp when this close
 
@@ -1453,7 +1455,10 @@ def robot_only_radar(
         if not math.isfinite(wall_dist):
             wall_dist = max_range
 
-        if abs(wall_dist) <= 0.25:
+        if (
+            abs(wall_dist) <= 0.25
+            and abs(radar_dist - wall_dist) <= wall_match_tolerance
+        ):
             predicted[direction] = max_range
         else:
             predicted[direction] = max(0.0, min(max_range, radar_dist))
@@ -1487,18 +1492,33 @@ def robot_only_radar(
 
     return merged
 
+def _radar_indicates_close_obstacle(dist: float, threshold_m: float) -> bool:
+    """True when a radar direction reports a real close hit (not fail/max-range)."""
+    if not math.isfinite(dist):
+        return False
+    if dist >= REAL_RADAR_FAIL_VALUE_M - 0.01 or dist >= RADAR_MAX_RANGE - 0.01:
+        return False
+    return dist <= threshold_m
+
+def _collision_avoiding_position_allowed(x: float, y: float) -> bool:
+    """Collision avoiding only arms inside the central field region."""
+    bound = COLLISION_ACTIVATION_POSITION_BOUND_M
+    return abs(x) <= bound and abs(y) <= bound
+
 def collision_activating_condition(current_file: str = CURRENT_POSITION_FILE) -> bool:
     cur = _read_current_position(current_file)
     if cur is None:
         return False
-    _, _, _ = cur
+    cx, cy, _ = cur
+
+    # Keep radar/memory pipelines updated even when avoiding is position-gated.
+    radar_sensor()
+    if not _collision_avoiding_position_allowed(cx, cy):
+        return False
 
     collision_threshold = COLLISION_TRIGGER_DISTANCE_M
-
-    # Keep radar/memory pipelines updated, then trigger purely from robot-only radar.
-    radar_sensor()
     robot_only_hits = robot_only_radar(current_file=current_file)
-    if any(dist < collision_threshold for dist in robot_only_hits.values()):
+    if any(_radar_indicates_close_obstacle(dist, collision_threshold) for dist in robot_only_hits.values()):
         return True
 
     return False
@@ -1516,6 +1536,13 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
             set_velocity(DEFAULT_LINEAR_VELOCITY)
         return _collision_avoiding_waypoint_held()
     cx, cy, bearing = cur
+
+    if not _collision_avoiding_position_allowed(cx, cy):
+        if _collision_avoiding_waypoint_held():
+            _clear_collision_avoiding_waypoint()
+        else:
+            _write_collision_status(False)
+        return False
 
     collision_status = _read_status(COLLISION_STATUS_FILE)
     if collision_status == "inactive":
