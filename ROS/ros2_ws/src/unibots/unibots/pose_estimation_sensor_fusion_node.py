@@ -414,8 +414,18 @@ class PoseEstimationSensorFusionNode(Node):
         )
         if self._time_topic:
             self.create_subscription(String, self._time_topic, self._on_time, 10)
+        self._radar_poll_stop = threading.Event()
+        self._radar_poll_thread: threading.Thread | None = None
         if poll_hz > 0.0:
-            self.create_timer(1.0 / poll_hz, self._poll_radar)
+            self._radar_poll_period_s = 1.0 / poll_hz
+            self._radar_poll_thread = threading.Thread(
+                target=self._radar_poll_loop,
+                name='radar_poll',
+                daemon=True,
+            )
+            self._radar_poll_thread.start()
+        else:
+            self._radar_poll_period_s = 0.0
         if fusion_debug_hz > 0.0:
             self.create_timer(1.0 / fusion_debug_hz, self._log_fusion_debug)
 
@@ -570,6 +580,25 @@ class PoseEstimationSensorFusionNode(Node):
 
     def _publish_fused(self, stamp_ns: int) -> None:
         if not self._anchor_valid:
+            # Wheel odometry only until camera establishes an anchor.
+            axle_yaw = self._odom_yaw
+            axle_x = self._odom_x
+            axle_y = self._odom_y
+            origin_x = axle_x + self._origin_offset * math.cos(axle_yaw)
+            origin_y = axle_y + self._origin_offset * math.sin(axle_yaw)
+            self._fused_yaw_deg = math.degrees(axle_yaw)
+            qx, qy, qz, qw = _quaternion_from_yaw(axle_yaw)
+            out = PoseStamped()
+            out.header.stamp = rclpy.time.Time(nanoseconds=stamp_ns).to_msg()
+            out.header.frame_id = 'map'
+            out.pose.position.x = origin_x
+            out.pose.position.y = origin_y
+            out.pose.position.z = 0.0
+            out.pose.orientation.x = qx
+            out.pose.orientation.y = qy
+            out.pose.orientation.z = qz
+            out.pose.orientation.w = qw
+            self._pub.publish(out)
             return
 
         # Relative motion in odom frame since the camera anchor's timestamp.
@@ -618,6 +647,21 @@ class PoseEstimationSensorFusionNode(Node):
         if self._latest_time_s is not None:
             return self._latest_time_s
         return self.get_clock().now().nanoseconds / 1_000_000_000.0
+
+    def _radar_poll_loop(self) -> None:
+        """Poll ToF/upstream radar off the ROS executor so I2C cannot block odometry."""
+        while not self._radar_poll_stop.is_set():
+            try:
+                self._poll_radar()
+            except Exception as exc:
+                self.get_logger().warn(f'radar poll failed: {exc}')
+            if self._radar_poll_stop.wait(self._radar_poll_period_s):
+                break
+
+    def stop_radar_poll_thread(self) -> None:
+        self._radar_poll_stop.set()
+        if self._radar_poll_thread is not None:
+            self._radar_poll_thread.join(timeout=2.0)
 
     def _poll_radar(self) -> None:
         tof_debug_values: dict[str, tuple[float | None, str, float]] | None = None
@@ -1141,13 +1185,19 @@ class PoseEstimationSensorFusionNode(Node):
 
 
 def main(args=None) -> None:
+    from rclpy.executors import MultiThreadedExecutor
+
     rclpy.init(args=args)
     node = PoseEstimationSensorFusionNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop_radar_poll_thread()
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

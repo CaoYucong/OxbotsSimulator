@@ -25,7 +25,7 @@ python3 - <<'EOF'
 import time
 try:
     from gpiozero import DigitalInputDevice
-    gpio = DigitalInputDevice(24, pull_up=True)
+    gpio = DigitalInputDevice(24, pull_up=False)
     for _ in range(5):
         print(f"  GPIO 24 = {'HIGH (start)' if gpio.value else 'LOW (reset)'}", flush=True)
         time.sleep(0.2)

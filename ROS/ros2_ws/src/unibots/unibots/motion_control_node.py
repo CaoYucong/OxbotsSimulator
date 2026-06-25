@@ -46,6 +46,7 @@ Waypoint following:
       /collision_avoiding_waypoint (std_msgs/String, optional) -> short-range escape
         target. When non-empty, motion control pursues it to 'reached' before resuming
         /dynamic_waypoint; if the escape point moves during pursuit, the target updates.
+        After the escape point is reached, hold stopped for 2 s before publishing 'reached'.
   - Behavior (heading-gated drive toward each waypoint):
       * Rotate in place (proximity PWM + align hysteresis) until |heading error| is
         within heading_tolerance_deg (1 deg).
@@ -71,6 +72,8 @@ Waypoint following:
       * Phase 1 (approach): drive forward to the intermediate point on the
         non-zero axis at ±0.8 m (zero axis unchanged).
       * Phase 2 (rotate): turn in place to face the field center (0, 0).
+      * Phase 2b (confirm): hold 2 s, then verify the robot is still at the
+        intermediate point; if not, return to Phase 1 (approach).
       * Phase 3 (reverse): back up until |coordinate| on the home axis exceeds 0.9 m
         (same axis as the non-zero home target).
       * Phase 4 (servo): pulse GPIO21 to -90 deg, wait 1 s (no PWM), pulse to +90 deg,
@@ -171,9 +174,12 @@ POSITION_TOLERANCE_M: float = 0.1  # 'reached' when |y_robot| <= this (lateral, 
 LONGITUDINAL_STOP_MIN_M: float = -0.2  # 'reached' when x_robot >= this (meters)
 LONGITUDINAL_STOP_MAX_M: float = 0.0  # 'reached' when x_robot <= this (meters)
 PHASE_PAUSE_S: float = 1.0  # stopped dwell after heading aligns (and after drive)
+COLLISION_REACHED_PAUSE_S: float = 2.0  # stopped dwell at escape point before 'reached'
 WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next target
+POSE_STALE_STOP_S: float = 0.5  # stop motors if /current_position is older than this
 WAYPOINT_TYPE_TOPIC: str = '/dynamic_waypoints_type'
 HOME_INTERMEDIATE_M: float = 0.8  # intermediate stop on non-zero home axis before reverse
+HOME_POSITION_CONFIRM_S: float = 2.0  # hold after rotate before reverse; re-approach if off mark
 HOME_AXIS_STOP_ABS_M: float = 0.95  # reverse phase stops once |axis coord| exceeds this
 
 
@@ -516,6 +522,7 @@ class MotionControlNode(Node):
         self._prev_left_count: int | None = None
         self._prev_right_count: int | None = None
         self._prev_wheel_state_time: float | None = None
+        self._last_pose_update_mono: float | None = None
 
         # Latest robot pose (/current_position) and navigation targets.
         self._current_x: float | None = None
@@ -549,6 +556,7 @@ class MotionControlNode(Node):
         self._home_final: tuple[float, float] | None = None
         self._home_intermediate: tuple[float, float] | None = None
         self._home_servo_until: float | None = None
+        self._home_confirm_until: float | None = None
         self._control_period = 0.1 if control_hz <= 0.0 else (1.0 / control_hz)
 
         # Quadrature encoders (max_steps=0 -> unbounded accumulation).
@@ -638,8 +646,11 @@ class MotionControlNode(Node):
         self._waypoint_type = new_type
 
     def _on_current_position(self, msg: PoseStamped) -> None:
-        self._current_x = float(msg.pose.position.x)
-        self._current_y = float(msg.pose.position.y)
+        new_x = float(msg.pose.position.x)
+        new_y = float(msg.pose.position.y)
+        self._current_x = new_x
+        self._current_y = new_y
+        self._last_pose_update_mono = time.monotonic()
 
         qx = float(msg.pose.orientation.x)
         qy = float(msg.pose.orientation.y)
@@ -690,6 +701,18 @@ class MotionControlNode(Node):
         if self._motion_phase in ('reached', 'ready', 'pause'):
             self._motion_phase = 'navigate'
         self._reset_nav_state()
+
+    def _begin_collision_arrival_pause(self) -> None:
+        """Stop at the escape point for COLLISION_REACHED_PAUSE_S before handoff."""
+        self._stop()
+        self._publish_motion_status_now('stopped')
+        self._motion_phase = 'pause'
+        self._pause_until = time.monotonic() + COLLISION_REACHED_PAUSE_S
+        self._pause_next_phase = 'collision_handoff'
+        self.get_logger().info(
+            f'[collision] escape point reached, holding stopped for '
+            f'{COLLISION_REACHED_PAUSE_S:.1f} s before reached'
+        )
 
     def _handoff_to_dynamic_after_collision(self) -> None:
         """Collision escape point reached; resume the task waypoint."""
@@ -795,14 +818,15 @@ class MotionControlNode(Node):
         self._home_final = None
         self._home_intermediate = None
         self._home_servo_until = None
+        self._home_confirm_until = None
 
     def _home_sequence_active(self) -> bool:
-        return self._home_phase in ('approach', 'rotate', 'reverse')
+        return self._home_phase in ('approach', 'rotate', 'confirm', 'reverse')
 
     def _home_sequence_holding(self) -> bool:
         """True while home is in progress or finished and should not re-navigate."""
         return self._home_phase in (
-            'approach', 'rotate', 'reverse', 'servo_90', 'servo_neg90', 'complete',
+            'approach', 'rotate', 'confirm', 'reverse', 'servo_90', 'servo_neg90', 'complete',
         )
 
     def _release_servo(self) -> None:
@@ -910,8 +934,23 @@ class MotionControlNode(Node):
             f'intermediate=({ix:.3f}, {iy:.3f})'
         )
 
+    def _begin_home_position_confirm(self) -> None:
+        self._stop()
+        self._publish_motion_status_now('stopped')
+        self._home_phase = 'confirm'
+        self._home_confirm_until = time.monotonic() + HOME_POSITION_CONFIRM_S
+        self._motion_phase = 'navigate'
+        self._needs_heading_settle = False
+        self._heading_settle_until = None
+        self._heading_align_latched = False
+        self._nav_motion_mode = None
+        self.get_logger().info(
+            f'[home] rotate complete, holding {HOME_POSITION_CONFIRM_S:.1f} s to confirm position'
+        )
+
     def _transition_home_phase(self, next_phase: str) -> None:
         self._home_phase = next_phase
+        self._home_confirm_until = None
         self._needs_heading_settle = False
         self._heading_settle_until = None
         self._heading_align_latched = False
@@ -1158,12 +1197,35 @@ class MotionControlNode(Node):
             dy = -self._current_y
             heading_error = self._heading_error_rad(dx, dy)
             if self._heading_rotate_aligned(dx, dy):
-                self._transition_home_phase('reverse')
+                self._begin_home_position_confirm()
                 return
             self._needs_heading_settle = False
             self._heading_settle_until = None
             self._begin_nav_motion('rotate')
             self._rotate_toward_heading(heading_error, dx, dy)
+            return
+
+        if self._home_phase == 'confirm':
+            self._stop()
+            self._publish_motion_status_now('stopped')
+            now = time.monotonic()
+            if self._home_confirm_until is not None and now < self._home_confirm_until:
+                return
+
+            ix, iy = self._home_intermediate
+            dx = ix - self._current_x
+            dy = iy - self._current_y
+            if self._at_target(dx, dy):
+                self.get_logger().info(
+                    f'[home] position confirmed at ({self._current_x:.3f}, {self._current_y:.3f})'
+                )
+                self._transition_home_phase('reverse')
+            else:
+                self.get_logger().info(
+                    f'[home] off intermediate mark at ({self._current_x:.3f}, {self._current_y:.3f}), '
+                    f'retry approach to ({ix:.3f}, {iy:.3f})'
+                )
+                self._transition_home_phase('approach')
             return
 
         if self._home_phase == 'reverse':
@@ -1216,6 +1278,25 @@ class MotionControlNode(Node):
             self._stop()
             return
 
+        if self._motion_started:
+            pose_never_received = self._last_pose_update_mono is None
+            pose_age_s = (
+                None
+                if pose_never_received
+                else time.monotonic() - self._last_pose_update_mono
+            )
+            if pose_never_received or (
+                pose_age_s is not None and pose_age_s > POSE_STALE_STOP_S
+            ):
+                if self._left.is_active or self._right.is_active:
+                    reason = 'never received' if pose_never_received else f'{pose_age_s:.2f}s stale'
+                    self.get_logger().warn(
+                        f'[pose_stale] /current_position {reason}; stopping motors'
+                    )
+                self._stop()
+                self._publish_motion_status_now('stopped')
+                return
+
         if self._waypoint_type == 'home' and not self._following_collision():
             home_target = (self._target_x, self._target_y)
             if self._home_phase == 'complete' and home_target == self._home_final:
@@ -1248,9 +1329,12 @@ class MotionControlNode(Node):
             self._publish_motion_status_now('stopped')
             if self._pause_until is not None and time.monotonic() >= self._pause_until:
                 next_phase = self._pause_next_phase
-                self._motion_phase = next_phase
                 self._pause_until = None
                 self._pause_next_phase = None
+                if next_phase == 'collision_handoff':
+                    self._handoff_to_dynamic_after_collision()
+                    return
+                self._motion_phase = next_phase
                 if next_phase == 'reached':
                     self._reached_pause_until = time.monotonic() + self._waypoint_reached_pause_s
             return
@@ -1305,7 +1389,7 @@ class MotionControlNode(Node):
             self._needs_heading_settle = False
             self._heading_settle_until = None
             if self._collision_pursuit_active:
-                self._handoff_to_dynamic_after_collision()
+                self._begin_collision_arrival_pause()
                 return
             self._begin_phase_pause('reached')
             return
@@ -1426,7 +1510,18 @@ class MotionControlNode(Node):
             self._stop()
             self._publish_motion_status_now('stopped')
             return
+        was_enabled = self._run_enabled
         self._run_enabled = True
+        if not was_enabled:
+            # Fresh match start: require a new fused pose before driving again.
+            self._current_x = None
+            self._current_y = None
+            self._current_theta = None
+            self._last_pose_update_mono = None
+            self._reached_pause_until = None
+            self._reset_motion_phase()
+            self._sync_follow_target(immediate=True)
+            self.get_logger().info('/run=on: match started, waiting for fused pose')
 
     def _on_time(self, msg: String) -> None:
         if not self._run_enabled:

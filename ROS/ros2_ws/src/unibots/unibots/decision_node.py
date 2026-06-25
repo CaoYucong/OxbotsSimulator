@@ -56,9 +56,9 @@ class DecisionNode(Node):
         self._completed_dock_thresholds: set[float] = set()
         self._active_dock_threshold: Optional[float] = None
 
-        self._current_x: Optional[float] = 0.0
-        self._current_y: Optional[float] = 0.0
-        self._current_theta: Optional[float] = 0.0
+        self._current_x: Optional[float] = None
+        self._current_y: Optional[float] = None
+        self._current_theta: Optional[float] = None
         self._visible_balls_text = ''
         self._radar_sensor_text = ''
         self._waypoint_status = 'going'
@@ -184,6 +184,8 @@ class DecisionNode(Node):
         return mode or planner.DEFAULT_MODE
 
     def _tick(self) -> None:
+        if not self._run_enabled:
+            return
         if self._current_x is None or self._current_y is None or self._current_theta is None:
             return
         if self._sim_time_seconds is None:

@@ -66,6 +66,9 @@ class ResetButtonNode(Node):
         self._watch_alive: bool = False
         self._gpio_level: str = 'unknown'
 
+        # Default stopped before GPIO is read so /run and /time are never ambiguous.
+        self._reset_stop()
+
         if not _GPIO_OK:
             self.get_logger().error(
                 'gpiozero not available — install with: sudo apt install python3-gpiozero'
@@ -94,7 +97,8 @@ class ResetButtonNode(Node):
         interval = 1.0 / poll_hz if poll_hz > 0.0 else 0.05
 
         try:
-            gpio = DigitalInputDevice(pin, pull_up=True)
+            # gpiozero: pull_up=False enables internal pull-down (idle LOW).
+            gpio = DigitalInputDevice(pin, pull_up=False)
         except Exception as exc:
             print(f'[reset_button_node] ERROR opening GPIO {pin}: {exc}', flush=True)
             self.get_logger().error(f'Failed to open GPIO {pin}: {exc}')
@@ -159,10 +163,6 @@ class ResetButtonNode(Node):
         if self._is_running:
             return
 
-        t = String()
-        t.data = '0.0'
-        self._pub_time.publish(t)
-
         empty = String()
         empty.data = ''
         self._pub_wpt_type.publish(empty)
@@ -172,7 +172,9 @@ class ResetButtonNode(Node):
         self._pub_run.publish(run_on)
         self._is_running = True
 
-        msg = 'Reset + started: /time="0.0", /dynamic_waypoints_type="", /run=on'
+        # /time is owned by timer_node while /run=on; do not publish 0.0 here or
+        # motion_control will treat t<=0 as a stop and sit idle until the next tick.
+        msg = 'Match started: /dynamic_waypoints_type="", /run=on (clock via timer_node)'
         print(f'[reset_button_node] {msg}', flush=True)
         self.get_logger().info(msg)
 

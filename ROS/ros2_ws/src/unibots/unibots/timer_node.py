@@ -26,15 +26,19 @@ class TimerNode(Node):
         enabled = (msg.data or '').strip().lower() != 'off'
         if enabled and not self._run_enabled:
             self._start_mono = time.monotonic()  # restart clock from 0
+            self._publish_elapsed()
         self._run_enabled = enabled
 
-    def _tick(self) -> None:
-        if not self._run_enabled:
-            return
+    def _publish_elapsed(self) -> None:
         elapsed = time.monotonic() - self._start_mono
         msg = String()
         msg.data = f'{elapsed:.6f}'
         self._pub_time.publish(msg)
+
+    def _tick(self) -> None:
+        if not self._run_enabled:
+            return
+        self._publish_elapsed()
 
 
 def main(args=None) -> None:

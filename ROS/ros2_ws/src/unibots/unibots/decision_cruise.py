@@ -1556,10 +1556,10 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
         if direction in values:
             values[direction] = min(0.8, dist)
 
-    # Unit vectors every 30 degrees across 0-360.
-    unit_vectors_10deg = [
-        (math.cos(math.radians(deg)), math.sin(math.radians(deg)))
-        for deg in range(0, 360, 10)
+    # Candidate escape directions: robot left and robot right only.
+    unit_vectors_lr = [
+        (0.0, 1.0),   # left
+        (0.0, -1.0),  # right
     ]
 
     weights_rob_around = {
@@ -1571,7 +1571,7 @@ def collision_avoiding_v3(current_file: str = CURRENT_POSITION_FILE,
     }
 
     weighted_vectors = []
-    for ux, uy in unit_vectors_10deg:
+    for ux, uy in unit_vectors_lr:
         wx = (weights_rob_around["front"] * ux if ux >= 0 else weights_rob_around["rear"] * ux)
         wy = (weights_rob_around["left"] * uy if uy >= 0 else weights_rob_around["right"] * uy)
         weighted_vectors.append((wx, wy))
