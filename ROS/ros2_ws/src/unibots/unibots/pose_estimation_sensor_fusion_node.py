@@ -79,7 +79,7 @@ RADAR_SENSOR_TOPIC: str = '/radar_sensor'
 RADAR_DIRECTIONS: tuple[str, ...] = ('front', 'right', 'left', 'rear')
 VL53_I2C_ADDR: int = 0x29  # default address for both VL53L0X and VL53L1X
 MPU6050_I2C_ADDR: int = 0x68  # may share the bus with the front ToF
-DEFAULT_USE_TCA9548A: bool = False
+DEFAULT_USE_TCA9548A: bool = True
 DEFAULT_USE_REAL_SENSOR: bool = True
 DEFAULT_REMOTE_HOST: str = '192.168.50.2'
 DEFAULT_REMOTE_PORT: int = 5003
@@ -87,7 +87,7 @@ DEFAULT_RADAR_POLL_HZ: float = 10.0
 DEFAULT_REQUEST_TIMEOUT: float = 3.0
 DEFAULT_TIME_TOPIC: str = '/time'
 DEFAULT_TCA9548A_ADDR: int = 0x70
-DEFAULT_TOF_FRONT_CHANNEL: int = 4
+DEFAULT_TOF_FRONT_CHANNEL: int = 1
 DEFAULT_TOF_MIN_RANGE_M: float = 0.02
 DEFAULT_TOF_MAX_RANGE_M: float = 0.80
 DEFAULT_TOF_READ_FAIL_VALUE_M: float = 0.80
@@ -658,6 +658,8 @@ class PoseEstimationSensorFusionNode(Node):
                 labels.append(f'0x{addr:02x}(VL53 ToF)')
             elif addr == MPU6050_I2C_ADDR:
                 labels.append(f'0x{addr:02x}(MPU6050)')
+            elif addr == DEFAULT_TCA9548A_ADDR:
+                labels.append(f'0x{addr:02x}(TCA9548A MUX)')
             else:
                 labels.append(f'0x{addr:02x}')
         self.get_logger().info(

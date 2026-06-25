@@ -71,13 +71,13 @@ pose_estimation_sensor_fusion:
     request_timeout: 3.0
     # Time topic used to stamp radar payload first field (t).
     time_topic: /time
-    # Direct I2C bus: front VL53 ToF at 0x29; MPU6050 may share the bus at 0x68.
-    # Set true only when a TCA9548A mux (0x70) is actually wired on the bus.
-    use_tca9548a: false
+    # Main I2C bus: MPU6050 at 0x68, TCA9548A mux at 0x70.
+    # Front VL53 ToF (0x29) is behind the mux on channel 1 (not visible on main-bus i2cdetect).
+    use_tca9548a: true
     # TCA9548A I2C multiplexer address (ignored when use_tca9548a is false).
     tca9548a_addr: 112
     # TCA9548A channel for front ToF (only used when use_tca9548a is true).
-    tof_front_channel: 4
+    tof_front_channel: 1
     # Clamp/fail policy for real ToF readings.
     tof_min_range_m: 0.02
     tof_max_range_m: 0.80
