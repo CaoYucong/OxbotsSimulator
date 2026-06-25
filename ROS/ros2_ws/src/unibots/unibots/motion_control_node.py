@@ -72,7 +72,7 @@ Waypoint following:
       * Phase 1 (approach): drive forward to the intermediate point on the
         non-zero axis at ±0.8 m (zero axis unchanged).
       * Phase 2 (rotate): turn in place to face the field center (0, 0).
-      * Phase 2b (confirm): hold 2 s, then verify the robot is still at the
+      * Phase 2b (confirm): hold 1 s, then verify the robot is still at the
         intermediate point; if not, return to Phase 1 (approach).
       * Phase 3 (reverse): back up until |coordinate| on the home axis exceeds 0.9 m
         (same axis as the non-zero home target).
@@ -179,7 +179,7 @@ WAYPOINT_REACHED_PAUSE_S: float = 5.0  # stopped dwell at waypoint before next t
 POSE_STALE_STOP_S: float = 0.5  # stop motors if /current_position is older than this
 WAYPOINT_TYPE_TOPIC: str = '/dynamic_waypoints_type'
 HOME_INTERMEDIATE_M: float = 0.8  # intermediate stop on non-zero home axis before reverse
-HOME_POSITION_CONFIRM_S: float = 2.0  # hold after rotate before reverse; re-approach if off mark
+HOME_POSITION_CONFIRM_S: float = 1.0  # hold after rotate before reverse; re-approach if off mark
 HOME_AXIS_STOP_ABS_M: float = 0.95  # reverse phase stops once |axis coord| exceeds this
 
 
@@ -1513,15 +1513,18 @@ class MotionControlNode(Node):
         was_enabled = self._run_enabled
         self._run_enabled = True
         if not was_enabled:
-            # Fresh match start: require a new fused pose before driving again.
-            self._current_x = None
-            self._current_y = None
-            self._current_theta = None
-            self._last_pose_update_mono = None
+            # Fresh match start: keep the last fused pose so driving can resume immediately.
             self._reached_pause_until = None
             self._reset_motion_phase()
             self._sync_follow_target(immediate=True)
-            self.get_logger().info('/run=on: match started, waiting for fused pose')
+            self.get_logger().info(
+                '/run=on: match started'
+                + (
+                    f' (pose x={self._current_x:.3f}, y={self._current_y:.3f})'
+                    if self._current_x is not None and self._current_y is not None
+                    else ' (waiting for fused pose)'
+                )
+            )
 
     def _on_time(self, msg: String) -> None:
         if not self._run_enabled:

@@ -429,9 +429,14 @@ class PoseEstimationSensorFusionNode(Node):
         if fusion_debug_hz > 0.0:
             self.create_timer(1.0 / fusion_debug_hz, self._log_fusion_debug)
 
+        self._tof_init_thread: threading.Thread | None = None
         if self._use_real_sensor:
-            self._tof_readers = self._build_tof_readers()
-            self._tof_backend = self._tof_backend if self._tof_readers else 'none'
+            self._tof_init_thread = threading.Thread(
+                target=self._deferred_init_tof_readers,
+                name='tof_init',
+                daemon=True,
+            )
+            self._tof_init_thread.start()
 
         self.get_logger().info(
             'pose_estimation_sensor_fusion started; fusing '
@@ -444,6 +449,16 @@ class PoseEstimationSensorFusionNode(Node):
             f'radar={"real-tof" if self._use_real_sensor else "upstream"} '
             f'backend={self._tof_backend} -> {self._radar_topic}, poll_hz={poll_hz}'
         )
+
+    def _deferred_init_tof_readers(self) -> None:
+        """Initialize ToF off the critical path so pose fusion can spin immediately."""
+        try:
+            with self._i2c_lock:
+                readers = self._build_tof_readers()
+            self._tof_readers = readers
+            self._tof_backend = self._tof_backend if self._tof_readers else 'none'
+        except Exception as exc:
+            self.get_logger().error(f'deferred ToF init failed: {exc}')
 
     def _on_robot_motion_status(self, msg: String) -> None:
         status = (msg.data or '').strip().lower()
@@ -904,6 +919,20 @@ class PoseEstimationSensorFusionNode(Node):
 
         front_channel = self._tof_front_channel
         mux_bus = tca[front_channel]
+        try:
+            channel_addrs = [hex(addr) for addr in mux_bus.scan()]
+        except Exception as scan_exc:
+            self.get_logger().warn(
+                f'I2C scan on TCA9548A channel {front_channel} failed: {scan_exc}'
+            )
+            return readers
+        vl53_hex = f'0x{VL53_I2C_ADDR:02x}'
+        if vl53_hex not in channel_addrs:
+            self.get_logger().warn(
+                f'VL53 ToF ({vl53_hex}) not detected on TCA9548A channel {front_channel} '
+                f'(scan={channel_addrs}); skipping ToF init so pose fusion is not blocked'
+            )
+            return readers
         time.sleep(0.1)
         reader, model = self._init_vl53_reader(mux_bus, 'front', front_channel)
         if reader is not None and model is not None:
