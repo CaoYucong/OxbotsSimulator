@@ -93,9 +93,14 @@ DEFAULT_TOF_MAX_RANGE_M: float = 0.80
 DEFAULT_TOF_READ_FAIL_VALUE_M: float = 0.80
 DEFAULT_TOF_DEBUG_ENABLED: bool = False
 DEFAULT_TOF_DEBUG_INTERVAL_SEC: float = 0.1
+DEFAULT_RADAR_SENSOR_DEBUG_ENABLED: bool = True
+DEFAULT_RADAR_SENSOR_DEBUG_INTERVAL_SEC: float = 0.1
 DEFAULT_TOF_INIT_RETRIES: int = 5
 DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT: int = 8
 DEFAULT_I2C_FREQUENCY: int = 100_000
+VL53L0X_SOFT_RESET_REG: int = 0xBF
+VL53L0X_INVALID_RANGE_MM: int = 8190  # 8190/8191 = timeout / no valid sample
+DEFAULT_TOF_WARMUP_SEC: float = 0.5
 
 
 def _yaw_from_quaternion(qx: float, qy: float, qz: float, qw: float) -> float:
@@ -208,6 +213,10 @@ class PoseEstimationSensorFusionNode(Node):
         self.declare_parameter('tof_read_fail_value_m', DEFAULT_TOF_READ_FAIL_VALUE_M)
         self.declare_parameter('tof_debug_enabled', DEFAULT_TOF_DEBUG_ENABLED)
         self.declare_parameter('tof_debug_interval_sec', DEFAULT_TOF_DEBUG_INTERVAL_SEC)
+        self.declare_parameter('radar_sensor_debug_enabled', DEFAULT_RADAR_SENSOR_DEBUG_ENABLED)
+        self.declare_parameter(
+            'radar_sensor_debug_interval_sec', DEFAULT_RADAR_SENSOR_DEBUG_INTERVAL_SEC
+        )
         self.declare_parameter('tof_init_retries', DEFAULT_TOF_INIT_RETRIES)
         self.declare_parameter('tof_reinit_after_fail_count', DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT)
         self.declare_parameter('i2c_frequency', DEFAULT_I2C_FREQUENCY)
@@ -306,9 +315,12 @@ class PoseEstimationSensorFusionNode(Node):
             or DEFAULT_TOF_READ_FAIL_VALUE_M
         )
         self._tof_debug_enabled = self.get_parameter('tof_debug_enabled').get_parameter_value().bool_value
-        self._tof_debug_interval_sec = float(
-            self.get_parameter('tof_debug_interval_sec').get_parameter_value().double_value
-            or DEFAULT_TOF_DEBUG_INTERVAL_SEC
+        self._radar_sensor_debug_enabled = (
+            self.get_parameter('radar_sensor_debug_enabled').get_parameter_value().bool_value
+        )
+        self._radar_sensor_debug_interval_sec = float(
+            self.get_parameter('radar_sensor_debug_interval_sec').get_parameter_value().double_value
+            or DEFAULT_RADAR_SENSOR_DEBUG_INTERVAL_SEC
         )
         self._tof_init_retries = int(
             self.get_parameter('tof_init_retries').get_parameter_value().integer_value or DEFAULT_TOF_INIT_RETRIES
@@ -324,8 +336,8 @@ class PoseEstimationSensorFusionNode(Node):
         self._mux_addr = int(self.get_parameter('tca9548a_addr').get_parameter_value().integer_value)
         if self._request_timeout <= 0.0:
             self._request_timeout = DEFAULT_REQUEST_TIMEOUT
-        if self._tof_debug_interval_sec <= 0.0:
-            self._tof_debug_interval_sec = DEFAULT_TOF_DEBUG_INTERVAL_SEC
+        if self._radar_sensor_debug_interval_sec <= 0.0:
+            self._radar_sensor_debug_interval_sec = DEFAULT_RADAR_SENSOR_DEBUG_INTERVAL_SEC
         if self._tof_init_retries <= 0:
             self._tof_init_retries = 1
         if self._tof_reinit_after_fail_count <= 0:
@@ -340,7 +352,7 @@ class PoseEstimationSensorFusionNode(Node):
         self._tof_backend = 'none'
         self._tof_readers: dict[str, object] = {}
         self._tof_consecutive_fail_count = 0
-        self._last_tof_debug = self.get_clock().now()
+        self._last_radar_sensor_debug = self.get_clock().now()
         self._i2c = None
         self._i2c_lock = threading.Lock()
         self._tof_mux = None
@@ -596,8 +608,9 @@ class PoseEstimationSensorFusionNode(Node):
         return self.get_clock().now().nanoseconds / 1_000_000_000.0
 
     def _poll_radar(self) -> None:
+        tof_debug_values: dict[str, tuple[float | None, str, float]] | None = None
         if self._use_real_sensor:
-            radar_text = self._build_radar_text_from_tof()
+            radar_text, tof_debug_values = self._build_radar_text_from_tof()
             if not radar_text:
                 return
         else:
@@ -619,6 +632,8 @@ class PoseEstimationSensorFusionNode(Node):
             if not radar_text:
                 return
             radar_text = self._replace_radar_timestamp(radar_text)
+
+        self._maybe_log_radar_sensor_debug(radar_text, tof_debug_values)
 
         if radar_text == self._last_radar_text:
             return
@@ -666,16 +681,25 @@ class PoseEstimationSensorFusionNode(Node):
             'main I2C scan: ' + (', '.join(labels) if labels else 'no devices detected')
         )
 
-    def _scan_mux_channels_for_vl53(self, tca) -> list[int]:
-        found: list[int] = []
-        for ch in range(8):
+    def _soft_reset_vl53l0x(self, bus) -> None:
+        """Hardware soft-reset the VL53L0X before init (needed after mux power-up)."""
+        try:
+            while not bus.try_lock():
+                pass
             try:
-                addresses = tca[ch].scan()
-            except Exception:
-                continue
-            if VL53_I2C_ADDR in addresses:
-                found.append(ch)
-        return found
+                bus.writeto(VL53_I2C_ADDR, bytes([VL53L0X_SOFT_RESET_REG, 0x00]))
+            finally:
+                bus.unlock()
+            time.sleep(0.05)
+            while not bus.try_lock():
+                pass
+            try:
+                bus.writeto(VL53_I2C_ADDR, bytes([VL53L0X_SOFT_RESET_REG, 0x01]))
+            finally:
+                bus.unlock()
+            time.sleep(0.05)
+        except Exception as exc:
+            self.get_logger().debug(f'VL53L0X soft reset failed: {exc}')
 
     def _try_init_vl53l0x(self, bus):
         try:
@@ -686,11 +710,14 @@ class PoseEstimationSensorFusionNode(Node):
         last_exc: Exception | None = None
         for _ in range(self._tof_init_retries):
             try:
+                self._soft_reset_vl53l0x(bus)
+                time.sleep(0.1)
                 sensor = adafruit_vl53l0x.VL53L0X(bus)
-                try:
-                    sensor.start_continuous()
-                except Exception:
-                    pass
+                sensor.start_continuous()
+                time.sleep(DEFAULT_TOF_WARMUP_SEC)
+                warmup_mm = int(sensor.range)
+                if warmup_mm >= VL53L0X_INVALID_RANGE_MM:
+                    raise RuntimeError(f'VL53L0X warmup read invalid: {warmup_mm} mm')
                 return sensor, 'VL53L0X'
             except Exception as exc:
                 last_exc = exc
@@ -720,7 +747,13 @@ class PoseEstimationSensorFusionNode(Node):
 
     def _make_vl53_reader(self, sensor, model: str):
         if model == 'VL53L0X':
-            return lambda: float(sensor.range) / 1000.0
+            def _read_l0x() -> float:
+                raw_mm = int(sensor.range)
+                if raw_mm >= VL53L0X_INVALID_RANGE_MM:
+                    raise RuntimeError(f'VL53L0X invalid range: {raw_mm} mm')
+                return float(raw_mm) / 1000.0
+
+            return _read_l0x
 
         def _read_l1x() -> float:
             distance_cm = sensor.distance
@@ -782,27 +815,16 @@ class PoseEstimationSensorFusionNode(Node):
             self._tof_mux = None
             return readers
 
-        mux_channels = self._scan_mux_channels_for_vl53(tca)
-        if not mux_channels:
-            return readers
-
-        if self._tof_front_channel in mux_channels:
-            front_channel = self._tof_front_channel
-        else:
-            front_channel = mux_channels[0]
-            self.get_logger().info(
-                'I2C scan found VL53 (0x29) on TCA9548A channel(s) '
-                f'{mux_channels}; front not on configured channel '
-                f'{self._tof_front_channel}, using channel {front_channel}'
-            )
-
-        reader, model = self._init_vl53_reader(tca[front_channel], 'front', front_channel)
+        front_channel = self._tof_front_channel
+        mux_bus = tca[front_channel]
+        time.sleep(0.1)
+        reader, model = self._init_vl53_reader(mux_bus, 'front', front_channel)
         if reader is not None and model is not None:
             readers['front'] = reader
             self._tof_backend = model
             self.get_logger().info(
                 f'front {model} ready on TCA9548A channel {front_channel} '
-                f'(discovered channels={mux_channels})'
+                f'(mux locked to channel {front_channel:02d})'
             )
         return readers
 
@@ -833,15 +855,38 @@ class PoseEstimationSensorFusionNode(Node):
         addresses = self._scan_main_i2c_addresses(i2c)
         self._log_main_i2c_devices(addresses)
 
-        readers = self._init_front_tof_on_main_bus(i2c, addresses)
-        if not readers and self._use_tca9548a:
+        if self._use_tca9548a:
             readers = self._init_front_tof_via_mux(i2c)
+        else:
+            readers = self._init_front_tof_on_main_bus(i2c, addresses)
 
         if not readers:
-            self.get_logger().error(
-                'no ToF sensors initialized; expected VL53 at 0x29 on the main I2C bus'
+            where = (
+                f'TCA9548A channel {self._tof_front_channel:02d}'
+                if self._use_tca9548a
+                else f'main I2C bus (0x{VL53_I2C_ADDR:02x})'
             )
+            self.get_logger().error(f'no ToF sensors initialized; expected VL53 at 0x29 on {where}')
         return readers
+
+    def _reinit_front_tof_reader(self) -> dict[str, object]:
+        """Re-init front ToF on the already-selected mux channel (no channel scan)."""
+        if self._use_tca9548a and self._tof_mux is not None:
+            front_channel = self._tof_front_channel
+            reader, model = self._init_vl53_reader(
+                self._tof_mux[front_channel], 'front', front_channel
+            )
+            if reader is not None and model is not None:
+                self._tof_backend = model
+                return {'front': reader}
+            return {}
+
+        try:
+            i2c = self._get_i2c()
+        except Exception:
+            return {}
+        addresses = self._scan_main_i2c_addresses(i2c)
+        return self._init_front_tof_on_main_bus(i2c, addresses)
 
     def _clamp_tof_distance(self, raw: float) -> tuple[float, str]:
         if raw < self._tof_min_range_m:
@@ -850,12 +895,14 @@ class PoseEstimationSensorFusionNode(Node):
             return self._tof_max_range_m, 'CLAMP_MAX'
         return raw, 'OK'
 
-    def _build_radar_text_from_tof(self) -> str | None:
+    def _build_radar_text_from_tof(
+        self,
+    ) -> tuple[str | None, dict[str, tuple[float | None, str, float]] | None]:
         if not self._tof_readers:
             if not self._tof_error_logged:
                 self.get_logger().error('real-sensor mode enabled but no ToF readers available')
                 self._tof_error_logged = True
-            return None
+            return None, None
 
         values: dict[str, float] = {}
         debug_values: dict[str, tuple[float | None, str, float]] = {}
@@ -884,38 +931,60 @@ class PoseEstimationSensorFusionNode(Node):
 
             if self._tof_consecutive_fail_count >= self._tof_reinit_after_fail_count:
                 self.get_logger().warn(
-                    'front ToF reads failed repeatedly; attempting I2C rediscovery '
-                    f'(count={self._tof_consecutive_fail_count})'
+                    'front ToF reads failed repeatedly; re-init on fixed mux channel '
+                    f'{self._tof_front_channel:02d} (count={self._tof_consecutive_fail_count})'
                 )
-                self._tof_readers = self._build_tof_readers()
+                self._tof_readers = self._reinit_front_tof_reader()
                 self._tof_backend = self._tof_backend if self._tof_readers else 'none'
                 self._tof_consecutive_fail_count = 0
 
-        self._maybe_log_radar_debug(debug_values)
         timestamp_s = self._resolve_time_s()
-        return (
+        radar_text = (
             f'{timestamp_s:.6f},'
             f'{values["front"]:.3f},{values["right"]:.3f},'
             f'{values["left"]:.3f},{values["rear"]:.3f}'
         )
+        return radar_text, debug_values
 
-    def _maybe_log_radar_debug(
-        self, debug_values: dict[str, tuple[float | None, str, float]]
+    def _format_radar_sensor_debug(
+        self,
+        radar_text: str,
+        tof_debug_values: dict[str, tuple[float | None, str, float]] | None,
+    ) -> str:
+        parts = [part.strip() for part in radar_text.split(',')]
+        if len(parts) >= 5:
+            topic_summary = (
+                f't={parts[0]} front={parts[1]}m right={parts[2]}m '
+                f'left={parts[3]}m rear={parts[4]}m'
+            )
+        else:
+            topic_summary = f'payload={radar_text!r}'
+
+        lines = [f'[radar_sensor] {self._radar_topic} | {topic_summary}']
+        if tof_debug_values and self._tof_debug_enabled:
+            tof_summary = []
+            for name in RADAR_DIRECTIONS:
+                raw, status, pub = tof_debug_values[name]
+                raw_mm = 'None' if raw is None else f'{int(raw * 1000.0)}'
+                tof_summary.append(f'{name}:raw_mm={raw_mm},status={status},pub={pub:.3f}')
+            lines.append('tof diag | ' + ' | '.join(tof_summary))
+        return '\n'.join(lines)
+
+    def _maybe_log_radar_sensor_debug(
+        self,
+        radar_text: str,
+        tof_debug_values: dict[str, tuple[float | None, str, float]] | None = None,
     ) -> None:
-        if not self._tof_debug_enabled:
+        if not self._radar_sensor_debug_enabled:
             return
         now = self.get_clock().now()
-        delta = (now - self._last_tof_debug).nanoseconds / 1_000_000_000.0
-        if delta < self._tof_debug_interval_sec:
+        delta = (now - self._last_radar_sensor_debug).nanoseconds / 1_000_000_000.0
+        if delta < self._radar_sensor_debug_interval_sec:
             return
-        self._last_tof_debug = now
-
-        summary = []
-        for name in RADAR_DIRECTIONS:
-            raw, status, pub = debug_values[name]
-            raw_mm = 'None' if raw is None else f'{int(raw * 1000.0)}'
-            summary.append(f'{name}:raw_mm={raw_mm},status={status},pub={pub:.3f}')
-        self.get_logger().info('radar tof diag | ' + ' | '.join(summary))
+        self._last_radar_sensor_debug = now
+        self.get_logger().info(
+            self._format_radar_sensor_debug(radar_text, tof_debug_values)
+        )
 
     def _fetch_simulation_data_body(self) -> bytes:
         first_error: Exception | None = None

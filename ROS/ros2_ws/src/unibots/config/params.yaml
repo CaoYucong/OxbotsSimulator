@@ -82,9 +82,12 @@ pose_estimation_sensor_fusion:
     tof_min_range_m: 0.02
     tof_max_range_m: 0.80
     tof_read_fail_value_m: 0.80
-    # Diagnostic output for real ToF mode.
+    # Diagnostic output for real ToF mode (raw mm + clamp status appended to radar logs).
     tof_debug_enabled: false
     tof_debug_interval_sec: 0.1
+    # Real-time /radar_sensor topic debug logs (time,front,right,left,rear in metres).
+    radar_sensor_debug_enabled: true
+    radar_sensor_debug_interval_sec: 0.1
     # Retry sensor constructor this many times during startup/reinit.
     tof_init_retries: 5
     # When all 4 directions fail consecutively, auto reinitialize ToF readers.
