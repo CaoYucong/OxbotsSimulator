@@ -44,10 +44,43 @@ Geometry / calibration:
 
 import json
 import math
+import os
 import threading
 import time
 import urllib.request
 from collections import deque
+
+# #region agent log
+_DEBUG_LOG_PATH = os.environ.get(
+    'UNIBOTS_DEBUG_LOG_PATH',
+    '/Users/caoyucong/Desktop/OxbotsSimulator/.cursor/debug-f9a6ac.log',
+)
+
+
+def _agent_debug_log(
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict | None = None,
+    run_id: str = 'pre-fix',
+) -> None:
+    try:
+        payload = {
+            'sessionId': 'f9a6ac',
+            'runId': run_id,
+            'hypothesisId': hypothesis_id,
+            'location': location,
+            'message': message,
+            'data': data or {},
+            'timestamp': int(time.time() * 1000),
+        }
+        with open(_DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(payload, separators=(',', ':')) + '\n')
+    except Exception:
+        pass
+
+
+# #endregion
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -96,6 +129,7 @@ DEFAULT_TOF_DEBUG_INTERVAL_SEC: float = 0.1
 DEFAULT_RADAR_SENSOR_DEBUG_ENABLED: bool = True
 DEFAULT_RADAR_SENSOR_DEBUG_INTERVAL_SEC: float = 0.1
 DEFAULT_TOF_INIT_RETRIES: int = 5
+DEFAULT_TOF_STARTUP_DELAY_SEC: float = 1.0
 DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT: int = 8
 DEFAULT_TOF_READ_RETRIES: int = 3
 DEFAULT_I2C_FREQUENCY: int = 100_000
@@ -221,6 +255,7 @@ class PoseEstimationSensorFusionNode(Node):
             'radar_sensor_debug_interval_sec', DEFAULT_RADAR_SENSOR_DEBUG_INTERVAL_SEC
         )
         self.declare_parameter('tof_init_retries', DEFAULT_TOF_INIT_RETRIES)
+        self.declare_parameter('tof_startup_delay_sec', DEFAULT_TOF_STARTUP_DELAY_SEC)
         self.declare_parameter('tof_reinit_after_fail_count', DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT)
         self.declare_parameter('tof_read_retries', DEFAULT_TOF_READ_RETRIES)
         self.declare_parameter('i2c_frequency', DEFAULT_I2C_FREQUENCY)
@@ -329,6 +364,10 @@ class PoseEstimationSensorFusionNode(Node):
         self._tof_init_retries = int(
             self.get_parameter('tof_init_retries').get_parameter_value().integer_value or DEFAULT_TOF_INIT_RETRIES
         )
+        self._tof_startup_delay_sec = float(
+            self.get_parameter('tof_startup_delay_sec').get_parameter_value().double_value
+            or DEFAULT_TOF_STARTUP_DELAY_SEC
+        )
         self._tof_reinit_after_fail_count = int(
             self.get_parameter('tof_reinit_after_fail_count').get_parameter_value().integer_value
             or DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT
@@ -348,6 +387,8 @@ class PoseEstimationSensorFusionNode(Node):
             self._radar_sensor_debug_interval_sec = DEFAULT_RADAR_SENSOR_DEBUG_INTERVAL_SEC
         if self._tof_init_retries <= 0:
             self._tof_init_retries = 1
+        if self._tof_startup_delay_sec < 0.0:
+            self._tof_startup_delay_sec = DEFAULT_TOF_STARTUP_DELAY_SEC
         if self._tof_reinit_after_fail_count <= 0:
             self._tof_reinit_after_fail_count = DEFAULT_TOF_REINIT_AFTER_FAIL_COUNT
         if self._tof_read_retries <= 0:
@@ -452,13 +493,43 @@ class PoseEstimationSensorFusionNode(Node):
 
     def _deferred_init_tof_readers(self) -> None:
         """Initialize ToF off the critical path so pose fusion can spin immediately."""
-        try:
-            with self._i2c_lock:
-                readers = self._build_tof_readers()
-            self._tof_readers = readers
-            self._tof_backend = self._tof_backend if self._tof_readers else 'none'
-        except Exception as exc:
-            self.get_logger().error(f'deferred ToF init failed: {exc}')
+        if self._tof_startup_delay_sec > 0.0:
+            time.sleep(self._tof_startup_delay_sec)
+        # #region agent log
+        _agent_debug_log(
+            'H2',
+            'pose_estimation_sensor_fusion_node.py:_deferred_init_tof_readers',
+            'starting deferred ToF init',
+            {
+                'startup_delay_sec': self._tof_startup_delay_sec,
+                'init_retries': self._tof_init_retries,
+            },
+            run_id='post-fix',
+        )
+        # #endregion
+        for attempt in range(self._tof_init_retries):
+            if attempt > 0:
+                time.sleep(DEFAULT_TOF_RECOVERY_INTERVAL_SEC)
+            try:
+                with self._i2c_lock:
+                    self._stop_tof_sensor('front')
+                    self._tof_mux = None
+                    readers = self._build_tof_readers()
+                if readers:
+                    self._tof_readers = readers
+                    self._tof_backend = self._tof_backend if self._tof_readers else 'none'
+                    self.get_logger().info(
+                        f'front ToF ready after deferred init attempt {attempt + 1}/'
+                        f'{self._tof_init_retries}'
+                    )
+                    return
+            except Exception as exc:
+                self.get_logger().error(
+                    f'deferred ToF init attempt {attempt + 1}/{self._tof_init_retries} failed: {exc}'
+                )
+        self.get_logger().error(
+            'deferred ToF init exhausted retries; recovery loop will keep retrying'
+        )
 
     def _on_robot_motion_status(self, msg: String) -> None:
         status = (msg.data or '').strip().lower()
@@ -884,6 +955,18 @@ class PoseEstimationSensorFusionNode(Node):
                 f'failed to init ToF {name} on {where} as VL53L0X or VL53L1X; '
                 f'i2c scan = {detected}'
             )
+            # #region agent log
+            _agent_debug_log(
+                'H3',
+                'pose_estimation_sensor_fusion_node.py:_init_vl53_reader',
+                'VL53 driver init failed',
+                {
+                    'name': name,
+                    'channel': channel,
+                    'scan': detected,
+                },
+            )
+            # #endregion
             return None, None
 
         self._tof_sensors[name] = (sensor, model)
@@ -926,13 +1009,24 @@ class PoseEstimationSensorFusionNode(Node):
                 f'I2C scan on TCA9548A channel {front_channel} failed: {scan_exc}'
             )
             return readers
+        # #region agent log
+        _agent_debug_log(
+            'H1',
+            'pose_estimation_sensor_fusion_node.py:_init_front_tof_via_mux',
+            'mux channel scan',
+            {
+                'front_channel': front_channel,
+                'channel_addrs': channel_addrs,
+                'vl53_expected': f'0x{VL53_I2C_ADDR:02x}',
+            },
+        )
+        # #endregion
         vl53_hex = f'0x{VL53_I2C_ADDR:02x}'
         if vl53_hex not in channel_addrs:
             self.get_logger().warn(
-                f'VL53 ToF ({vl53_hex}) not detected on TCA9548A channel {front_channel} '
-                f'(scan={channel_addrs}); skipping ToF init so pose fusion is not blocked'
+                f'VL53 ToF ({vl53_hex}) not seen on TCA9548A channel {front_channel} scan '
+                f'({channel_addrs}); attempting driver init anyway (scan can miss booting VL53)'
             )
-            return readers
         time.sleep(0.1)
         reader, model = self._init_vl53_reader(mux_bus, 'front', front_channel)
         if reader is not None and model is not None:
@@ -970,6 +1064,18 @@ class PoseEstimationSensorFusionNode(Node):
 
         addresses = self._scan_main_i2c_addresses(i2c)
         self._log_main_i2c_devices(addresses)
+        # #region agent log
+        _agent_debug_log(
+            'H1',
+            'pose_estimation_sensor_fusion_node.py:_build_tof_readers',
+            'main i2c scan before ToF init',
+            {
+                'main_addrs': [hex(a) for a in addresses],
+                'use_tca9548a': self._use_tca9548a,
+                'tof_front_channel': self._tof_front_channel,
+            },
+        )
+        # #endregion
 
         if self._use_tca9548a:
             readers = self._init_front_tof_via_mux(i2c)
@@ -983,6 +1089,18 @@ class PoseEstimationSensorFusionNode(Node):
                 else f'main I2C bus (0x{VL53_I2C_ADDR:02x})'
             )
             self.get_logger().error(f'no ToF sensors initialized; expected VL53 at 0x29 on {where}')
+        # #region agent log
+        _agent_debug_log(
+            'H2',
+            'pose_estimation_sensor_fusion_node.py:_build_tof_readers',
+            'ToF init result',
+            {
+                'readers': list(readers.keys()),
+                'backend': self._tof_backend,
+                'mux_present': self._tof_mux is not None,
+            },
+        )
+        # #endregion
         return readers
 
     def _reinit_front_tof_reader(self) -> dict[str, object]:
@@ -1018,6 +1136,14 @@ class PoseEstimationSensorFusionNode(Node):
             self._tof_backend = self._tof_backend if self._tof_readers else 'none'
             self._tof_error_logged = False
             self.get_logger().info('front ToF recovered after reader loss')
+            # #region agent log
+            _agent_debug_log(
+                'H4',
+                'pose_estimation_sensor_fusion_node.py:_maybe_recover_tof_readers',
+                'ToF recovery returned readers',
+                {'readers': list(recovered.keys()), 'backend': self._tof_backend},
+            )
+            # #endregion
 
     def _fail_radar_payload(
         self,
@@ -1081,6 +1207,21 @@ class PoseEstimationSensorFusionNode(Node):
                 self._tof_consecutive_fail_count += 1
             else:
                 self._tof_consecutive_fail_count = 0
+            # #region agent log
+            if self._tof_consecutive_fail_count in (1, 8) or front_status == 'OK':
+                _agent_debug_log(
+                    'H5',
+                    'pose_estimation_sensor_fusion_node.py:_build_radar_text_from_tof',
+                    'front ToF read sample',
+                    {
+                        'front_status': front_status,
+                        'front_pub_m': values.get('front'),
+                        'front_raw_m': debug_values['front'][0],
+                        'fail_count': self._tof_consecutive_fail_count,
+                        'has_reader': 'front' in self._tof_readers,
+                    },
+                )
+            # #endregion
 
             if self._tof_consecutive_fail_count >= self._tof_reinit_after_fail_count:
                 self.get_logger().warn(

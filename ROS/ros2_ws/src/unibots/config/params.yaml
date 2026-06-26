@@ -90,6 +90,9 @@ pose_estimation_sensor_fusion:
     radar_sensor_debug_interval_sec: 0.1
     # Retry sensor constructor this many times during startup/reinit.
     tof_init_retries: 5
+    # Wait for VL53 power-up before the first I2C scan (sec). Without this, 0x29
+    # is often missing at boot and init falsely fails until the recovery loop runs.
+    tof_startup_delay_sec: 1.0
     # When all 4 directions fail consecutively, auto reinitialize ToF readers.
     tof_reinit_after_fail_count: 8
     # Poll the MPU6050 IMU on the shared I2C bus and log acceleration (only in real-sensor mode).
@@ -258,7 +261,7 @@ decision_node:
     target_retarget_min_distance_m: 0.1
     # Active home colour: yellow | green | purple | orange
     # Change this value to select which home position the robot returns to at end of game.
-    home_colour: green
+    home_colour: orange
     # Home positions [x, y, degrees] — Double-check the value for the degrees
     home_yellow: [0.0, 0.9, 180.0]
     home_green: [-0.9, 0.0, -90.0]
