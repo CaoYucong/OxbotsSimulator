@@ -69,11 +69,13 @@ Waypoint following:
   - Home waypoint type (/dynamic_waypoints_type = 'home'):
       * Expects a target with one axis ~0 and the other ~±0.9 m; invalid format
         falls back to the normal waypoint behavior above.
+      * Phase 0 (origin): drive forward to the field center (0, 0).
       * Phase 1 (approach): drive forward to the intermediate point on the
         non-zero axis at ±0.8 m (zero axis unchanged).
       * Phase 2 (rotate): turn in place to face the field center (0, 0).
-      * Phase 2b (confirm): hold 1 s, then verify the robot is still at the
-        intermediate point; if not, return to Phase 1 (approach).
+      * Phase 2b (confirm): hold 1 s, then verify the robot is still near the
+        intermediate point (world-frame box: ±0.25 m off-axis, along-axis in
+        [0.6, 0.9] m or mirrored for negative home); if not, return to Phase 1.
       * Phase 3 (reverse): back up until |coordinate| on the home axis exceeds 0.9 m
         (same axis as the non-zero home target).
       * Phase 4 (servo): pulse GPIO21 to -90 deg, wait 1 s (no PWM), pulse to +90 deg,
@@ -180,6 +182,9 @@ POSE_STALE_STOP_S: float = 0.5  # stop motors if /current_position is older than
 WAYPOINT_TYPE_TOPIC: str = '/dynamic_waypoints_type'
 HOME_INTERMEDIATE_M: float = 0.8  # intermediate stop on non-zero home axis before reverse
 HOME_POSITION_CONFIRM_S: float = 1.0  # hold after rotate before reverse; re-approach if off mark
+HOME_CONFIRM_CROSS_AXIS_TOL_M: float = 0.25  # |off-axis coord| allowed during confirm (e.g. |x| at (0, 0.8))
+HOME_CONFIRM_ALONG_AXIS_MIN_M: float = 0.6  # along-axis lower bound during confirm (e.g. y at (0, 0.8))
+HOME_CONFIRM_ALONG_AXIS_MAX_M: float = 0.9  # along-axis upper bound during confirm
 HOME_AXIS_STOP_ABS_M: float = 0.95  # reverse phase stops once |axis coord| exceeds this
 
 
@@ -821,12 +826,12 @@ class MotionControlNode(Node):
         self._home_confirm_until = None
 
     def _home_sequence_active(self) -> bool:
-        return self._home_phase in ('approach', 'rotate', 'confirm', 'reverse')
+        return self._home_phase in ('origin', 'approach', 'rotate', 'confirm', 'reverse')
 
     def _home_sequence_holding(self) -> bool:
         """True while home is in progress or finished and should not re-navigate."""
         return self._home_phase in (
-            'approach', 'rotate', 'confirm', 'reverse', 'servo_90', 'servo_neg90', 'complete',
+            'origin', 'approach', 'rotate', 'confirm', 'reverse', 'servo_90', 'servo_neg90', 'complete',
         )
 
     def _release_servo(self) -> None:
@@ -922,7 +927,7 @@ class MotionControlNode(Node):
         fx, fy, ix, iy = parsed
         self._home_final = (fx, fy)
         self._home_intermediate = (ix, iy)
-        self._home_phase = 'approach'
+        self._home_phase = 'origin'
         self._motion_phase = 'navigate'
         self._active_target = None
         self._needs_heading_settle = False
@@ -931,7 +936,7 @@ class MotionControlNode(Node):
         self._nav_motion_mode = None
         self.get_logger().info(
             f'[home] sequence start: final=({fx:.3f}, {fy:.3f}) '
-            f'intermediate=({ix:.3f}, {iy:.3f})'
+            f'intermediate=({ix:.3f}, {iy:.3f}), first leg -> (0, 0)'
         )
 
     def _begin_home_position_confirm(self) -> None:
@@ -975,6 +980,39 @@ class MotionControlNode(Node):
         if abs(axis_coord) <= HOME_AXIS_STOP_ABS_M:
             return False
         return math.copysign(1.0, axis_coord) == math.copysign(1.0, target_coord)
+
+    def _home_intermediate_confirmed(self) -> bool:
+        """True when pose is within the relaxed world-frame box around intermediate."""
+        if (
+            self._home_intermediate is None
+            or self._current_x is None
+            or self._current_y is None
+        ):
+            return False
+
+        ix, iy = self._home_intermediate
+        eps = self._position_tolerance_m
+        if abs(ix) <= eps:
+            return (
+                abs(self._current_x) <= HOME_CONFIRM_CROSS_AXIS_TOL_M
+                and self._home_confirm_along_axis_in_range(self._current_y, iy)
+            )
+        return (
+            self._home_confirm_along_axis_in_range(self._current_x, ix)
+            and abs(self._current_y) <= HOME_CONFIRM_CROSS_AXIS_TOL_M
+        )
+
+    def _home_confirm_along_axis_in_range(
+        self, coord: float, intermediate_coord: float
+    ) -> bool:
+        """Along-axis confirm band [0.6, 0.9] (mirrored when intermediate is negative)."""
+        if intermediate_coord >= 0.0:
+            return HOME_CONFIRM_ALONG_AXIS_MIN_M <= coord <= HOME_CONFIRM_ALONG_AXIS_MAX_M
+        return (
+            -HOME_CONFIRM_ALONG_AXIS_MAX_M
+            <= coord
+            <= -HOME_CONFIRM_ALONG_AXIS_MIN_M
+        )
 
     def _reset_rotate_command_state(self) -> None:
         self._rotate_last_cmd = 0.0
@@ -1163,7 +1201,7 @@ class MotionControlNode(Node):
         self._right.forward(right_speed)
 
     def _control_home_sequence(self) -> None:
-        """Three-phase home return: approach intermediate, face origin, reverse to final."""
+        """Home return: origin, approach intermediate, face origin, reverse to final."""
         if (
             self._home_phase is None
             or self._home_final is None
@@ -1181,6 +1219,18 @@ class MotionControlNode(Node):
             return
 
         self._publish_waypoint_status('going')
+
+        if self._home_phase == 'origin':
+            dx = -self._current_x
+            dy = -self._current_y
+            if self._at_target(dx, dy):
+                self.get_logger().info(
+                    f'[home] arrived at origin ({self._current_x:.3f}, {self._current_y:.3f})'
+                )
+                self._transition_home_phase('approach')
+                return
+            self._navigate_forward_toward(dx, dy)
+            return
 
         if self._home_phase == 'approach':
             ix, iy = self._home_intermediate
@@ -1213,11 +1263,10 @@ class MotionControlNode(Node):
                 return
 
             ix, iy = self._home_intermediate
-            dx = ix - self._current_x
-            dy = iy - self._current_y
-            if self._at_target(dx, dy):
+            if self._home_intermediate_confirmed():
                 self.get_logger().info(
-                    f'[home] position confirmed at ({self._current_x:.3f}, {self._current_y:.3f})'
+                    f'[home] position confirmed at ({self._current_x:.3f}, {self._current_y:.3f}) '
+                    f'(intermediate=({ix:.3f}, {iy:.3f}))'
                 )
                 self._transition_home_phase('reverse')
             else:

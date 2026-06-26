@@ -879,6 +879,9 @@ def _parse_ball_lines(text: str):
         out.append((x, y, typ))
     return out
 
+def _is_ping_ball_type(typ: str) -> bool:
+    return (typ or "ping").strip().lower() == "ping"
+
 def _read_ball_memory_points(path: str) -> list[tuple[float, float]]:
     """Read remembered ball points from ball_memory.txt."""
     out = []
@@ -2296,16 +2299,17 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
     cur_dyn_y = cur_dyn[1] if cur_dyn is not None else None
 
     best = None
-    best_d2 = None
+    best_key = None  # (type_tier, time_cost): ping=0 before steel=1, then nearest first
     for (x, y, typ) in bx:
         distance = math.hypot(x - cx, y - cy)
         if distance < min_distance:
             continue  # too close to navigate to (motion_control would immediately "reach" it)
         if cur_dyn_x is not None and math.hypot(x - cur_dyn_x, y - cur_dyn_y) < retarget_min:
             continue  # same as current dynamic waypoint, skip to avoid re-targeting
-        d2 = next_point_time_cost((cx, cy), bearing, (x, y), None)
-        if best_d2 is None or d2 < best_d2:
-            best_d2 = d2
+        time_cost = next_point_time_cost((cx, cy), bearing, (x, y), None)
+        key = (0 if _is_ping_ball_type(typ) else 1, time_cost)
+        if best_key is None or key < best_key:
+            best_key = key
             best = (x, y, typ)
 
     if best is None:
@@ -2379,7 +2383,7 @@ def mode_improved_nearest_v3_5(status_file: str = WAYPOINT_STATUS_FILE,
 
     target_x, target_y, target_typ = best
     heading_deg = math.degrees(math.atan2(target_y - cy, target_x - cx))
-    ball_waypoint_type = "pingball" if target_typ.lower() == "ping" else "steelball"
+    ball_waypoint_type = "pingball" if _is_ping_ball_type(target_typ) else "steelball"
 
     ok = goto(target_x, target_y, heading_deg, waypoint_type=ball_waypoint_type)
     _debug_log(f"[decision] Heading to visible ball at ({target_x:.2f}, {target_y:.2f}), type={ball_waypoint_type}, heading={heading_deg:.1f}deg, goto={'ok' if ok else 'FAIL'}")
