@@ -62,7 +62,8 @@ COUNTS_PER_REV: float = 488.0  # encoder counts per wheel revolution
 # Defaults reproduce the previous geometry (radius 0.0235 m, track 0.19 m):
 #   COUNT_AVERAGE_PER_METER = COUNTS_PER_REV / (2*pi*0.0235)
 #   COUNT_DIFF_PER_DEGREE   = COUNT_AVERAGE_PER_METER * 0.19 * (pi/180)
-COUNT_AVERAGE_PER_METER: float = 3337.390395
+COUNT_AVERAGE_PER_METER: float = 3387.390395
+# COUNT_AVERAGE_PER_METER: float = 3337.390395
 COUNT_DIFF_PER_DEGREE: float = 10.5
 ORIGIN_FORWARD_OFFSET_M: float = 0.04  # robot origin is 40mm ahead of the axle midpoint
 ODOM_HISTORY_SEC: float = 3.0

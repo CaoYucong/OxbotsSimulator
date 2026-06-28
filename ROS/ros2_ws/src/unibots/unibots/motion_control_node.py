@@ -187,7 +187,7 @@ HOME_INTERMEDIATE_M: float = 0.8  # intermediate stop on non-zero home axis befo
 # HOME_CONFIRM_CROSS_AXIS_TOL_M: float = 0.25  # |off-axis coord| allowed during confirm (e.g. |x| at (0, 0.8))
 # HOME_CONFIRM_ALONG_AXIS_MIN_M: float = 0.6  # along-axis lower bound during confirm (e.g. y at (0, 0.8))
 # HOME_CONFIRM_ALONG_AXIS_MAX_M: float = 0.9  # along-axis upper bound during confirm
-HOME_AXIS_STOP_ABS_M: float = 0.98  # reverse phase stops once |axis coord| exceeds this
+HOME_AXIS_STOP_ABS_M: float = 0.95  # reverse phase stops once |axis coord| exceeds this
 # HOME_CONFIRM_SKIP_TIME_S: float = 160.0  # skip Phase 2b when /time exceeds this
 
 

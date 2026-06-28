@@ -261,7 +261,7 @@ decision_node:
     target_retarget_min_distance_m: 0.1
     # Active home colour: yellow | green | purple | orange
     # Change this value to select which home position the robot returns to at end of game.
-    home_colour: orange
+    home_colour: yellow
     # Home positions [x, y, degrees] — Double-check the value for the degrees
     home_yellow: [0.0, 0.9, 180.0]
     home_green: [-0.9, 0.0, -90.0]

@@ -1,5 +1,6 @@
-"""Capture periodic 1920x1080 photos with a live preview window.
+"""Capture periodic 1920x1080 photos from a physical USB camera with live preview.
 
+Auto-selects the first non-virtual camera (skips OBS Virtual Camera, etc.).
 The script saves timestamped JPEG files into the local `photos/` directory.
 Press `q` or `ESC` in the preview window to stop.
 """
@@ -23,9 +24,12 @@ except ImportError:  # pragma: no cover - optional dependency
 TARGET_WIDTH = 1920
 TARGET_HEIGHT = 1080
 DEFAULT_PHOTO_INTERVAL = 2.0
-DEFAULT_CAMERA_INDEX = 2
-DEFAULT_CAMERA_NAME = os.getenv("CAMERA_NAME", "Webcam")
+DEFAULT_CAMERA_INDEX = 0
+DEFAULT_CAMERA_DEVICE = os.getenv("CAMERA_DEVICE", "").strip()
+DEFAULT_CAMERA_NAME = os.getenv("CAMERA_NAME", "").strip()
 DEFAULT_OUTPUT_FORMAT = "jpg"
+# Skip virtual cameras (OBS, etc.) when auto-selecting a physical USB device.
+VIRTUAL_CAMERA_KEYWORDS = ("obs", "virtual", "snap camera", "manycam", "xsplit")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,15 +37,20 @@ def build_parser() -> argparse.ArgumentParser:
 		description="Capture 1920x1080 photos every PHOTO_INTERVAL seconds."
 	)
 	parser.add_argument(
+		"--camera-device",
+		default=DEFAULT_CAMERA_DEVICE,
+		help="USB camera device path (e.g. /dev/video0). Takes priority over index/name.",
+	)
+	parser.add_argument(
 		"--camera-index",
 		type=int,
 		default=int(os.getenv("CAMERA_INDEX", DEFAULT_CAMERA_INDEX)),
-		help="Fallback camera index to open if no matching device name is found (default: 2).",
+		help="Fallback camera index when device path/name selection fails (default: 0).",
 	)
 	parser.add_argument(
 		"--camera-name",
 		default=DEFAULT_CAMERA_NAME,
-		help="Preferred camera name to open (default: Webcam).",
+		help="Preferred camera name substring; empty = first physical USB camera.",
 	)
 	parser.add_argument(
 		"--photo-interval",
@@ -68,22 +77,52 @@ def configure_camera(camera: cv2.VideoCapture) -> None:
 	)
 
 
+def _is_virtual_camera(device_name: str) -> bool:
+	lowered = device_name.casefold()
+	return any(keyword in lowered for keyword in VIRTUAL_CAMERA_KEYWORDS)
+
+
+def _list_input_devices() -> list[tuple[int, str]]:
+	if FilterGraph is None:
+		return []
+	return list(enumerate(FilterGraph().get_input_devices()))
+
+
 def resolve_camera_index(camera_name: str | None, fallback_index: int) -> tuple[int, str]:
-	if camera_name and FilterGraph is not None:
-		devices = FilterGraph().get_input_devices()
-		name_lower = camera_name.casefold()
-		for index, device_name in enumerate(devices):
-			if name_lower in device_name.casefold():
-				return index, device_name
+	devices = _list_input_devices()
+	if devices:
+		if camera_name:
+			name_lower = camera_name.casefold()
+			for index, device_name in devices:
+				if name_lower in device_name.casefold() and not _is_virtual_camera(device_name):
+					return index, device_name
+		else:
+			for index, device_name in devices:
+				if not _is_virtual_camera(device_name):
+					return index, device_name
+
+		print("Available cameras:")
+		for index, device_name in devices:
+			suffix = " (virtual, skipped)" if _is_virtual_camera(device_name) else ""
+			print(f"  [{index}] {device_name}{suffix}")
+
 	return fallback_index, f"camera index {fallback_index}"
 
 
-def open_camera(camera_index: int) -> cv2.VideoCapture:
-	camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-	if not camera.isOpened():
+def open_camera(camera_index: int, camera_device: str = "") -> cv2.VideoCapture:
+	if camera_device:
+		camera = cv2.VideoCapture(camera_device)
+		if camera.isOpened():
+			return camera
 		camera.release()
-		camera = cv2.VideoCapture(camera_index)
-	return camera
+
+	if os.name == "nt":
+		camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+		if camera.isOpened():
+			return camera
+		camera.release()
+
+	return cv2.VideoCapture(camera_index)
 
 
 def ensure_target_resolution(frame):
@@ -118,12 +157,22 @@ def main() -> int:
 
 	args.output_dir.mkdir(parents=True, exist_ok=True)
 
-	camera_index, camera_label = resolve_camera_index(args.camera_name, args.camera_index)
-	camera = open_camera(camera_index)
-	if not camera.isOpened():
-		raise RuntimeError(f"Unable to open camera '{camera_label}' at index {camera_index}")
+	camera_device = (args.camera_device or "").strip()
+	if camera_device:
+		camera_label = camera_device
+		camera_index = args.camera_index
+	else:
+		camera_index, camera_label = resolve_camera_index(args.camera_name, args.camera_index)
 
-	print(f"Using {camera_label} (index {camera_index})")
+	camera = open_camera(camera_index, camera_device)
+	if not camera.isOpened():
+		target = camera_device or f"'{camera_label}' at index {camera_index}"
+		raise RuntimeError(f"Unable to open USB camera {target}")
+
+	if camera_device:
+		print(f"Using USB camera device {camera_device}")
+	else:
+		print(f"Using USB camera {camera_label} (index {camera_index})")
 
 	configure_camera(camera)
 
