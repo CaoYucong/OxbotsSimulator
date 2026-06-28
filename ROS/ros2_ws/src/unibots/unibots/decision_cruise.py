@@ -112,7 +112,7 @@ COLLISION_AVOIDING_CONFIG_FILE = os.path.join(THIS_DIR, "collision_avoiding.txt"
 
 RADAR_MAX_RANGE = 0.8
 COLLISION_TRIGGER_DISTANCE_M: float = 0.30  # robot-only radar below this activates avoiding
-COLLISION_ACTIVATION_POSITION_BOUND_M: float = 0.6  # |x|,|y| must be <= this to trigger avoiding
+COLLISION_ACTIVATION_POSITION_BOUND_M: float = 0.95  # |x|,|y| must be <= this to trigger avoiding (covers ±0.9 home)
 REAL_RADAR_FAIL_VALUE_M: float = 0.80  # pose_estimation_sensor_fusion tof_read_fail_value_m
 COLLISION_ESCAPE_STEP_M: float = 0.30  # escape waypoint offset from current pose (m)
 COLLISION_WAYPOINT_RELEASE_DISTANCE_M: float = 0.15  # clear held escape wp when this close
@@ -1458,8 +1458,10 @@ def robot_only_radar(
         if not math.isfinite(wall_dist):
             wall_dist = max_range
 
+        close_hit = radar_dist <= COLLISION_TRIGGER_DISTANCE_M
         if (
-            abs(wall_dist) <= 0.25
+            not close_hit
+            and abs(wall_dist) <= 0.25
             and abs(radar_dist - wall_dist) <= wall_match_tolerance
         ):
             predicted[direction] = max_range
