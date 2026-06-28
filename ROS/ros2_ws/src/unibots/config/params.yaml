@@ -18,6 +18,8 @@ web_bridge_node:
   ros__parameters:
     # Master switch for using pose_estimation to publish /current_position.
     pose_estimation_enabled: true
+    # Set false to skip all HTML visualisation (no web_bridge_node, no image/pose renders).
+    visualization_enabled: true
     # Shared frequency (Hz) used by all nodes.
     common_hz: 10.0
     # Upstream simulator host for simulation data mirror.

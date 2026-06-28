@@ -58,10 +58,14 @@ class BallDetectionNode(Node):
         self.declare_parameter('camera_offset_x_robot', 0.105)
         self.declare_parameter('camera_offset_y_robot', 0.0)
         self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
+        self.declare_parameter('visualization_enabled', True)
 
         front_camera_topic = self.get_parameter('front_camera_topic').get_parameter_value().string_value
         self._ball_detection_enabled = bool(
             self.get_parameter('ball_detection_enabled').get_parameter_value().bool_value
+        )
+        self._visualization_enabled = bool(
+            self.get_parameter('visualization_enabled').get_parameter_value().bool_value
         )
         ball_detection_image_topic = (
             self.get_parameter('ball_detection_image_topic').get_parameter_value().string_value
@@ -661,7 +665,8 @@ class BallDetectionNode(Node):
             return
         if self._waypoint_type == 'home':
             self._latest_detections = []
-            self._publish_sticky_detection_image_or_fallback('home - no inference')
+            if self._visualization_enabled:
+                self._publish_sticky_detection_image_or_fallback('home - no inference')
             if self._latest_front_image is not None:
                 image_h, image_w = self._latest_front_image.shape[:2]
             else:
@@ -670,7 +675,8 @@ class BallDetectionNode(Node):
             return
         if not self._ball_detection_enabled:
             self._latest_detections = []
-            self._publish_sticky_detection_image_or_fallback('ball detection disabled')
+            if self._visualization_enabled:
+                self._publish_sticky_detection_image_or_fallback('ball detection disabled')
             if self._latest_front_image is not None:
                 image_h, image_w = self._latest_front_image.shape[:2]
             else:
@@ -704,7 +710,8 @@ class BallDetectionNode(Node):
         publish_topics_ms = 0.0
         publish_image_ms = 0.0
         t_publish_image = time.perf_counter()
-        self._publish_detection_image(image, detections)
+        if self._visualization_enabled:
+            self._publish_detection_image(image, detections)
         publish_image_ms = (time.perf_counter() - t_publish_image) * 1000.0
         if not infer_ok:
             self._debug_throttled('infer_failed', 'skip publish: roboflow inference failed')
@@ -1124,7 +1131,8 @@ class BallDetectionNode(Node):
         }
         msg_dets = String()
         msg_dets.data = json.dumps(payload, ensure_ascii=False)
-        self._pub_ball_detections.publish(msg_dets)
+        if self._visualization_enabled:
+            self._pub_ball_detections.publish(msg_dets)
         self._publish_visible_balls_topic(detections_payload)
         self._debug(f'published detections topic: count={len(detections)}, image={image_w}x{image_h}')
 
@@ -1152,7 +1160,8 @@ class BallDetectionNode(Node):
         msg_pose.pose.orientation.y = 0.0
         msg_pose.pose.orientation.z = 0.0
         msg_pose.pose.orientation.w = conf
-        self._pub_ball_pose.publish(msg_pose)
+        if self._visualization_enabled:
+            self._pub_ball_pose.publish(msg_pose)
         self._debug(f'published best pose: x={msg_pose.pose.position.x:.3f}, y={msg_pose.pose.position.y:.3f}, conf={conf:.3f}')
 
 

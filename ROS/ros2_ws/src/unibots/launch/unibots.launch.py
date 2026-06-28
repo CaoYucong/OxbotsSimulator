@@ -12,25 +12,32 @@ def generate_launch_description() -> LaunchDescription:
         params_payload = yaml.safe_load(f) or {}
     front_camera_params = params_payload.get('front_camera_node', {}).get('ros__parameters', {})
     use_real_sensor = bool(front_camera_params.get('use_real_sensor', False))
+    vis_enabled = bool(
+        params_payload.get('web_bridge_node', {})
+        .get('ros__parameters', {})
+        .get('visualization_enabled', True)
+    )
     simulation_intrinsic_path = os.path.join(pkg_share, 'config', 'simulation_camera_intrinsic.json')
     roboflow_api_key = os.getenv('ROBOFLOW_API_KEY', '').strip()
 
-    ball_detection_parameters = [params, {'use_real_sensor': use_real_sensor}]
-    pose_estimation_parameters = [params, {'use_real_sensor': use_real_sensor}]
+    ball_detection_parameters = [params, {'use_real_sensor': use_real_sensor, 'visualization_enabled': vis_enabled}]
+    pose_estimation_parameters = [params, {'use_real_sensor': use_real_sensor, 'visualization_enabled': vis_enabled}]
     if not use_real_sensor:
         ball_detection_parameters.append({'camera_intrinsic_path': simulation_intrinsic_path})
         pose_estimation_parameters.append({'intrinsic_path': simulation_intrinsic_path})
     if roboflow_api_key:
         ball_detection_parameters.append({'roboflow_api_key': roboflow_api_key})
 
-    return LaunchDescription([
-        Node(
+    nodes = []
+    if vis_enabled:
+        nodes.append(Node(
             package='unibots',
             executable='web_bridge_node',
             name='web_bridge_node',
             output='screen',
             parameters=[params],
-        ),
+        ))
+    nodes += [
         Node(
             package='unibots',
             executable='front_camera_node',
@@ -50,7 +57,7 @@ def generate_launch_description() -> LaunchDescription:
             executable='decision_node',
             name='decision_node',
             output='screen',
-            parameters=[params],
+            parameters=[params, {'visualization_enabled': vis_enabled}],
         ),
         Node(
             package='unibots',
@@ -89,4 +96,5 @@ def generate_launch_description() -> LaunchDescription:
             emulate_tty=True,
             parameters=[params],
         ),
-    ])
+    ]
+    return LaunchDescription(nodes)

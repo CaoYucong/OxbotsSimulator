@@ -286,6 +286,7 @@ class PoseEstimationNode(Node):
         self.declare_parameter('position_bound', 2.0)
         self.declare_parameter('robot_motion_status_topic', ROBOT_MOTION_STATUS_TOPIC)
         self.declare_parameter('use_kalman_filter', False)
+        self.declare_parameter('visualization_enabled', True)
 
         camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         intrinsic_path_raw = self.get_parameter('intrinsic_path').get_parameter_value().string_value
@@ -309,6 +310,9 @@ class PoseEstimationNode(Node):
         )
         self._use_kalman_filter = bool(
             self.get_parameter('use_kalman_filter').get_parameter_value().bool_value
+        )
+        self._visualization_enabled = bool(
+            self.get_parameter('visualization_enabled').get_parameter_value().bool_value
         )
 
         if self._enabled:
@@ -456,6 +460,8 @@ class PoseEstimationNode(Node):
     def _publish_placeholder_if_stale(self) -> None:
         if not self._enabled:
             return
+        if not self._visualization_enabled:
+            return
         if (time.monotonic() - self._last_image_time) < 1.0:
             return
         self._publish_placeholder_processed_image()
@@ -476,6 +482,8 @@ class PoseEstimationNode(Node):
         return image
 
     def _publish_placeholder_processed_image(self) -> None:
+        if not self._visualization_enabled:
+            return
         now = time.monotonic()
         if self._should_log(self._last_placeholder_log):
             self._last_placeholder_log = now
@@ -615,12 +623,13 @@ class PoseEstimationNode(Node):
             self.get_logger().warn(f'[pose_est] pose estimation failed: {exc}, exec_ms={exec_ms:.2f}')
             return
 
-        processed = self._render_processed_image(image, corners_list, ids, estimate)
-        if processed is not None:
-            msg_image = self._bridge.cv2_to_imgmsg(processed, encoding='bgr8')
-            msg_image.header.stamp = self.get_clock().now().to_msg()
-            msg_image.header.frame_id = 'camera'
-            self._pub_processed_image.publish(msg_image)
+        if self._visualization_enabled:
+            processed = self._render_processed_image(image, corners_list, ids, estimate)
+            if processed is not None:
+                msg_image = self._bridge.cv2_to_imgmsg(processed, encoding='bgr8')
+                msg_image.header.stamp = self.get_clock().now().to_msg()
+                msg_image.header.frame_id = 'camera'
+                self._pub_processed_image.publish(msg_image)
 
         if estimate is None:
             tag_count = int(len(ids)) if ids is not None else 0
@@ -702,21 +711,22 @@ class PoseEstimationNode(Node):
         history_pose.header.stamp = msg_out.header.stamp
         history_pose.header.frame_id = 'map'
         history_pose.pose = msg_out.pose
-        self._pose_history.append((now_ns, history_pose))
-
-        if self._pose_history_window_sec > 0.0:
-            window_ns = int(self._pose_history_window_sec * 1e9)
-            while self._pose_history and (now_ns - self._pose_history[0][0]) > window_ns:
-                self._pose_history.popleft()
-        else:
-            self._pose_history.clear()
+        if self._visualization_enabled:
             self._pose_history.append((now_ns, history_pose))
 
-        msg_history = PathMsg()
-        msg_history.header.stamp = now_time.to_msg()
-        msg_history.header.frame_id = 'map'
-        msg_history.poses = [pose for _, pose in self._pose_history]
-        self._pub_pose_history.publish(msg_history)
+            if self._pose_history_window_sec > 0.0:
+                window_ns = int(self._pose_history_window_sec * 1e9)
+                while self._pose_history and (now_ns - self._pose_history[0][0]) > window_ns:
+                    self._pose_history.popleft()
+            else:
+                self._pose_history.clear()
+                self._pose_history.append((now_ns, history_pose))
+
+            msg_history = PathMsg()
+            msg_history.header.stamp = now_time.to_msg()
+            msg_history.header.frame_id = 'map'
+            msg_history.poses = [pose for _, pose in self._pose_history]
+            self._pub_pose_history.publish(msg_history)
 
         timing = estimate.get('timing_ms', {}) or {}
         detect_ms = float(timing.get('detect', 0.0))

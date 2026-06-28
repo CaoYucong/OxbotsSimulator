@@ -28,6 +28,7 @@ class DecisionNode(Node):
         self.declare_parameter('home_purple', [0.0, -0.9, 0.0])
         self.declare_parameter('home_orange', [0.9, 0.0, 90.0])
         self.declare_parameter('dock_at', [50.0, 110.0])
+        self.declare_parameter('visualization_enabled', True)
 
         tick_hz = float(self.get_parameter('tick_hz').get_parameter_value().double_value)  # kept for launch-file compat, unused
         fallback_tick_hz = float(self.get_parameter('fallback_tick_hz').get_parameter_value().double_value)
@@ -65,6 +66,9 @@ class DecisionNode(Node):
         self._waypoint_type = ''
         self._sim_time_seconds: Optional[float] = None
         self._run_enabled: bool = False
+        self._visualization_enabled: bool = bool(
+            self.get_parameter('visualization_enabled').get_parameter_value().bool_value
+        )
 
         self.create_subscription(PoseStamped, '/current_position', self._on_current_position, 10)
         self.create_subscription(String, '/visible_balls', self._on_visible_balls, 10)
@@ -249,7 +253,8 @@ class DecisionNode(Node):
         self._publish_dynamic_waypoint(waypoint_text)
         self._publish_dynamic_waypoints_type()
         self._publish_collision_avoiding_waypoint(collision_waypoint_text)
-        self._publish_decision_making_data()
+        if self._visualization_enabled:
+            self._publish_decision_making_data()
         self._publish_mode(mode_key)
 
     def _publish_dynamic_waypoints_type(self) -> None:
