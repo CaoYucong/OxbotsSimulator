@@ -346,7 +346,7 @@ motion_control_node:
     # Stopped dwell (seconds) between rotate and drive, and after drive completes.
     phase_pause_s: 1.0
     # Stopped dwell (seconds) at a reached waypoint before starting the next target.
-    waypoint_reached_pause_s: 0.01
+    waypoint_reached_pause_s: 0.5
     # Quadrature encoder counts per wheel output-shaft revolution.
     counts_per_rev: 488.0
     # Wheel JointState publish rate (Hz) for differential-drive odometry.
