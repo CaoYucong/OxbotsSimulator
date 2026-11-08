@@ -1,92 +1,63 @@
-# Oxbots Simulator
+# Oxbots
 
-Webots simulation repository for UniBots. The main workflow is a multi-robot supervisor plus an external decision script. An optional ROS 2 Jazzy stack on a Raspberry Pi runs perception, the same style of strategy, and motor control for the real robot, and can feed decisions back into the simulator.
+UniBots software for the physical robot. Perception, decision making, and motor control all run from `ROS/`: one ROS 2 Jazzy Python package, `unibots`, deployed on a Raspberry Pi.
 
-## Important: Pause + Reset before editing worlds
+Most other directories are the Webots simulation used before the first physical robot existed. They remain in the tree so the early match logic can still be read. That simulation has not been maintained for a long time and may no longer run. How it was used is at the end of this file.
 
-Webots starts running automatically after opening a world. Edits made while running are often not saved.
-
-1. Press **Pause** (⏸)
-2. Press **Reset Simulation** (⏮)
-3. Then edit and save
-
-Otherwise, changes may be lost after closing or resetting.
-
----
-
-## 1) Environment
-
-- Webots: https://cyberbotics.com
-- World file version: `R2025a` (see `worlds/*.wbt`)
-- Optional ROS 2: Jazzy (see `ROS/`)
-
----
-
-## 2) Quick start
-
-### Step 1. Open the main world
-
-Open in Webots:
+## Layout
 
 ```text
-worlds/Decision_making.wbt
+OxbotsSimulator/
+├── ROS/                         # The robot system: perception, decisions, motors, parameters, deploy
+│   ├── deploy_and_run_ros_pi.sh
+│   └── ros2_ws/src/unibots/
+├── tools/                       # Calibration, photo capture, field view, SD backup, old sim batch runs
+├── rpi5/run_motor.py            # Early keyboard motor jog, not part of the ROS launch
+├── worlds/                      # Webots worlds (unmaintained)
+├── controllers/                 # Webots controllers, including the supervisor (unmaintained)
+├── decision_making_cyc|wly|xjj|ros/   # Strategy scripts for the simulator (unmaintained)
+├── pose_estimation/             # Offline AprilTag script aimed at the simulated camera (unmaintained)
+├── protos/  textures/           # Webots models and images
+├── benchmarks/                  # Early benchmark spreadsheets
+└── config.json                  # Branch and data-flow settings the simulator supervisor used to read
 ```
 
-### Step 2. Select the active decision branch
+Changes to robot behavior, sensors, or parameters belong in `ROS/ros2_ws/src/unibots/`. Scripts in `tools/` are helpers and are not started by `ros2 launch`.
 
-Edit the root `config.json`. Legacy fallback: `who_is_developing.txt`.
+---
 
-| Field | Meaning |
-| --- | --- |
-| `develop_branch` | `cyc` / `wly` / `xjj` / `ros` |
-| `data_flow` | `web` (HTTP via the field viewer) or `file` |
-| `run_on_pi` | When `true`, pull decisions from the Pi |
-| `pi_ip` | Raspberry Pi address |
-| `camera` / `pose_estimation` | Feature toggles used by the supervisor and tools |
-| `default_linear_velocity` / `default_angular_velocity` | Motion defaults for the supervisor |
+## ROS system
 
-Branch → script:
+ROS 2 Jazzy, package `unibots`, build type `ament_python`. One launch file starts nine nodes.
 
-- `cyc` → `decision_making_cyc/waypoints_cruise.py`
-- `wly` → `decision_making_wly/waypoints_cruise.py`
-- `xjj` → `decision_making_xjj/waypoints_cruise.py`
-- `ros` → `decision_making_ros/waypoints_cruise.py`
-
-Example:
-
-```json
-{
-  "develop_branch": "ros",
-  "data_flow": "web",
-  "run_on_pi": true,
-  "pi_ip": "192.168.50.2"
-}
+```text
+ROS/ros2_ws/src/unibots/
+├── package.xml
+├── setup.py                         # Nine entry points; installs launch and config
+├── launch/unibots.launch.py
+├── config/
+│   ├── params.yaml                  # Per-node parameters
+│   ├── real_camera_intrinsic.yaml   # Real fisheye intrinsics
+│   ├── simulation_camera_intrinsic.json
+│   └── tag_world_map.json           # Field coordinates of 24 AprilTags
+└── unibots/
+    ├── front_camera_node.py
+    ├── pose_estimation_camera_node.py
+    ├── pose_estimation_sensor_fusion_node.py
+    ├── ball_detection_node.py
+    ├── decision_node.py
+    ├── decision_cruise.py           # Strategy library called by the node
+    ├── motion_control_node.py
+    ├── timer_node.py
+    ├── reset_button_node.py
+    └── web_bridge_node.py
 ```
 
-### Step 2.1 Select the strategy mode
+The outer `unibots` directory is the ROS package. The inner `unibots` directory is the importable Python module.
 
-Most branches resolve the mode as: `mode.txt` → CLI / `MODE` env → `DEFAULT_MODE` in that branch's `waypoints_cruise.py`.
+### Build and run
 
-- CYC: for example `improved_nearest_v3`
-- WLY: for example `developing`
-- XJJ: for example `improved_nearest`
-- ROS script and ROS node: `improved_nearest_v3_5`, `planned`, or `exploration_test`
-
-On the Pi, the live mode is `decision_node.mode` in `ROS/ros2_ws/src/unibots/config/params.yaml`. The node calls `decide_from_ros_state()` in `decision_cruise.py`. If that parameter is empty, the planner falls back to `DEFAULT_MODE` (`improved_nearest_v3_5`).
-
-### Step 3. Run the simulation
-
-`controllers/supervisor_controller/supervisor_controller.py` will:
-
-- Manage the main robot and the obstacle robots
-- Randomize ball positions (seed from `controllers/supervisor_controller/random_seed.txt`)
-- Invoke the selected `waypoints_cruise.py` on a fixed frame interval
-- Exchange state through files and/or HTTP
-- Start the field viewer (default `http://localhost:5001`, port in `controllers/supervisor_controller/html_port.txt`)
-
-### Step 4. Optional: run the ROS stack
-
-Local:
+On a machine with ROS 2 Jazzy:
 
 ```bash
 cd ROS/ros2_ws
@@ -95,221 +66,48 @@ source install/setup.bash
 ros2 launch unibots unibots.launch.py
 ```
 
-Or sync, build, and launch on the Pi:
+Sync the workspace to the Pi, build, and launch:
 
 ```bash
 ./ROS/deploy_and_run_ros_pi.sh
 ```
 
-Keep `config.json` `pi_ip` / `run_on_pi` consistent with the host and port the ROS web bridge is serving.
-
----
-
-## 3) Runtime architecture (`Decision_making.wbt`)
-
-- Main robot: `DEF MY_ROBOT`
-- Obstacle robots: `DEF OBSTACLE_ROBOT_1/2/3`
-- Controller: `controllers/supervisor_controller/supervisor_controller.py`
-- Decision script: `decision_making_<branch>/waypoints_cruise.py`
-
-`data_flow: "web"`:
-
-1. The supervisor publishes simulation state to field-viewer HTTP endpoints.
-2. The decision script, or the ROS stack on the Pi when `run_on_pi` is true, reads that state and posts decisions / waypoints.
-3. The main robot follows the active dynamic waypoint without blocking the supervisor loop.
-
-`data_flow: "file"`:
-
-1. The supervisor writes `controllers/supervisor_controller/real_time_data/*.txt` every frame.
-2. The decision script reads those files and writes waypoints and status.
-3. The main robot moves from `dynamic_waypoints.txt`.
-
-The ROS package is a second runtime. It does not replace the supervisor inside Webots. The supervisor still owns the simulated robots. The Pi stack owns the camera, AprilTag pose, ball detector, strategy, and motors, and exposes decisions over HTTP so the simulator can consume them.
-
----
-
-## 4) Repository structure
-
-```text
-OxbotsSimulator/
-├── worlds/
-│   ├── Decision_making.wbt          # Main match / decision integration
-│   ├── Arena_Development.wbt        # Arena and material development
-│   ├── Position_Estimate_MATLAB.wbt # MATLAB pose-estimation world
-│   └── moose_demo.wbt               # Webots moose demo
-│
-├── controllers/
-│   ├── supervisor_controller/       # Match supervisor: robots, balls, data, viewer
-│   ├── other_go_random/             # Simple random-motion Python controller
-│   ├── moose_path_following/        # C path-following demo
-│   ├── estimate_robot_pose/         # MATLAB camera / AprilTag pose
-│   └── ball_detection/              # MATLAB ball detection
-│
-├── decision_making_cyc/             # CYC strategy
-├── decision_making_wly/             # WLY strategy
-├── decision_making_xjj/             # XJJ strategy
-├── decision_making_ros/             # ROS-aligned strategy script for the simulator
-│
-├── ROS/                             # ROS 2 Jazzy workspace and Pi deploy
-│   ├── deploy_and_run_ros_pi.sh
-│   ├── README.md
-│   └── ros2_ws/src/unibots/         # The only ament_python package
-│
-├── pose_estimation/                 # Standalone AprilTag / intrinsic helpers
-├── protos/                          # Arena, balls, robots, AprilTag PROTOs
-├── textures/                        # AprilTag, arena, and robot textures
-├── tools/
-│   ├── field_viewer/                # Real-time visualization (server.py)
-│   ├── camera_calibration_matlab/
-│   ├── camera_calibration_python/
-│   ├── auto_photo_capture/
-│   ├── testing/
-│   └── system_backup/
-│
-├── benchmarks/                      # UniBots benchmark spreadsheets
-├── rpi5/                            # Pi-side motor helpers (run_motor.py)
-├── config.json                      # Branch, data flow, Pi address, feature flags
-└── README.md
-```
-
-The ROS package layout:
-
-```text
-ROS/ros2_ws/src/unibots/
-├── package.xml
-├── setup.py
-├── launch/unibots.launch.py
-├── config/
-│   ├── params.yaml
-│   ├── real_camera_intrinsic.yaml
-│   ├── simulation_camera_intrinsic.json
-│   └── tag_world_map.json
-├── unibots/                         # Importable Python module
-│   ├── web_bridge_node.py
-│   ├── front_camera_node.py
-│   ├── ball_detection_node.py
-│   ├── pose_estimation_camera_node.py
-│   ├── pose_estimation_sensor_fusion_node.py
-│   ├── decision_node.py
-│   ├── decision_cruise.py
-│   ├── motion_control_node.py
-│   ├── timer_node.py
-│   └── reset_button_node.py
-└── README.md
-```
-
-The nested `unibots/unibots` folders are the normal ROS 2 Python layout: the outer folder is the package (`package.xml`, launch, config); the inner folder is the importable module.
-
----
-
-## 5) Key files
-
-### Simulator
-
-| File | Role |
-| --- | --- |
-| `config.json` | Selects `develop_branch`, `data_flow`, `run_on_pi`, `pi_ip`, camera / pose toggles, and default velocities. The supervisor reads it at startup. |
-| `worlds/Decision_making.wbt` | Match world: main robot, three obstacle robots, balls, arena. |
-| `controllers/supervisor_controller/supervisor_controller.py` | Steps the match, writes or serves state, calls the branch script, and drives `MY_ROBOT` from the current waypoint. |
-| `controllers/supervisor_controller/random_seed.txt` | Seed for ball randomization. |
-| `controllers/supervisor_controller/html_port.txt` | Field-viewer port (often `5001`). |
-| `controllers/supervisor_controller/real_time_data/*.txt` | Per-frame state when `data_flow` is `file`, and the files the supervisor still uses as the motion interface. |
-| `decision_making_*/waypoints_cruise.py` | One strategy process per branch. Must return quickly; the supervisor calls it on a fixed frame interval. |
-| `decision_making_*/real_time_data/` | Strategy-local state and debug output. |
-| `tools/field_viewer/server.py` | HTTP view of the field, decisions, and camera. |
-| `protos/`, `textures/` | Webots PROTOs and images referenced by the worlds. |
-| `pose_estimation/` | Offline AprilTag and intrinsic helpers, separate from the ROS pose nodes. |
-| `rpi5/run_motor.py` | Small Pi motor helper outside the ROS launch. |
-
-### ROS package source
-
-| File | Role |
-| --- | --- |
-| `ROS/ros2_ws/src/unibots/package.xml` | Package `unibots`, build type `ament_python`. Depends on `rclpy`, `std_msgs`, `geometry_msgs`, `sensor_msgs`, `cv_bridge`. |
-| `ROS/ros2_ws/src/unibots/setup.py` | Declares the nine `console_scripts` entry points and installs `launch/` plus the four files in `config/` into the package share directory. |
-| `ROS/ros2_ws/src/unibots/launch/unibots.launch.py` | Starts every node with `config/params.yaml`. Copies `front_camera_node.use_real_sensor` into ball detection, camera pose, and fusion. When that flag is false, it points ball detection and camera pose at `simulation_camera_intrinsic.json`. If `ROBOFLOW_API_KEY` is set in the environment, it overrides the detector key. |
-| `unibots/front_camera_node.py` | USB camera, or an upstream JPEG, published on `/front_camera`. |
-| `unibots/pose_estimation_camera_node.py` | AprilTag PnP from `/front_camera`. Publishes the absolute robot pose and the debug image. |
-| `unibots/pose_estimation_sensor_fusion_node.py` | Fuses the AprilTag pose with wheel-encoder odometry and publishes `/current_position`. |
-| `unibots/ball_detection_node.py` | Local Roboflow inference. Projects detections into field coordinates and publishes `/visible_balls`. |
-| `unibots/decision_node.py` | ROS wrapper around the planner. Subscribes to pose, balls, waypoint status, and time; publishes the next waypoint and decision payloads. |
-| `unibots/decision_cruise.py` | Strategy library. Modes: `improved_nearest_v3_5`, `planned`, `exploration_test`. `decide_from_ros_state()` is the entry used by the node. The same file can also run as a script (`mode.txt` → CLI → `MODE` → `DEFAULT_MODE`). |
-| `unibots/motion_control_node.py` | Waypoint follower. Drives the Pi motors, publishes `going` / `reached`, `moving` / `stopped`, and wheel `JointState`. |
-| `unibots/timer_node.py` | Publishes `/time` while `/run` is on. |
-| `unibots/reset_button_node.py` | Watches the Pi power button, publishes `/run`, and clears time and decision topics on reset. |
-| `unibots/web_bridge_node.py` | Subscribes to the topics above and serves them over HTTP for the field viewer and the Webots supervisor. |
-| `ROS/deploy_and_run_ros_pi.sh` | Rsync the workspace to the Pi, `colcon build`, and `ros2 launch`. Can also start the local Roboflow inference container. |
-| `ROS/README.md`, `ROS/ros2_ws/src/unibots/README.md` | Package-level build notes and `cv_bridge` / port troubleshooting. |
-
-`decision_making_ros/waypoints_cruise.py` is the simulator-side script selected by `develop_branch: "ros"`. The ROS node does not shell out to that file; it imports `decision_cruise.py` inside the package.
-
-### ROS `config/` files
-
-All four files are installed to `share/unibots/config/` by `setup.py`. Nodes resolve them from the package share directory after `colcon build`.
-
-**`params.yaml`** is the only ROS parameter file the launch loads into every node. Each top-level key is a node name; parameters live under `ros__parameters`.
-
-| Section | What it controls |
-| --- | --- |
-| `web_bridge_node` | Local HTTP bind (`local_host` / `local_port`, default `0.0.0.0:5003`) and `allow_local_port_fallback` (bind another port if `5003` is taken). The running node serves ROS topics it subscribes to, including `/current_position` from fusion. `web_debug: true` also POSTs `/decisions` and `/decision_making_data` onward. `remote_host`, `remote_port`, and `poll_hz` are still in the YAML; this node does not declare them. |
-| `front_camera_node` | `use_real_sensor`: USB camera when true, upstream JPEG (`camera_remote_host`, `camera_remote_port`, `camera_path`) when false. Capture size, published size (`output_width` / `output_height`), poll rate, and the stop-gate (`capture_when_stopped_only` on `/robot_motion_status`). Real-camera intrinsics must match the published resolution. |
-| `ball_detection_node` | Inference on/off, Roboflow URL and model id (`local_inference_url`, `local_model_id`), confidence, infer rate, ball diameters and camera mounting offsets used to turn a bbox into a field position. Inference runs only while `/robot_motion_status` is `stopped`. |
-| `pose_estimation_camera` | AprilTag on/off, `/front_camera` input, `tick_hz`, camera offset from the robot origin, optional Kalman filter, and the same stop-gate. Tag geometry comes from `tag_world_map.json`, not from this YAML. |
-| `pose_estimation_sensor_fusion` | Camera pose topic, wheel `JointState` topic, output topic `/current_position`, wheel calibration (`counts_per_rev`, count-per-meter, count-diff-per-degree), and the robot-origin offset ahead of the rear axle. |
-| `decision_node` | `mode`, `fallback_tick_hz` (the timer that actually runs; `tick_hz` is unused), default speed, target distance filters, `home_colour`, and the four home poses `[x, y, degrees]`. |
-| `motion_control_node` | Control rate, PWM and heading gains, rotate/drive tolerances, pause times between rotate and drive, encoder counts per revolution, and the wheel-state publish rate. |
-| `timer` | `/time` publish rate. The clock advances only while `/run` is on. |
-
-`exploration_heading_scan_enabled` is declared on ball detection, decision, and motion control. Keep the three copies the same.
-
-Two blocks in `params.yaml` are leftover relative to the code that is running. Under `pose_estimation_sensor_fusion`, the ToF, MPU6050, and IMU-fusion keys are not declared by the fusion node, which only reads camera-pose and wheel-odometry parameters. Under `web_bridge_node`, `remote_host`, `remote_port`, `poll_hz`, and `pose_estimation_enabled` are not declared either. Undeclared keys do not change those nodes.
-
-**`real_camera_intrinsic.yaml`** is the calibrated USB camera model: a 3×3 `camera_matrix`, four fisheye `distortion_coefficients`, `distortion_model: fisheye`, and the image size those numbers belong to (currently 960×540, matching `front_camera_node` `output_width` / `output_height`). Pose estimation and ball detection use it when `use_real_sensor` is true. Recalibrate and replace this file if the camera, lens, or published resolution changes.
-
-**`simulation_camera_intrinsic.json`** is the Webots front-camera model: image size, horizontal FOV, pinhole `K`, and a plumb-bob distortion (zeros in the current file). `unibots.launch.py` passes this path to ball detection and camera pose only when `use_real_sensor` is false.
-
-**`tag_world_map.json`** is the AprilTag field map. It records 24 tags (ids 0–23), units in meters, corner order `BL, BR, TR, TL`, and each tag's four world corners. The file header points at `controllers/estimate_robot_pose/tagWorldMap.mat` as the source. `pose_estimation_camera_node` loads it for PnP. An empty `tag_map_path` parameter means "use this packaged file".
-
----
-
-## 6) ROS system logic
-
-Package name `unibots`, distro ROS 2 Jazzy, one launch file, nine nodes.
+That script can also start a local Roboflow inference container on the Pi (default `127.0.0.1:9001`). The ball detector calls that address.
 
 ### Nodes
 
 | Executable | Node name | Role |
 | --- | --- | --- |
-| `web_bridge_node` | `web_bridge_node` | HTTP mirror of pose, balls, time, decisions, and camera images |
-| `front_camera_node` | `front_camera_node` | USB or upstream JPEG → `/front_camera` |
-| `ball_detection_node` | `ball_detection_node` | Roboflow inference → `/visible_balls` and overlays |
-| `pose_estimation_camera_node` | `pose_estimation_camera` | AprilTag PnP → `/current_position_camera` |
-| `pose_estimation_sensor_fusion_node` | `pose_estimation_sensor_fusion` | Camera pose + wheel odometry → `/current_position` |
-| `decision_node` | `decision_node` | Strategy → `/dynamic_waypoint` and `/decisions` |
-| `motion_control_node` | `motion_control_node` | Follow the waypoint, drive motors |
-| `timer_node` | `timer` | Simulation clock on `/time` |
-| `reset_button_node` | `reset_button_node` | Power button → `/run`, and reset of clock / decisions |
+| `reset_button_node` | `reset_button_node` | Reads the Pi power button, publishes `/run`, and clears the clock and decision topics on reset |
+| `timer_node` | `timer` | Publishes `/time` while `/run` is on |
+| `front_camera_node` | `front_camera_node` | Publishes the USB camera on `/front_camera` |
+| `pose_estimation_camera_node` | `pose_estimation_camera` | AprilTag PnP, publishes the absolute pose |
+| `pose_estimation_sensor_fusion_node` | `pose_estimation_sensor_fusion` | AprilTag pose plus wheel odometry, publishes `/current_position` |
+| `ball_detection_node` | `ball_detection_node` | Local Roboflow inference, publishes visible balls in field coordinates |
+| `decision_node` | `decision_node` | Picks the next waypoint for the active mode |
+| `motion_control_node` | `motion_control_node` | Follows the waypoint and drives the motors |
+| `web_bridge_node` | `web_bridge_node` | Serves those topics over HTTP for the field page |
 
 ### Topic flow
 
-`/run` is the match gate. `reset_button_node` publishes it from the Pi power button. On reset it also clears `/time`, `/decisions`, `/decision_making_data`, and `/dynamic_waypoints_type`. `timer_node` advances `/time` only while `/run` is on. Camera capture, AprilTag, ball inference, decision, and motion all subscribe to `/run`.
+`/run` is the match gate. `reset_button_node` publishes it from the power button. A reset also clears `/time`, `/decisions`, `/decision_making_data`, and `/dynamic_waypoints_type`. `timer_node` advances `/time` only while `/run` is on. The camera, AprilTag, ball detector, decision node, and motion node all subscribe to `/run`.
 
 ```text
 reset_button ── /run ──► timer ── /time
                  │
-USB camera, or upstream JPEG
+USB camera
         │
         ▼
 front_camera_node ── /front_camera          sensor_msgs/Image
         │
         ├──► pose_estimation_camera
-        │       /current_position_camera     absolute AprilTag pose (PoseStamped)
-        │       /camera_pose                 camera pose used by ball projection
+        │       /current_position_camera     absolute AprilTag pose
+        │       /camera_pose                 camera pose used to project balls
         │       /camera_pose_history, /pose_history
         │       /processed_image, /num_tags_detected
         │
         └──► ball_detection_node
-                /visible_balls               field positions, std_msgs/String
+                /visible_balls               field coordinates
                 /ball_pose, /ball_detections
                 /ball_detection_image
 
@@ -321,170 +119,215 @@ pose_estimation_sensor_fusion ── /current_position
         ▼
 decision_node
         /dynamic_waypoint            "(x, y, theta_deg)"
-        /dynamic_waypoints_type      pingball / steelball / planned / ...
+        /dynamic_waypoints_type
         /mode
         /decisions, /decision_making_data
         /collision_avoiding_waypoint
         │
         ▼
-motion_control_node ── Pi motors
+motion_control_node ── motors
         /waypoint_status             going | reached
         /robot_motion_status         moving | stopped
-        /wheel_joint_states          encoder position and velocity
+        /wheel_joint_states          encoder angle and angular velocity
         /exploration_phase
 ```
 
-Closed loops:
+The loops that matter:
 
-- `/waypoint_status` goes back to `decision_node`, which picks the next target after `reached`.
-- `/wheel_joint_states` goes back to fusion, which dead-reckons from the last AprilTag fix: current pose = camera anchor plus wheel motion since that camera timestamp.
-- `/robot_motion_status` gates perception. With the current parameters, the camera captures, and ball detection and AprilTag run, only while the status is `stopped`. The robot looks between moves.
-- `/dynamic_waypoints_type` and `/exploration_phase` coordinate the optional heading scan across decision, motion, and ball detection.
-- Ball projection uses `/camera_pose` and `/camera_pose_history` from the AprilTag node. The fused `/current_position` is what decision and motion follow.
+- `/waypoint_status` returns to the decision node. After `reached`, the planner chooses the next target.
+- `/wheel_joint_states` returns to fusion. The published pose is the latest AprilTag anchor plus wheel motion since that frame's timestamp. The driven wheels sit on the rear axle, and the robot origin is about 40 mm forward of the axle midpoint. Fusion converts odometry into that origin.
+- `/robot_motion_status` gates perception. With the current parameters the camera captures, and ball detection and AprilTag run, only while the status is `stopped`. The robot looks between moves.
+- Ball positions in the field frame come from `/camera_pose` and `/camera_pose_history`. Decision and motor control follow the fused `/current_position`.
+- `/dynamic_waypoints_type` and `/exploration_phase` carry the optional heading-scan phase among decision, motion, and ball detection. The switch `exploration_heading_scan_enabled` is currently off. Change all three copies together.
 
-`decision_node` also subscribes to `/radar_sensor`. No node in this package publishes that topic. `web_bridge_node` mirrors `/radar_sensor` onto `/data/radar_sensor` when a message arrives.
+`decision_node` also subscribes to `/radar_sensor`. No node in this package publishes it. When a message does arrive, `web_bridge_node` exposes it at HTTP `/data/radar_sensor`.
 
-`web_bridge_node` is outside the control loop. It subscribes to `/current_position`, `/visible_balls`, `/waypoint_status`, `/time`, `/radar_sensor`, `/pose_history`, `/decisions`, `/decision_making_data`, `/front_camera`, `/processed_image`, and `/ball_detection_image`, and serves them on the local HTTP port (default `5003`). The field viewer and the Webots supervisor read those endpoints when `run_on_pi` is true. `/decisions` and `/decision_making_data` on the viewer redirect to the main page, which embeds the JSON.
+`web_bridge_node` sits outside the control loop. It subscribes to pose, visible balls, waypoint status, time, radar, pose history, decisions, and the three image topics, and serves them on a local port (default `5003`). If `5003` is taken, it binds a free port. With `web_debug: true` it also POSTs the decision JSON onward.
+
+### Strategy
+
+On each tick, `decision_node` calls `decide_from_ros_state()` in `decision_cruise.py`. The mode is `decision_node.mode` in `params.yaml`:
+
+- `improved_nearest_v3_5` (default)
+- `planned`
+- `exploration_test`
+
+An empty parameter falls back to `DEFAULT_MODE` in `decision_cruise.py`, which is also `improved_nearest_v3_5`. `home_colour` selects the end-of-match home pose from `home_yellow`, `home_green`, `home_purple`, and `home_orange`, each stored as `[x, y, degrees]`.
+
+Target filters live on the same node: field bound `target_field_bound_m`, skip targets closer than `target_min_distance_m` to the robot, and skip retargets closer than `target_retarget_min_distance_m` to the current waypoint. The timer that actually runs is `fallback_tick_hz` (currently 1 Hz). `tick_hz` in the same file is unused.
 
 ### How configuration is applied
 
-1. `unibots.launch.py` reads `share/unibots/config/params.yaml`.
-2. Every node receives that file as its parameter set.
-3. The launch file then overrides a few keys: `use_real_sensor` is copied from `front_camera_node` onto ball detection, camera pose, and fusion; simulation intrinsics are injected when the real sensor is off; `ROBOFLOW_API_KEY` overrides the detector key when the environment variable is set.
-4. Each node calls `declare_parameter` and reads the value. A key present in the YAML but never declared by the node is not used. That includes the leftover ToF / IMU block and the unused web-bridge upstream fields.
-5. Root `config.json` is a different file. It configures the Webots supervisor (which branch, file vs web, which Pi). It does not replace `params.yaml`.
+1. `setup.py` installs the four files in `config/` to `share/unibots/config/`.
+2. `unibots.launch.py` passes `params.yaml` to every node.
+3. The launch file then overrides a few keys. It copies `front_camera_node.use_real_sensor` onto ball detection, camera pose, and fusion. When that value is false, it passes the simulation intrinsic file to ball detection and camera pose. When `ROBOFLOW_API_KEY` is set in the environment, it overrides the detector key.
+4. A node reads only parameters it declares. Extra keys in the YAML have no effect.
 
----
+What each block of `params.yaml` controls:
 
-## 7) Real-time data files
-
-Directory: `controllers/supervisor_controller/real_time_data/`
-
-| File | Contents |
+| Block | Role |
 | --- | --- |
-| `dynamic_waypoints.txt` | Current target for the main robot |
-| `waypoint_status.txt` | `going` / `reached` |
-| `current_position.txt` | Main robot pose and heading |
-| `obstacle_robot.txt` | Obstacle robot poses |
-| `ball_position.txt` | In-field ball positions and types |
-| `visible_balls.txt` | Balls visible to the main robot |
-| `speed.txt` | Main robot speed (m/s) |
-| `time.txt` | Simulation time (seconds) |
-| `obstacle_plan.txt` | Obstacle cyclic path |
-| `waypoints_history.txt` | Waypoint history (`reached` / `cut`) |
-| `radar_sensor.txt` | Radar / ToF-style readings when used |
+| `front_camera_node` | `use_real_sensor: true` opens the USB camera. Capture size, published size (`output_width` / `output_height`, currently 960×540), poll rate, and whether capture waits until the robot is stopped. Real intrinsics must match the published size. |
+| `ball_detection_node` | Inference on/off, Roboflow URL and model (default `http://127.0.0.1:9001`, `unibot-ball-detection/1`), confidence, infer rate, ball diameters, camera height, and the camera offset in the robot frame. Those geometry values turn a bounding box into a field position. Inference runs only while stopped. |
+| `pose_estimation_camera` | AprilTag on/off, processing rate `tick_hz`, forward offset of the camera from the robot origin, optional Kalman filter. Tag world coordinates are not here; they are in `tag_world_map.json`. |
+| `pose_estimation_sensor_fusion` | Inputs `/current_position_camera` and `/wheel_joint_states`, output `/current_position`. Calibration is encoder counts per revolution, counts per metre of straight travel, left/right count difference per degree of in-place rotation, and the origin's forward offset from the rear axle. |
+| `decision_node` | Mode, decision rate, default speed, target filters, home colour, and the four home poses. |
+| `motion_control_node` | Control rate, drive and turn PWM, heading tolerances, the looser tolerance used near the target, pauses between rotate and drive, encoder counts per revolution, and the wheel-state publish rate. |
+| `timer` | Publish rate of `/time`. The clock advances only while `/run` is on. |
+| `web_bridge_node` | The values the running node uses are the local bind address, port fallback, and `web_debug`. |
 
-On the ROS side the same ideas are topics (`/dynamic_waypoint`, `/waypoint_status`, `/current_position`, `/visible_balls`, `/time`) plus the HTTP mirror, rather than these text files.
+Two groups of keys are still in the YAML and are not declared by the current code, so they do not change node behavior: the ToF, MPU6050, and IMU-fusion keys under `pose_estimation_sensor_fusion`, and `remote_host`, `remote_port`, `poll_hz`, and `pose_estimation_enabled` under `web_bridge_node`.
 
----
+The four config files:
 
-## 8) Other worlds
+- **`params.yaml`** holds every node parameter in the table above. Rates, speeds, home poses, and detection thresholds are changed here, then the launch is started again. With `--symlink-install`, editing this YAML in the source tree and relaunching is enough. A rebuild is unnecessary.
+- **`real_camera_intrinsic.yaml`** is the USB camera calibration: a 3×3 camera matrix, four fisheye distortion coefficients, `distortion_model: fisheye`, and the image size those numbers belong to (currently 960×540). Pose estimation and ball detection use it when `use_real_sensor` is true. Replace it after a camera, lens, or published-resolution change, using the calibration scripts under `tools/`.
+- **`simulation_camera_intrinsic.json`** is a pinhole model (distortion coefficients are currently zero). The launch file passes it to ball detection and camera pose only when `use_real_sensor` is false. On the physical robot that flag stays true, so this file is not part of the onboard calculation.
+- **`tag_world_map.json`** is the field AprilTag map: 24 tags, ids 0–23, units in metres, corner order `BL, BR, TR, TL`. `pose_estimation_camera_node` uses it for PnP. An empty `tag_map_path` means this packaged file.
 
-- `worlds/Position_Estimate_MATLAB.wbt` — `estimate_robot_pose` experiments
-- `worlds/moose_demo.wbt` — `moose_path_following` demo
-- `worlds/Arena_Development.wbt` — arena structure and materials
+### What each source file does
 
----
+| File | Role |
+| --- | --- |
+| `package.xml` | Package metadata. Depends on `rclpy`, `std_msgs`, `geometry_msgs`, `sensor_msgs`, and `cv_bridge`. |
+| `setup.py` | `console_scripts` entry points, and installation of the launch file plus the four config files. |
+| `launch/unibots.launch.py` | Starts the nine nodes, loads `params.yaml`, and applies the intrinsic and Roboflow overrides described above. |
+| `front_camera_node.py` | Opens the USB camera, publishes `/front_camera`, and can wait until the robot is stopped. |
+| `pose_estimation_camera_node.py` | Finds AprilTags and solves PnP against `tag_world_map.json`. |
+| `pose_estimation_sensor_fusion_node.py` | Dead-reckons with the encoders between AprilTag fixes. |
+| `ball_detection_node.py` | Sends frames to the local inference server and projects boxes with the camera pose. |
+| `decision_node.py` | Collects topics, calls the planner, publishes the waypoint and the decision JSON. |
+| `decision_cruise.py` | Strategy implementation. The node enters through `decide_from_ros_state()`. |
+| `motion_control_node.py` | Turns to the target heading, drives forward, publishes `reached`, and publishes encoder `JointState`. |
+| `timer_node.py` | Match clock. |
+| `reset_button_node.py` | Power-button start, stop, and reset. Needs `evdev`. |
+| `web_bridge_node.py` | HTTP mirror of the topics. |
+| `ROS/deploy_and_run_ros_pi.sh` | Rsyncs the workspace from the development machine to the Pi, builds, and launches. |
+| `ROS/README.md`, `ROS/ros2_ws/src/unibots/README.md` | Package notes, plus `cv_bridge` / NumPy and port-in-use troubleshooting. |
 
-## 9) Troubleshooting
+`rpi5/run_motor.py` is an earlier script that toggles GPIO from the keyboard, one wheel at a time. Motion on the robot now goes through `motion_control_node`. Do not run both against the same pins.
 
-- The robot does not move as expected: confirm `config.json` → `develop_branch` is `cyc`, `wly`, `xjj`, or `ros`, and that the matching `waypoints_cruise.py` is the one the supervisor starts.
-- Decisions look stuck: inspect `dynamic_waypoints.txt` / `waypoint_status.txt`, or the field viewer `/data/decisions`. If `run_on_pi` is true, confirm the Pi address and that `ros2 launch unibots unibots.launch.py` is up. The supervisor and the web bridge must agree on host and port.
-- The field viewer does not open: check `controllers/supervisor_controller/html_port.txt` (often `5001`). The ROS mirror is a different port (`params.yaml` `local_port`, often `5003`).
-- ROS `cv_bridge` / NumPy errors, or `Address already in use` on the web bridge: see `ROS/ros2_ws/src/unibots/README.md`.
-- Pose or ball positions are wrong on the real camera: `real_camera_intrinsic.yaml` image size must match `front_camera_node` `output_width` / `output_height`.
+### Troubleshooting
 
----
-
-## 中文版
-
-UniBots 的 Webots 仿真仓库。主流程是多机器人 supervisor 加外部决策脚本。可选的 ROS 2 Jazzy 栈跑在树莓派上，负责感知、同类策略和电机控制，并可以把决策送回仿真。
-
-## 重要：编辑世界前先 Pause + Reset
-
-Webots 打开 world 后会自动运行。运行中修改场景通常不会被保存。
-
-1. 按 **Pause**（⏸）
-2. 按 **Reset Simulation**（⏮）
-3. 再编辑并保存
-
-否则修改可能在关闭或重置后丢失。
+- Pose or ball positions look wrong: the image size in `real_camera_intrinsic.yaml` must equal `front_camera_node` `output_width` / `output_height`.
+- Ball detection stays empty: the inference server on the Pi at `127.0.0.1:9001` has to be running, and the robot has to be `stopped`. Inference does not run while the robot is moving.
+- `cv_bridge` fails under NumPy 2, or the web bridge reports the address is already in use: see `ROS/ros2_ws/src/unibots/README.md`.
 
 ---
 
-## 1) 环境
+## tools
 
-- Webots: https://cyberbotics.com
-- world 文件版本：`R2025a`（见 `worlds/*.wbt`）
-- 可选 ROS 2：Jazzy（见 `ROS/`）
+These scripts are not part of `ros2 launch`. Calibration and the SD-card backup are still for the physical robot. `testing/` only drives the old Webots simulator described at the end of this file.
+
+### Camera calibration
+
+The fisheye intrinsics on the robot come from this set. Print a board, capture images, calibrate, and copy the resulting YAML over `ROS/ros2_ws/src/unibots/config/real_camera_intrinsic.yaml`.
+
+| File | Role |
+| --- | --- |
+| `tools/camera_calibration_python/generate_chessboard.py` | Writes an A4 landscape chessboard image, defaulting to a 9×6 inner-corner grid. Print at actual size. Measure a square with a ruler and pass that length in metres as `--square`. |
+| `tools/camera_calibration_python/calibrate.py` | Pinhole calibration. Takes an image directory and the inner-corner counts, and writes a ROS-style `camera_info.yaml`. |
+| `tools/camera_calibration_python/calibrate_fisheye.py` | Fisheye calibration. Writes a YAML with `camera_matrix`, `distortion_coefficients`, and the image size. The wide-angle lens on the robot uses this script, not `calibrate.py`. |
+| `tools/auto_photo_capture/auto_photo_capture.py` | Opens a preview and saves 1920×1080 JPEGs on an interval into `photos/` next to the script. Press `q` or `ESC` in the preview to stop. Use it to collect calibration images. |
+| `tools/camera_calibration_matlab/run_calibration.m` | Full MATLAB calibration from AprilTags (tag36h11): detect corners, estimate intrinsics and extrinsics, plot reprojection error, and write undistorted images. |
+| `tools/camera_calibration_matlab/Generate_Apriltag_Board.m` | Builds a 5×8 tag36h11 calibration board and writes `aprilTagBoard.png`. |
+| `tools/camera_calibration_matlab/helper*.m`, `initiation.m` | Corner detection and coordinate conversion used by the two scripts above. |
+
+### Field view
+
+`tools/field_viewer/server.py` is an HTTP page with no third-party dependencies. A browser shows the field, robots, balls, and decision JSON. The port comes from `controllers/supervisor_controller/html_port.txt`, default `5001`. The server reads the root `config.json`. With `run_on_pi` true it requests data from `pi_ip`. Otherwise it reads the text files the simulator supervisor writes under `real_time_data/`. The page can still be started. The simulator feed it falls back to is part of the unmaintained section at the end.
+
+### Raspberry Pi SD card
+
+`tools/system_backup/rpi_img.sh` backs up a Pi SD card to a compressed image on macOS, or writes an image back. Backup is `-b -d /dev/diskN`. Restore is `-r -d /dev/diskN -f <image>`. Restore erases the target disk. Check the disk number with `diskutil list` first.
+
+### Simulator batch runs
+
+These only loop the old Webots setup and are as unmaintained as the simulator:
+
+- `tools/testing/webots_auto_loop_crossplatform.py` starts Webots repeatedly, waits for the supervisor exit text, then starts the next run. It can sweep modes, avoidance levels, and random seeds into a CSV.
+- `tools/testing/run_parallel_3.sh` and `run_parallel_4.sh` copy the repo several times and run that loop in parallel.
 
 ---
 
-## 2) 快速开始
+## Simulator (unmaintained; it may no longer run)
 
-### Step 1. 打开主 world
+Before the first physical robot was built, match logic was developed in Webots. These directories are what remains: `worlds/`, `controllers/`, `decision_making_cyc/`, `decision_making_wly/`, `decision_making_xjj/`, `decision_making_ros/`, `pose_estimation/`, `protos/`, `textures/`, and the root `config.json`.
 
-在 Webots 中打开：
+This simulation has not been maintained for a long time. The worlds, the supervisor, and the strategy scripts were not updated alongside the later ROS nodes. Opening it as described below can miss files, disagree with current interfaces, or leave the robot unmoved. For how the robot decides and drives today, use `ROS/`.
+
+What the old workflow was:
+
+1. Open `worlds/Decision_making.wbt` in Webots R2025a. The main robot is `MY_ROBOT`, with three obstacle robots. The controller is `controllers/supervisor_controller/supervisor_controller.py`.
+2. Before editing a world, press Pause, then Reset Simulation. Edits made while the simulation is running are often not saved.
+3. `develop_branch` in the root `config.json` selects a strategy script. `cyc`, `wly`, `xjj`, and `ros` map to `decision_making_<branch>/waypoints_cruise.py`. `data_flow: web` uses the field viewer's HTTP API. `data_flow: file` uses `controllers/supervisor_controller/real_time_data/*.txt`. With `run_on_pi` true, the supervisor fetches decisions from the Pi instead.
+4. The ball-randomization seed is `controllers/supervisor_controller/random_seed.txt`. Files that workflow used include `dynamic_waypoints.txt`, `waypoint_status.txt`, `current_position.txt`, `ball_position.txt`, `visible_balls.txt`, and `time.txt`.
+5. `pose_estimation/pose_estimation.py` runs AprilTag offline on the simulated front-camera image. `pose_estimation/generate_camera_intrinsics.py` derives a theoretical intrinsic matrix from the Webots camera field of view. That is a different calibration from `real_camera_intrinsic.yaml` on the robot.
+
+Other worlds: `worlds/Arena_Development.wbt` is the arena materials, `worlds/Position_Estimate_MATLAB.wbt` goes with `controllers/estimate_robot_pose/`, and `worlds/moose_demo.wbt` goes with `controllers/moose_path_following/`. `controllers/ball_detection/` is the MATLAB ball detector. `controllers/other_go_random/` is a random-motion controller.
+
+---
+
+# 中文版
+
+UniBots 实物机器人的软件仓库。机器人上运行的感知、决策和电机控制都在 `ROS/` 里，是一个 ROS 2 Jazzy 的 Python 包 `unibots`，部署在树莓派上。
+
+仓库里其余大部分目录是第一台实物机器人搭起来之前用的 Webots 仿真。那些目录还留在仓库里，方便对照早期比赛逻辑，但仿真侧已经很久没有维护，不保证还能跑。仿真的用法放在本文最后。
+
+## 项目结构
 
 ```text
-worlds/Decision_making.wbt
+OxbotsSimulator/
+├── ROS/                         # 机器人系统。感知、决策、电机、参数、部署都在这里
+│   ├── deploy_and_run_ros_pi.sh
+│   └── ros2_ws/src/unibots/
+├── tools/                       # 标定、拍照、场地查看、SD 卡备份、早期仿真批测
+├── rpi5/run_motor.py            # 早期手动键盘控电机，不在 ROS launch 里
+├── worlds/                      # Webots 场景（未维护）
+├── controllers/                 # Webots 控制器，含 supervisor（未维护）
+├── decision_making_cyc|wly|xjj|ros/   # 仿真用的策略脚本（未维护）
+├── pose_estimation/             # 仿真相机的离线 AprilTag 脚本（未维护）
+├── protos/  textures/           # Webots 模型和贴图
+├── benchmarks/                  # 早期基准表
+└── config.json                  # 当年仿真 supervisor 读的分支和数据流配置
 ```
 
-### Step 2. 选择决策分支
+改机器人行为、传感器或参数，只需要看 `ROS/ros2_ws/src/unibots/`。`tools/` 是配套脚本，不参与 `ros2 launch`。
 
-编辑根目录 `config.json`。旧文件回退：`who_is_developing.txt`。
+---
 
-| 字段 | 含义 |
-| --- | --- |
-| `develop_branch` | `cyc` / `wly` / `xjj` / `ros` |
-| `data_flow` | `web`（经 field viewer 的 HTTP）或 `file` |
-| `run_on_pi` | 为 `true` 时从树莓派拉取决策 |
-| `pi_ip` | 树莓派地址 |
-| `camera` / `pose_estimation` | supervisor 和工具使用的功能开关 |
-| `default_linear_velocity` / `default_angular_velocity` | supervisor 的默认运动参数 |
+## ROS 系统
 
-分支对应脚本：
+发行版 ROS 2 Jazzy，包名 `unibots`，构建类型 `ament_python`。一个 launch 文件拉起九个节点。
 
-- `cyc` → `decision_making_cyc/waypoints_cruise.py`
-- `wly` → `decision_making_wly/waypoints_cruise.py`
-- `xjj` → `decision_making_xjj/waypoints_cruise.py`
-- `ros` → `decision_making_ros/waypoints_cruise.py`
-
-示例：
-
-```json
-{
-  "develop_branch": "ros",
-  "data_flow": "web",
-  "run_on_pi": true,
-  "pi_ip": "192.168.50.2"
-}
+```text
+ROS/ros2_ws/src/unibots/
+├── package.xml
+├── setup.py                         # 九个节点入口，并安装 launch 和 config
+├── launch/unibots.launch.py
+├── config/
+│   ├── params.yaml                  # 各节点参数
+│   ├── real_camera_intrinsic.yaml   # 真机鱼眼内参
+│   ├── simulation_camera_intrinsic.json
+│   └── tag_world_map.json           # 24 个 AprilTag 的场地坐标
+└── unibots/
+    ├── front_camera_node.py
+    ├── pose_estimation_camera_node.py
+    ├── pose_estimation_sensor_fusion_node.py
+    ├── ball_detection_node.py
+    ├── decision_node.py
+    ├── decision_cruise.py           # 策略库，节点直接调用
+    ├── motion_control_node.py
+    ├── timer_node.py
+    ├── reset_button_node.py
+    └── web_bridge_node.py
 ```
 
-### Step 2.1 选择策略模式
+外层 `unibots` 是 ROS 包，内层 `unibots` 是可 import 的 Python 模块。
 
-多数分支的优先级是：`mode.txt` → 命令行 / 环境变量 `MODE` → 该分支 `waypoints_cruise.py` 里的 `DEFAULT_MODE`。
+### 编译和启动
 
-- CYC：例如 `improved_nearest_v3`
-- WLY：例如 `developing`
-- XJJ：例如 `improved_nearest`
-- ROS 脚本和 ROS 节点：`improved_nearest_v3_5`、`planned` 或 `exploration_test`
-
-在树莓派上，实际模式是 `ROS/ros2_ws/src/unibots/config/params.yaml` 里的 `decision_node.mode`。节点调用 `decision_cruise.py` 的 `decide_from_ros_state()`。该参数为空时，规划器回退到 `DEFAULT_MODE`（`improved_nearest_v3_5`）。
-
-### Step 3. 运行仿真
-
-`controllers/supervisor_controller/supervisor_controller.py` 会：
-
-- 管理主机器人和障碍机器人
-- 按种子随机摆放球（种子在 `controllers/supervisor_controller/random_seed.txt`）
-- 按固定帧间隔调用选中的 `waypoints_cruise.py`
-- 通过文件和/或 HTTP 交换状态
-- 启动 field viewer（默认 `http://localhost:5001`，端口写在 `controllers/supervisor_controller/html_port.txt`）
-
-### Step 4. 可选：启动 ROS 栈
-
-本机：
+在装有 ROS 2 Jazzy 的机器上：
 
 ```bash
 cd ROS/ros2_ws
@@ -493,221 +336,48 @@ source install/setup.bash
 ros2 launch unibots unibots.launch.py
 ```
 
-或者同步到树莓派、编译并启动：
+把工作空间同步到树莓派、编译并启动：
 
 ```bash
 ./ROS/deploy_and_run_ros_pi.sh
 ```
 
-`config.json` 里的 `pi_ip` / `run_on_pi` 需要和 ROS web bridge 实际监听的地址、端口一致。
-
----
-
-## 3) 运行架构（`Decision_making.wbt`）
-
-- 主机器人：`DEF MY_ROBOT`
-- 障碍机器人：`DEF OBSTACLE_ROBOT_1/2/3`
-- 控制器：`controllers/supervisor_controller/supervisor_controller.py`
-- 决策脚本：`decision_making_<branch>/waypoints_cruise.py`
-
-`data_flow: "web"`：
-
-1. Supervisor 把仿真状态发到 field viewer 的 HTTP 接口。
-2. 决策脚本读取该状态并回写决策和目标点。`run_on_pi` 为 true 时，由树莓派上的 ROS 栈提供决策。
-3. 主机器人以非阻塞方式跟踪当前动态目标点。
-
-`data_flow: "file"`：
-
-1. Supervisor 每帧写入 `controllers/supervisor_controller/real_time_data/*.txt`。
-2. 决策脚本读取这些文件，并写回目标点和状态。
-3. 主机器人根据 `dynamic_waypoints.txt` 运动。
-
-ROS 包是另一套运行时，不替代 Webots 里的 supervisor。Supervisor 仍然掌管仿真机器人。树莓派栈掌管相机、AprilTag 位姿、球检测、策略和电机，并通过 HTTP 把决策暴露出来，供仿真读取。
-
----
-
-## 4) 仓库结构
-
-```text
-OxbotsSimulator/
-├── worlds/
-│   ├── Decision_making.wbt          # 主比赛 / 决策联调
-│   ├── Arena_Development.wbt        # 场地与材质
-│   ├── Position_Estimate_MATLAB.wbt # MATLAB 位姿估计
-│   └── moose_demo.wbt               # Webots moose 示例
-│
-├── controllers/
-│   ├── supervisor_controller/       # 比赛 supervisor：机器人、球、数据、可视化
-│   ├── other_go_random/             # 简单随机运动
-│   ├── moose_path_following/        # C 语言路径跟踪示例
-│   ├── estimate_robot_pose/         # MATLAB 相机 / AprilTag 位姿
-│   └── ball_detection/              # MATLAB 球检测
-│
-├── decision_making_cyc/             # CYC 策略
-├── decision_making_wly/             # WLY 策略
-├── decision_making_xjj/             # XJJ 策略
-├── decision_making_ros/             # 与 ROS 对齐的仿真侧策略脚本
-│
-├── ROS/                             # ROS 2 Jazzy 工作空间与树莓派部署
-│   ├── deploy_and_run_ros_pi.sh
-│   ├── README.md
-│   └── ros2_ws/src/unibots/         # 唯一的 ament_python 包
-│
-├── pose_estimation/                 # 独立的 AprilTag / 内参工具
-├── protos/                          # 场地、球、机器人、AprilTag PROTO
-├── textures/                        # AprilTag、场地、机器人纹理
-├── tools/
-│   ├── field_viewer/                # 实时可视化（server.py）
-│   ├── camera_calibration_matlab/
-│   ├── camera_calibration_python/
-│   ├── auto_photo_capture/
-│   ├── testing/
-│   └── system_backup/
-│
-├── benchmarks/                      # UniBots 基准表
-├── rpi5/                            # 树莓派电机辅助脚本（run_motor.py）
-├── config.json                      # 分支、数据流、树莓派地址、功能开关
-└── README.md
-```
-
-ROS 包内部：
-
-```text
-ROS/ros2_ws/src/unibots/
-├── package.xml
-├── setup.py
-├── launch/unibots.launch.py
-├── config/
-│   ├── params.yaml
-│   ├── real_camera_intrinsic.yaml
-│   ├── simulation_camera_intrinsic.json
-│   └── tag_world_map.json
-├── unibots/                         # 可 import 的 Python 模块
-│   ├── web_bridge_node.py
-│   ├── front_camera_node.py
-│   ├── ball_detection_node.py
-│   ├── pose_estimation_camera_node.py
-│   ├── pose_estimation_sensor_fusion_node.py
-│   ├── decision_node.py
-│   ├── decision_cruise.py
-│   ├── motion_control_node.py
-│   ├── timer_node.py
-│   └── reset_button_node.py
-└── README.md
-```
-
-两层 `unibots` 是 ROS 2 Python 包的常规布局：外层是包（`package.xml`、launch、config），内层是可导入模块。
-
----
-
-## 5) 关键文件
-
-### 仿真侧
-
-| 文件 | 作用 |
-| --- | --- |
-| `config.json` | 选择 `develop_branch`、`data_flow`、`run_on_pi`、`pi_ip`、相机/位姿开关和默认速度。Supervisor 启动时读取。 |
-| `worlds/Decision_making.wbt` | 比赛场景：主机器人、三台障碍机器人、球、场地。 |
-| `controllers/supervisor_controller/supervisor_controller.py` | 推进比赛、写出或提供状态、调用分支脚本，并让 `MY_ROBOT` 跟踪当前目标点。 |
-| `controllers/supervisor_controller/random_seed.txt` | 球随机摆放的种子。 |
-| `controllers/supervisor_controller/html_port.txt` | Field viewer 端口（常为 `5001`）。 |
-| `controllers/supervisor_controller/real_time_data/*.txt` | `data_flow` 为 `file` 时的逐帧状态，也是 supervisor 仍在使用的运动接口文件。 |
-| `decision_making_*/waypoints_cruise.py` | 每个分支一个策略进程。必须尽快返回；supervisor 按固定帧间隔调用它。 |
-| `decision_making_*/real_time_data/` | 策略自己的状态和调试输出。 |
-| `tools/field_viewer/server.py` | 场地、决策和相机的 HTTP 可视化。 |
-| `protos/`、`textures/` | world 引用的 Webots PROTO 和贴图。 |
-| `pose_estimation/` | 离线 AprilTag 和内参工具，与 ROS 位姿节点分开。 |
-| `rpi5/run_motor.py` | ROS launch 之外的小型电机辅助脚本。 |
-
-### ROS 包源码
-
-| 文件 | 作用 |
-| --- | --- |
-| `ROS/ros2_ws/src/unibots/package.xml` | 包名 `unibots`，构建类型 `ament_python`。依赖 `rclpy`、`std_msgs`、`geometry_msgs`、`sensor_msgs`、`cv_bridge`。 |
-| `ROS/ros2_ws/src/unibots/setup.py` | 声明九个 `console_scripts` 入口，并把 `launch/` 和 `config/` 下四个文件安装到包的 share 目录。 |
-| `ROS/ros2_ws/src/unibots/launch/unibots.launch.py` | 用 `config/params.yaml` 启动全部节点。把 `front_camera_node.use_real_sensor` 复制给球检测、相机位姿和融合。该标志为 false 时，把球检测和相机位姿指向 `simulation_camera_intrinsic.json`。环境变量 `ROBOFLOW_API_KEY` 若已设置，会覆盖检测器的 key。 |
-| `unibots/front_camera_node.py` | USB 相机或上游 JPEG，发布到 `/front_camera`。 |
-| `unibots/pose_estimation_camera_node.py` | 用 `/front_camera` 做 AprilTag PnP，发布绝对机器人位姿和调试图。 |
-| `unibots/pose_estimation_sensor_fusion_node.py` | 把 AprilTag 位姿和轮式编码器里程融合，发布 `/current_position`。 |
-| `unibots/ball_detection_node.py` | 本地 Roboflow 推理，把检测框投影到场地坐标，发布 `/visible_balls`。 |
-| `unibots/decision_node.py` | 规划器的 ROS 包装。订阅位姿、球、目标点状态和时间，发布下一目标点和决策内容。 |
-| `unibots/decision_cruise.py` | 策略库。模式：`improved_nearest_v3_5`、`planned`、`exploration_test`。节点使用的入口是 `decide_from_ros_state()`。同一文件也可以当脚本跑（`mode.txt` → 命令行 → `MODE` → `DEFAULT_MODE`）。 |
-| `unibots/motion_control_node.py` | 目标点跟踪。驱动树莓派电机，发布 `going` / `reached`、`moving` / `stopped`，以及轮子 `JointState`。 |
-| `unibots/timer_node.py` | 在 `/run` 为开时发布 `/time`。 |
-| `unibots/reset_button_node.py` | 监听树莓派电源键，发布 `/run`，复位时清空时间和决策话题。 |
-| `unibots/web_bridge_node.py` | 订阅上述话题，通过 HTTP 提供给 field viewer 和 Webots supervisor。 |
-| `ROS/deploy_and_run_ros_pi.sh` | 把工作空间 rsync 到树莓派，执行 `colcon build` 和 `ros2 launch`。也可以拉起本地 Roboflow 推理容器。 |
-| `ROS/README.md`、`ROS/ros2_ws/src/unibots/README.md` | 包级编译说明，以及 `cv_bridge` 和端口占用的排查。 |
-
-`decision_making_ros/waypoints_cruise.py` 是 `develop_branch: "ros"` 时仿真侧调用的脚本。ROS 节点不会再去执行这个文件，而是直接 import 包内的 `decision_cruise.py`。
-
-### ROS `config/` 里的文件
-
-这四个文件由 `setup.py` 安装到 `share/unibots/config/`。`colcon build` 之后，节点从包的 share 目录读取它们。
-
-**`params.yaml`** 是 launch 加载进每个节点的唯一 ROS 参数文件。顶层键是节点名，参数写在 `ros__parameters` 下面。
-
-| 段落 | 控制什么 |
-| --- | --- |
-| `web_bridge_node` | 本地 HTTP 绑定（`local_host` / `local_port`，默认 `0.0.0.0:5003`）和 `allow_local_port_fallback`（`5003` 被占用时改绑其他端口）。正在运行的节点只提供自己订阅到的 ROS 话题，其中包括融合节点的 `/current_position`。`web_debug: true` 时还会把 `/decisions` 和 `/decision_making_data` 再 POST 出去。YAML 里仍有 `remote_host`、`remote_port` 和 `poll_hz`，这个节点没有声明它们。 |
-| `front_camera_node` | `use_real_sensor`：true 用 USB 相机，false 用上游 JPEG（`camera_remote_host`、`camera_remote_port`、`camera_path`）。还有采集分辨率、发布分辨率（`output_width` / `output_height`）、轮询频率，以及停车门控（`capture_when_stopped_only`，看 `/robot_motion_status`）。真机内参必须和发布分辨率一致。 |
-| `ball_detection_node` | 推理开关、Roboflow 地址和模型（`local_inference_url`、`local_model_id`）、置信度、推理频率、球直径和相机安装偏移（用来把检测框换成场地坐标）。只在 `/robot_motion_status` 为 `stopped` 时推理。 |
-| `pose_estimation_camera` | AprilTag 开关、输入 `/front_camera`、`tick_hz`、相机相对机器人原点的偏移、可选卡尔曼滤波，以及同样的停车门控。标签几何不在这个 YAML 里，而在 `tag_world_map.json`。 |
-| `pose_estimation_sensor_fusion` | 相机位姿话题、轮子 `JointState` 话题、输出话题 `/current_position`、轮子标定（`counts_per_rev`、每米计数、每度计数差），以及机器人原点相对后轴的前向偏移。 |
-| `decision_node` | `mode`、`fallback_tick_hz`（真正在跑的定时器；`tick_hz` 未使用）、默认速度、目标距离过滤、`home_colour`，以及四个 home 位姿 `[x, y, 角度]`。 |
-| `motion_control_node` | 控制频率、PWM 和航向增益、旋转/直行容差、旋转与直行之间的停顿、编码器每圈计数、轮子状态发布频率。 |
-| `timer` | `/time` 的发布频率。只有 `/run` 为开时时钟才往前走。 |
-
-`exploration_heading_scan_enabled` 在球检测、决策和运动控制里各有一份。三处要保持一致。
-
-`params.yaml` 里有两处和当前代码不一致的遗留参数。`pose_estimation_sensor_fusion` 下面的 ToF、MPU6050 和 IMU 融合键，融合节点没有声明，它只读取相机位姿和轮式里程参数。`web_bridge_node` 下面的 `remote_host`、`remote_port`、`poll_hz` 和 `pose_estimation_enabled` 同样没有被声明。未声明的键不会改变这些节点的行为。
-
-**`real_camera_intrinsic.yaml`** 是 USB 相机标定：3×3 的 `camera_matrix`、四个鱼眼 `distortion_coefficients`、`distortion_model: fisheye`，以及这组数对应的图像尺寸（当前 960×540，与 `front_camera_node` 的 `output_width` / `output_height` 一致）。`use_real_sensor` 为 true 时，位姿估计和球检测使用它。相机、镜头或发布分辨率变了，就需要重新标定并替换这个文件。
-
-**`simulation_camera_intrinsic.json`** 是 Webots 前相机模型：图像尺寸、水平视场角、针孔 `K`，以及 plumb-bob 畸变（当前文件里系数为零）。只有 `use_real_sensor` 为 false 时，`unibots.launch.py` 才把这个路径传给球检测和相机位姿节点。
-
-**`tag_world_map.json`** 是 AprilTag 场地地图。共 24 个标签（id 0–23），单位米，角点顺序 `BL, BR, TR, TL`，每个标签有四个世界坐标角点。文件头注明来源是 `controllers/estimate_robot_pose/tagWorldMap.mat`。`pose_estimation_camera_node` 用它做 PnP。`tag_map_path` 为空表示使用这份随包安装的文件。
-
----
-
-## 6) ROS 系统逻辑
-
-包名 `unibots`，发行版 ROS 2 Jazzy，一个 launch 文件，九个节点。
+这个脚本也可以在树上拉起本地 Roboflow 推理容器（默认 `127.0.0.1:9001`）。球检测节点默认请求这个地址。
 
 ### 节点
 
 | 可执行文件 | 节点名 | 作用 |
 | --- | --- | --- |
-| `web_bridge_node` | `web_bridge_node` | 把位姿、球、时间、决策和相机图像做成 HTTP 镜像 |
-| `front_camera_node` | `front_camera_node` | USB 或上游 JPEG → `/front_camera` |
-| `ball_detection_node` | `ball_detection_node` | Roboflow 推理 → `/visible_balls` 和叠加图 |
-| `pose_estimation_camera_node` | `pose_estimation_camera` | AprilTag PnP → `/current_position_camera` |
-| `pose_estimation_sensor_fusion_node` | `pose_estimation_sensor_fusion` | 相机位姿 + 轮式里程 → `/current_position` |
-| `decision_node` | `decision_node` | 策略 → `/dynamic_waypoint` 和 `/decisions` |
+| `reset_button_node` | `reset_button_node` | 读树莓派电源键，发布 `/run`；复位时清空时钟和决策话题 |
+| `timer_node` | `timer` | `/run` 为开时发布 `/time` |
+| `front_camera_node` | `front_camera_node` | USB 相机发布到 `/front_camera` |
+| `pose_estimation_camera_node` | `pose_estimation_camera` | AprilTag PnP，发布绝对位姿 |
+| `pose_estimation_sensor_fusion_node` | `pose_estimation_sensor_fusion` | AprilTag 位姿加轮式里程，发布 `/current_position` |
+| `ball_detection_node` | `ball_detection_node` | 本地 Roboflow 推理，发布场地坐标上的可见球 |
+| `decision_node` | `decision_node` | 按模式选下一目标点 |
 | `motion_control_node` | `motion_control_node` | 跟踪目标点并驱动电机 |
-| `timer_node` | `timer` | `/time` 上的仿真时钟 |
-| `reset_button_node` | `reset_button_node` | 电源键 → `/run`，并复位时钟和决策 |
+| `web_bridge_node` | `web_bridge_node` | 把上述话题做成 HTTP，给场地页面看 |
 
 ### 话题流
 
-`/run` 是比赛开关。`reset_button_node` 根据树莓派电源键发布它。复位时还会清空 `/time`、`/decisions`、`/decision_making_data` 和 `/dynamic_waypoints_type`。`timer_node` 只在 `/run` 为开时推进 `/time`。相机采集、AprilTag、球检测、决策和运动控制都订阅 `/run`。
+`/run` 是比赛开关。`reset_button_node` 根据电源键发布它。复位时还会清空 `/time`、`/decisions`、`/decision_making_data` 和 `/dynamic_waypoints_type`。`timer_node` 只在 `/run` 为开时推进 `/time`。相机、AprilTag、球检测、决策和运动控制都订阅 `/run`。
 
 ```text
 reset_button ── /run ──► timer ── /time
                  │
-USB 相机，或上游 JPEG
+USB 相机
         │
         ▼
 front_camera_node ── /front_camera          sensor_msgs/Image
         │
         ├──► pose_estimation_camera
-        │       /current_position_camera     AprilTag 绝对位姿 (PoseStamped)
-        │       /camera_pose                 球投影使用的相机位姿
+        │       /current_position_camera     AprilTag 绝对位姿
+        │       /camera_pose                 球投影用的相机位姿
         │       /camera_pose_history, /pose_history
         │       /processed_image, /num_tags_detected
         │
         └──► ball_detection_node
-                /visible_balls               场地坐标，std_msgs/String
+                /visible_balls               场地坐标
                 /ball_pose, /ball_detections
                 /ball_detection_image
 
@@ -719,75 +389,151 @@ pose_estimation_sensor_fusion ── /current_position
         ▼
 decision_node
         /dynamic_waypoint            "(x, y, theta_deg)"
-        /dynamic_waypoints_type      pingball / steelball / planned / ...
+        /dynamic_waypoints_type
         /mode
         /decisions, /decision_making_data
         /collision_avoiding_waypoint
         │
         ▼
-motion_control_node ── 树莓派电机
+motion_control_node ── 电机
         /waypoint_status             going | reached
         /robot_motion_status         moving | stopped
-        /wheel_joint_states          编码器位置和速度
+        /wheel_joint_states          编码器角度和角速度
         /exploration_phase
 ```
 
-闭环：
+几条闭环：
 
-- `/waypoint_status` 回到 `decision_node`。状态变为 `reached` 后，决策选择下一个目标。
-- `/wheel_joint_states` 回到融合节点。融合节点从最近一次 AprilTag 修正往前推算：当前位姿 = 相机锚点 + 该相机时间戳之后的轮子运动。
-- `/robot_motion_status` 给感知做门控。按当前参数，相机只在状态为 `stopped` 时采集，球检测和 AprilTag 也只在停车时运行。机器人在两次运动之间观察场地。
-- `/dynamic_waypoints_type` 和 `/exploration_phase` 在决策、运动和球检测之间协调可选的朝向扫描。
-- 球的场地坐标使用 AprilTag 节点的 `/camera_pose` 和 `/camera_pose_history`。决策和运动跟踪的是融合后的 `/current_position`。
+- `/waypoint_status` 回到决策。状态变成 `reached` 之后，决策再选下一个目标。
+- `/wheel_joint_states` 回到融合。当前位姿 = 最近一次 AprilTag 锚点 + 该帧时间戳之后的轮子位移。轮子在后轴，机器人原点在后轴中点前方约 40 mm，融合节点按这个几何把里程换到原点。
+- `/robot_motion_status` 给感知做门控。按现在的参数，相机只在 `stopped` 时采集，球检测和 AprilTag 也只在停车时跑。机器人在两次运动之间看场地。
+- 球的场地坐标用的是 `/camera_pose` 和 `/camera_pose_history`。决策和电机跟踪的是融合后的 `/current_position`。
+- `/dynamic_waypoints_type` 和 `/exploration_phase` 在决策、运动和球检测之间传递可选的朝向扫描阶段。这个功能的开关 `exploration_heading_scan_enabled` 目前是关的，三处参数要一起改。
 
-`decision_node` 还订阅 `/radar_sensor`。本包里没有节点发布这个话题。有消息到来时，`web_bridge_node` 会把它镜像到 `/data/radar_sensor`。
+`decision_node` 还订阅 `/radar_sensor`。当前包里没有节点发布它。有消息时，`web_bridge_node` 会把它放到 HTTP 的 `/data/radar_sensor`。
 
-`web_bridge_node` 不在控制回路里。它订阅 `/current_position`、`/visible_balls`、`/waypoint_status`、`/time`、`/radar_sensor`、`/pose_history`、`/decisions`、`/decision_making_data`、`/front_camera`、`/processed_image` 和 `/ball_detection_image`，并在本地 HTTP 端口提供它们（默认 `5003`）。`run_on_pi` 为 true 时，field viewer 和 Webots supervisor 读这些接口。Viewer 上的 `/decisions` 和 `/decision_making_data` 会重定向到主页，主页里嵌着对应 JSON。
+`web_bridge_node` 不在控制回路里。它订阅位姿、可见球、目标点状态、时间、雷达、位姿历史、决策和三路图像，在本地端口提供 HTTP（默认 `5003`）。`5003` 被占用时，默认改绑一个空闲端口。`web_debug: true` 时，还会把决策 JSON 再 POST 出去。
 
-### 配置如何生效
+### 策略
 
-1. `unibots.launch.py` 读取 `share/unibots/config/params.yaml`。
-2. 每个节点都收到这一份参数。
-3. Launch 再覆盖少数键：把 `front_camera_node` 的 `use_real_sensor` 复制到球检测、相机位姿和融合；真传感器关闭时注入仿真内参；环境变量 `ROBOFLOW_API_KEY` 已设置时覆盖检测器 key。
-4. 每个节点用 `declare_parameter` 读取自己声明过的值。YAML 里有、但节点没有声明的键不会被使用。这包括遗留的 ToF / IMU 段，以及 web bridge 里未使用的上游地址字段。
-5. 根目录 `config.json` 是另一个文件。它配置的是 Webots supervisor（哪个分支、文件还是网页、哪台树莓派）。它不替代 `params.yaml`。
+`decision_node` 每个周期调用 `decision_cruise.py` 里的 `decide_from_ros_state()`。模式由 `params.yaml` 的 `decision_node.mode` 决定：
 
----
+- `improved_nearest_v3_5`（默认）
+- `planned`
+- `exploration_test`
 
-## 7) 实时数据文件
+参数为空时用 `decision_cruise.py` 里的 `DEFAULT_MODE`（同样是 `improved_nearest_v3_5`）。`home_colour` 选择终局回家的颜色，对应四个 `[x, y, 角度]`：`home_yellow`、`home_green`、`home_purple`、`home_orange`。
 
-目录：`controllers/supervisor_controller/real_time_data/`
+目标过滤也在这个节点的参数里：场地边界 `target_field_bound_m`、离机器人太近则跳过 `target_min_distance_m`、离当前目标点太近则不改目标 `target_retarget_min_distance_m`。决策定时器用的是 `fallback_tick_hz`（当前 1 Hz）。同文件里的 `tick_hz` 没有被定时器使用。
 
-| 文件 | 内容 |
+### 配置怎么生效
+
+1. `setup.py` 把 `config/` 里的四个文件安装到 `share/unibots/config/`。
+2. `unibots.launch.py` 把 `params.yaml` 交给每一个节点。
+3. Launch 再覆盖少数键：把 `front_camera_node.use_real_sensor` 复制给球检测、相机位姿和融合；这个值为 false 时，把仿真内参路径传给球检测和相机位姿；环境变量 `ROBOFLOW_API_KEY` 已设置时覆盖检测器 key。
+4. 节点只读取自己 `declare_parameter` 过的键。YAML 里多出来的键不会生效。
+
+`params.yaml` 各段在控制什么：
+
+| 段 | 作用 |
 | --- | --- |
-| `dynamic_waypoints.txt` | 主机器人当前目标点 |
-| `waypoint_status.txt` | `going` / `reached` |
-| `current_position.txt` | 主机器人位置和朝向 |
-| `obstacle_robot.txt` | 障碍机器人位姿 |
-| `ball_position.txt` | 场内球的位置和类型 |
-| `visible_balls.txt` | 主机器人可见的球 |
-| `speed.txt` | 主机器人速度（m/s） |
-| `time.txt` | 仿真时间（秒） |
-| `obstacle_plan.txt` | 障碍机器人的循环路径 |
-| `waypoints_history.txt` | 目标点历史（`reached` / `cut`） |
-| `radar_sensor.txt` | 启用时的雷达 / ToF 读数 |
+| `front_camera_node` | `use_real_sensor: true` 打开 USB 相机。采集分辨率、发布分辨率（`output_width` / `output_height`，当前 960×540）、轮询频率，以及是否只在停车时采集。真机内参必须和发布分辨率一致。 |
+| `ball_detection_node` | 推理开关、Roboflow 地址和模型（默认 `http://127.0.0.1:9001`，`unibot-ball-detection/1`）、置信度、推理频率、球直径、相机高度和相机在机器人坐标系下的偏移。这些几何量用来把检测框换成场地坐标。推理只在停车时跑。 |
+| `pose_estimation_camera` | AprilTag 开关、处理频率 `tick_hz`、相机相对机器人原点的前向偏移、可选卡尔曼滤波。标签的世界坐标不在这里，而在 `tag_world_map.json`。 |
+| `pose_estimation_sensor_fusion` | 输入 `/current_position_camera` 和 `/wheel_joint_states`，输出 `/current_position`。标定包括每圈编码器计数、直线每米计数、原地旋转每度的左右轮计数差，以及原点相对后轴的前向偏移。 |
+| `decision_node` | 模式、决策频率、默认速度、目标过滤、回家颜色和四个 home 位姿。 |
+| `motion_control_node` | 控制频率、直行和转向 PWM、航向容差、接近目标时放宽的容差、旋转与直行之间的停顿、编码器每圈计数、轮子状态发布频率。 |
+| `timer` | `/time` 的发布频率。时钟只在 `/run` 为开时前进。 |
+| `web_bridge_node` | 正在生效的是本地绑定地址、端口回退和 `web_debug`。 |
 
-ROS 侧用话题表达同样的量（`/dynamic_waypoint`、`/waypoint_status`、`/current_position`、`/visible_balls`、`/time`），再加 HTTP 镜像，而不是这些文本文件。
+有两处参数还写在 YAML 里，但当前代码没有声明，因此不会改变节点行为：`pose_estimation_sensor_fusion` 下面的 ToF、MPU6050 和 IMU 融合项；`web_bridge_node` 下面的 `remote_host`、`remote_port`、`poll_hz` 和 `pose_estimation_enabled`。
+
+四个配置文件：
+
+- **`params.yaml`**：上面这张表的全部节点参数。改频率、速度、回家点、检测阈值，改这个文件，然后重新 launch。`--symlink-install` 时，改源码树里的这份 YAML 后重新 launch 即可，不必再 build。
+- **`real_camera_intrinsic.yaml`**：USB 相机标定结果。3×3 相机矩阵、四个鱼眼畸变系数、`distortion_model: fisheye`，以及对应图像尺寸（当前 960×540）。`use_real_sensor` 为 true 时，位姿和球检测用它。换相机、镜头或发布分辨率后要重新标定并替换这个文件。
+- **`simulation_camera_intrinsic.json`**：一份针孔模型（当前畸变系数为零）。只有 `use_real_sensor` 为 false 时，launch 才把它传给球检测和相机位姿。实物机器人保持 `use_real_sensor: true`，这份文件不参与真机计算。
+- **`tag_world_map.json`**：场地 AprilTag。24 个标签，id 0–23，单位米，角点顺序 `BL, BR, TR, TL`。`pose_estimation_camera_node` 用它做 PnP。`tag_map_path` 留空就是用这份随包文件。
+
+### 源码里各文件做什么
+
+| 文件 | 作用 |
+| --- | --- |
+| `package.xml` | 包元数据。依赖 `rclpy`、`std_msgs`、`geometry_msgs`、`sensor_msgs`、`cv_bridge`。 |
+| `setup.py` | `console_scripts` 入口，并把 launch 和四个 config 文件装进 share。 |
+| `launch/unibots.launch.py` | 启动九个节点，加载 `params.yaml`，并按上一节覆盖内参和 Roboflow key。 |
+| `front_camera_node.py` | 打开 USB 相机，按停车状态决定是否出图，发布 `/front_camera`。 |
+| `pose_estimation_camera_node.py` | 在图像里找 AprilTag，对照 `tag_world_map.json` 做 PnP。 |
+| `pose_estimation_sensor_fusion_node.py` | 用编码器在两次 AprilTag 修正之间推算位姿。 |
+| `ball_detection_node.py` | 把图像送给本地推理服务，再用相机位姿把框投影到场地。 |
+| `decision_node.py` | 收话题、调用策略、发布目标点和决策 JSON。 |
+| `decision_cruise.py` | 策略实现。节点走 `decide_from_ros_state()`。 |
+| `motion_control_node.py` | 先转到目标航向，再直行，到点后发 `reached`，并发布编码器 `JointState`。 |
+| `timer_node.py` | 比赛时钟。 |
+| `reset_button_node.py` | 电源键启停和复位。依赖 `evdev`。 |
+| `web_bridge_node.py` | 话题到 HTTP 的镜像。 |
+| `ROS/deploy_and_run_ros_pi.sh` | 从开发机 rsync 工作空间到树莓派，编译并 launch。 |
+| `ROS/README.md`、`ROS/ros2_ws/src/unibots/README.md` | 包级说明，以及 `cv_bridge` / NumPy、端口占用的排查。 |
+
+`rpi5/run_motor.py` 是更早的键盘直接拨 GPIO 的脚本，四个轮子单独点动。现在车上的运动走 `motion_control_node`，不要和它同时占同一组引脚。
+
+### 排查
+
+- 位姿或球的位置不对：`real_camera_intrinsic.yaml` 的宽高要等于 `front_camera_node` 的 `output_width` / `output_height`。
+- 球检测没有结果：确认树上 `127.0.0.1:9001` 的推理服务在跑，并且机器人处于 `stopped`。推理在运动过程中不会跑。
+- `cv_bridge` 报 NumPy 2 不兼容，或 web bridge 报地址已被占用：看 `ROS/ros2_ws/src/unibots/README.md`。
 
 ---
 
-## 8) 其他 world
+## tools
 
-- `worlds/Position_Estimate_MATLAB.wbt`：`estimate_robot_pose` 实验
-- `worlds/moose_demo.wbt`：`moose_path_following` 示例
-- `worlds/Arena_Development.wbt`：场地结构和材质
+这些脚本不在 `ros2 launch` 里。标定和备份仍然是给实物机器人用的。`testing/` 只驱动当年的 Webots，依赖文末那套未维护的仿真。
+
+### 相机标定
+
+真机鱼眼内参来自这组脚本。流程是：打印棋盘，拍照，标定，把得到的 YAML 抄到 `ROS/ros2_ws/src/unibots/config/real_camera_intrinsic.yaml`。
+
+| 文件 | 作用 |
+| --- | --- |
+| `tools/camera_calibration_python/generate_chessboard.py` | 生成一张 A4 横向棋盘图，默认对应内角点 9×6。打印时用实际大小。打印后用尺子量方格边长，把米制长度传给标定脚本的 `--square`。 |
+| `tools/camera_calibration_python/calibrate.py` | 普通针孔模型。输入一个图片目录和棋盘内角点数，写出 ROS 风格的 `camera_info.yaml`。 |
+| `tools/camera_calibration_python/calibrate_fisheye.py` | 鱼眼模型，输出同样带 `camera_matrix`、`distortion_coefficients` 和图像尺寸的 YAML。车上的广角镜头用这一份，而不是 `calibrate.py`。 |
+| `tools/auto_photo_capture/auto_photo_capture.py` | 打开相机预览，按间隔把 1920×1080 的 JPEG 存进该目录下的 `photos/`。预览窗口里按 `q` 或 `ESC` 停止。用来收集标定图片。 |
+| `tools/camera_calibration_matlab/run_calibration.m` | 用 AprilTag（tag36h11）做整套 MATLAB 标定：检测角点、估计内外参、看重投影误差、导出去畸变图。 |
+| `tools/camera_calibration_matlab/Generate_Apriltag_Board.m` | 生成 5×8 的 tag36h11 标定板图片 `aprilTagBoard.png`。 |
+| `tools/camera_calibration_matlab/helper*.m`、`initiation.m` | 上面两个脚本用的角点检测和坐标转换。 |
+
+### 场地查看
+
+`tools/field_viewer/server.py` 是一个不依赖第三方库的 HTTP 页面，浏览器里画场地、机器人、球和决策 JSON。端口读 `controllers/supervisor_controller/html_port.txt`，默认 `5001`。它读根目录 `config.json`：`run_on_pi` 为 true 时向 `pi_ip` 要数据，否则读仿真 supervisor 写在 `real_time_data/` 里的文件。页面本身还能开；它依赖的仿真数据源属于文末未维护的部分。
+
+### 树莓派 SD 卡
+
+`tools/system_backup/rpi_img.sh` 在 macOS 上把树莓派 SD 卡备份成压缩镜像，或从镜像写回。备份是 `-b -d /dev/diskN`，恢复是 `-r -d /dev/diskN -f 镜像`。恢复会清掉目标盘。运行前用 `diskutil list` 核对盘号。
+
+### 仿真批测
+
+只用于当年的 Webots 循环跑分，现在随仿真一起停更：
+
+- `tools/testing/webots_auto_loop_crossplatform.py` 反复启动 Webots，等到 supervisor 退出文字后再开下一轮，并可按模式、避障档和随机种子写 CSV。
+- `tools/testing/run_parallel_3.sh` 和 `run_parallel_4.sh` 复制多份仓库，并行跑上面的循环。
 
 ---
 
-## 9) 常见排查
+## 仿真（久未维护，不保证还能用）
 
-- 机器人不按预期运动：确认 `config.json` 的 `develop_branch` 是 `cyc`、`wly`、`xjj` 或 `ros`，并且 supervisor 启动的是对应的 `waypoints_cruise.py`。
-- 决策看起来不更新：查看 `dynamic_waypoints.txt` / `waypoint_status.txt`，或 field viewer 的 `/data/decisions`。若 `run_on_pi` 为 true，确认树莓派地址，以及 `ros2 launch unibots unibots.launch.py` 已启动。Supervisor 和 web bridge 的主机、端口要一致。
-- Field viewer 打不开：查看 `controllers/supervisor_controller/html_port.txt`（常为 `5001`）。ROS 镜像是另一个端口（`params.yaml` 的 `local_port`，常为 `5003`）。
-- ROS `cv_bridge` / NumPy 报错，或 web bridge 提示 `Address already in use`：见 `ROS/ros2_ws/src/unibots/README.md`。
-- 真机位姿或球位置不对：`real_camera_intrinsic.yaml` 的图像尺寸必须和 `front_camera_node` 的 `output_width` / `output_height` 一致。
+第一台实物机器人做好之前，比赛逻辑是在 Webots 里调的。下面这些目录从那时候留到现在：`worlds/`、`controllers/`、`decision_making_cyc/`、`decision_making_wly/`、`decision_making_xjj/`、`decision_making_ros/`、`pose_estimation/`、`protos/`、`textures/`，以及根目录 `config.json`。
+
+这套仿真已经很久没有维护。World、supervisor 和策略脚本没有跟着后来的 ROS 节点一起改。按下面的步骤打开，可能会缺文件、对不上接口，或者机器人根本不动。需要看当前机器人怎么决策、怎么动，以 `ROS/` 为准。
+
+当时的用法是：
+
+1. 用 Webots R2025a 打开 `worlds/Decision_making.wbt`。主机器人是 `MY_ROBOT`，另外有三台障碍机器人。控制器是 `controllers/supervisor_controller/supervisor_controller.py`。
+2. 编辑 world 之前先按 Pause，再按 Reset Simulation，否则运行中的修改经常存不下来。
+3. 根目录 `config.json` 的 `develop_branch` 选择策略脚本：`cyc`、`wly`、`xjj`、`ros` 分别对应 `decision_making_<分支>/waypoints_cruise.py`。`data_flow` 为 `web` 时走 field viewer 的 HTTP，为 `file` 时走 `controllers/supervisor_controller/real_time_data/*.txt`。`run_on_pi` 为 true 时，supervisor 改为向树莓派要决策。
+4. 球的随机种子在 `controllers/supervisor_controller/random_seed.txt`。常用文本包括 `dynamic_waypoints.txt`、`waypoint_status.txt`、`current_position.txt`、`ball_position.txt`、`visible_balls.txt`、`time.txt`。
+5. `pose_estimation/pose_estimation.py` 从仿真的前相机图做离线 AprilTag。`pose_estimation/generate_camera_intrinsics.py` 按 Webots 相机的视场角推一份理论内参。这和车上 `real_camera_intrinsic.yaml` 不是同一份标定。
+
+其他 world：`worlds/Arena_Development.wbt` 是场地材质，`worlds/Position_Estimate_MATLAB.wbt` 配合 `controllers/estimate_robot_pose/`，`worlds/moose_demo.wbt` 配合 `controllers/moose_path_following/`。`controllers/ball_detection/` 是 MATLAB 球检测，`controllers/other_go_random/` 是一个随机运动控制器。
+
+---
